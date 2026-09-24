@@ -213,13 +213,13 @@ all or nothing.
 | Thing | Rules |
 | --- | --- |
 | `search` result | At most 50 items. |
-| `home` result | At most 10 rows of at most 40 items each. A row needs a unique `id` (same pattern as an item id) and a non-blank `title`; rows with no valid items are dropped. Kino shows them after its own rows, labelled with your plugin's name, and caches them for 6 hours (stale rows show while it refreshes). If `home()` fails you contribute no rows and Home is not blocked. |
+| `home` result | At most 10 rows of at most 40 items each. A row needs a unique `id` (same pattern as an item id) and a non-blank `title`; rows with no valid items are dropped. Kino shows them after its own rows, labelled with your plugin's name, and caches them for 6 hours (stale rows show while it refreshes; an answer with no valid rows, or over 2 MB, is not cached and is asked again next time). If `home()` fails you contribute no rows and Home is not blocked. |
 | `episodes` result | At most 2000 episodes. `number` is required and from 1 to 99999 (an episode numbered 0, such as a special, is dropped). `season` should be from 1 to 999; a missing or out-of-range season becomes 1. `ref` is required. A repeated season and number is dropped. Without a `title`, Kino shows "Capítulo N". |
 | `id` | `^[A-Za-z0-9._~-]{1,128}$`. Anything else drops the item, so if your source's own ids have other characters (spaces, `/`, `:`, `%`), derive a stable id yourself, such as a slug. Repeated ids in one list are dropped. |
 | `ref` | A non-empty string of at most 4096 characters. |
 | `kind` | `"movie"` or `"series"`. A `series` item from a plugin that does not declare `episodes` is dropped: it could never be opened. |
 | Text fields | `title` is required and non-blank, up to 200 characters. `overview` up to 2000; `lang` and `quality` up to 20 (for example `"es"`, `"1080p"`); `year` up to 10 (a number is accepted and converted). Longer text is cut; the text of `SeriesInfo` and `Episode` is cut the same way (200 characters for titles, 2000 for overviews). |
-| Images | `poster`, `backdrop` and `still` must be `https` URLs of at most 2048 characters, or they are ignored. Images are loaded by Kino directly and are **not** checked against `hosts` (they are display only), and Kino does not send your headers or cookies with them. This is the one exception to the host rule. |
+| Images | `poster`, `backdrop` and `still` must be `https` URLs of at most 2048 characters, or they are ignored. Images are loaded by Kino directly and are **not** checked against `hosts` (they are display only), and Kino does not send your headers or cookies with them. This is the one exception to the host rule, with one limit: an image on an IP address or a local name (`localhost`, `.local`, `.lan`, …) is ignored too. |
 
 **The `Stream` rules.**
 
@@ -228,8 +228,14 @@ all or nothing.
   stream still plays.
 - `mime` is optional, of the form `video/mp4` (anything else refuses the stream). When it is missing
   Kino's player detects HLS, DASH or a plain file from the URL and the content.
-- `headers` are sent with the player's requests for that stream (including the segments of an HLS or
-  DASH manifest) and its subtitles, and nowhere else. At most 20; names are letters, digits and
+- **Everything the player fetches for the stream follows the `kino.fetch` host rules.** That covers the
+  `url` itself, the variants, segments and `#EXT-X-KEY` keys an HLS manifest names, the `BaseURL`s of a
+  DASH manifest, the subtitles, and every redirect hop of any of them: each must be `https` on one of
+  your `hosts`, never an IP address or a local name, and a declared name that resolves inside the
+  person's own network is refused. A request that breaks this fails before it leaves the device and
+  playback stops with an error, so a manifest that points at another CDN needs that CDN in `hosts`.
+- `headers` are sent with every one of those player requests (the stream, its manifest's segments and
+  keys, its subtitles, and redirect hops, all on your `hosts`), and nowhere else. At most 20; names are letters, digits and
   hyphens; values are at most 4096 characters with no line breaks; `Host`, `Content-Length`,
   `Transfer-Encoding` and `Connection` are ignored.
 - `subtitles`: at most 30, each `{ lang, url, format? }`. `lang` is a short language code such as
@@ -268,8 +274,10 @@ r.json()    // JSON.parse of the body
 - **https only, and only your hosts.** The host of the request and of **every redirect hop** must
   match `hosts` (`*.x` matches subdomains of `x`, not `x`). A request to anything else fails before
   it leaves the device with a catchable `Error("host no permitido: <host>")`. An `http` URL, even on a
-  declared host, fails with `Error("solo se permite https")`. Kino also refuses a declared name that
-  resolves to an address inside the person's own network (loopback, private, link-local).
+  declared host, fails with `Error("solo se permite https")`. An IP address or a local name
+  (`localhost`, `.local`, …) is always refused with `host no permitido`. Kino also refuses a declared
+  name that resolves to an address inside the person's own network (loopback, private, link-local,
+  carrier-grade NAT, multicast).
 - **Redirects** (301, 302, 303, 307, 308) are followed by Kino, up to 10 hops; each hop is checked
   and counted as a request. A 303, or a 301/302 after a POST, turns into a GET without a body.
 - **A non-2xx answer does not throw**: check `r.ok`. Network failures, refused hosts, timeouts and
@@ -288,7 +296,8 @@ r.json()    // JSON.parse of the body
 Parses `html` and returns `[{ text, html, attrs }]` for every element matching the CSS selector
 (Jsoup's selector syntax): `text` is its text, `html` its inner HTML, `attrs` an object of its
 attributes. Only the first 2,000,000 characters of `html` are read, at most 500 elements come back,
-and it throws if the combined text and HTML of the matches goes over 5,242,880 characters (5 MB). **It
+and it throws if the combined text and HTML of the matches goes over 5,242,880 characters (5 MB). A
+selector longer than 10,000 characters throws `Error("selector CSS demasiado largo (más de 10000 caracteres)")`. **It
 exists only inside Kino**: the Node kit's version throws, so test anything that uses it in the app.
 
 ### `kino.storage`
@@ -321,8 +330,11 @@ characters. Under the Node kit they go to stderr.
 | Loading the module (its top level) | 10 s |
 | Idle sandbox | closed after 5 minutes without calls |
 | Consecutive timeouts | 3 in a row and Kino disables the plugin ("No responde — actívalo para volver a intentar") until the person re-enables it |
-| `kino.fetch` | https only; 15 s default, 30 s maximum; body at most 5 MB; at most 60 requests per call; at most 10 redirects per request |
+| App closed during a call | a plugin that makes the app die (a crash inside the engine, killed for lack of memory) twice in a row, with no call finishing normally in between, is switched off the same way ("No responde") at the next start. Kino can't tell which plugin was at fault when several were running at that moment, so healthy ones running alongside can be switched off with it; the person re-enables them in Ajustes ▸ Plugins |
+| `kino.fetch` | https only; 15 s default, 30 s maximum; response body at most 5 MB; the request (URL, headers and body together) at most 1,048,576 characters, or it throws `Error("solicitud demasiado grande (más de 1 MB)")`; at most 60 requests per call; at most 10 redirects per request |
+| What a function returns | at most 2,000,000 characters once turned into JSON, or the call fails with `Error("respuesta del plugin demasiado grande (más de 2 millones de caracteres)")` |
 | `kino.storage` | 64 KB per plugin |
+| `kino.log` / `console.*` | 2000 characters per message |
 | Results | `search` 50 items; `home` 10 rows of 40; `episodes` 2000; `ref` 4096 characters; `id` matches `^[A-Za-z0-9._~-]{1,128}$` |
 | `hosts` | 1 to 20 entries |
 
@@ -364,6 +376,15 @@ literals, spread, `replaceAll`, `Array.prototype.at` and `flat`, `Object.fromEnt
   `{ numeric: true }` and `{ sensitivity: "base" }` do nothing; it compares code units), and
   `(1234.5).toLocaleString("es-CO")` gives `"1234.5"`. Write the comparison you need; the reference
   plugin has a small `natural()` for numbered names.
+- **Keep function names short.** A function name of millions of characters makes the engine's
+  native code crash the whole app. As a best-effort guard, `kino.*`, `console.*` and the other
+  functions Kino provides are frozen, and on any function `Object.defineProperty`,
+  `Object.defineProperties`, `Reflect.defineProperty` and `__defineGetter__`/`__defineSetter__`
+  refuse to set `name` to a string longer than 1000 characters, to a getter or setter, or to make
+  it writable: they throw a `TypeError` (`Reflect.defineProperty` returns `false`). The guard is not
+  airtight (a huge computed key still names a function); a plugin that crashes the app anyway is
+  switched off (see "App closed during a call" above). Setting `name` on ordinary objects, and
+  `this.name = "MyError"` in an `Error` subclass, work as usual.
 
 ### The trap: a rejection nobody is listening to yet
 
@@ -446,7 +467,8 @@ differences:
 - The host, redirect and request-count rules are the same, but there is no cookie jar, no refusal of
   names that resolve to private addresses, every HTTP method is passed through, bodies are always
   read as UTF-8, and the 15 s timeout covers the wait for the response but not the download.
-- The per-call time limits and the memory limit are not enforced.
+- The per-call time limits, the memory limit and the size caps on requests, answers and selectors
+  are not enforced.
 
 ## 8. Publishing your plugin
 
