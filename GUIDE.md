@@ -1042,14 +1042,28 @@ how to read a title from whatever your backend returns with `titleOf(item)`:
 
 // Words of 3+ letters, folded to plain lowercase ascii. 1-2 letter words ("el", "de", "a", "of")
 // are dropped: they are exactly what makes unrelated titles look alike.
+
+// NFKD decomposes an accented letter into its plain letter plus a separate combining mark (e.g.
+// "ã" -> "a" + U+0303); stripping the marks folds every decomposable Latin accent at once, the same
+// way Kotlin's own java.text.Normalizer-based folding does. `.normalize` is feature-detected, not
+// assumed, because this recipe also runs inside Kino's own sandboxed JS engine: the manual table
+// below is the fallback for an engine where `.normalize` is missing, and it only needs to cover the
+// accents it's likely to meet, not be exhaustive.
 const FOLD_ACCENTS = {
-  á: "a", à: "a", ä: "a", â: "a", é: "e", è: "e", ë: "e", ê: "e",
+  á: "a", à: "a", ä: "a", â: "a", ã: "a", å: "a", é: "e", è: "e", ë: "e", ê: "e",
   í: "i", ì: "i", ï: "i", î: "i", ó: "o", ò: "o", ö: "o", ô: "o", õ: "o",
   ú: "u", ù: "u", ü: "u", û: "u", ñ: "n", ç: "c",
 };
 
+function foldAccents(text) {
+  if (typeof text.normalize === "function") {
+    return text.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+  }
+  return text.replace(/[áàäâãåéèëêíìïîóòöôõúùüûñç]/g, (c) => FOLD_ACCENTS[c]);
+}
+
 function titleTokens(text) {
-  const plain = String(text || "").toLowerCase().replace(/[áàäâéèëêíìïîóòöôõúùüûñç]/g, (c) => FOLD_ACCENTS[c]);
+  const plain = foldAccents(String(text || "").toLowerCase());
   return new Set((plain.match(/[a-z0-9]+/g) || []).filter((w) => w.length > 2));
 }
 
@@ -1122,5 +1136,12 @@ If your backend already ranks a full title well, skip `shortQuery` and only run
 `filterRelevant`/`sortBySimilarity` on what it gives you for `query.q` as typed: the two matter on
 their own, and the short query is only there to give a loose-matching backend less to search
 through in the first place.
+
+Two things this recipe leaves out on purpose. It never retries with the full title: if
+`shortQuery`'s head happens to be a common word (e.g. "Love, Death & Robots" → "Love") and the
+backend returns nothing relevant for it, that gap is yours to close — retry `search` with the full
+title yourself when the short one comes back empty. And it does nothing with season numbers or
+ordering: how a backend spells "season 2" in its own titles ("T2", "Temporada 2", …) is specific to
+that backend, not a general pattern this recipe can fold in.
 
 Tested at `sdk/test/cookbook-ranking.test.mjs` (`node --test sdk/test/cookbook-ranking.test.mjs`).
