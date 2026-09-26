@@ -5,19 +5,30 @@
 // copy of the guide's code block: nothing here imports it, because a Kino plugin has no
 // shared-module mechanism to import it from either (that is the whole reason it is a copy-paste
 // recipe and not a `kino.*` API). Keep the two in sync by hand if either changes.
+//
+// Two things the recipe itself leaves out on purpose (see the guide's own prose, right after the
+// "wire it into `search`" example): a full-title retry when `shortQuery`'s head is a common word
+// that returns nothing relevant, and season-number/ordering handling, which is backend-specific.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
 // --- start of the guide's code block (docs/plugins/README.md, §11) ---
 
 const FOLD_ACCENTS = {
-  á: "a", à: "a", ä: "a", â: "a", é: "e", è: "e", ë: "e", ê: "e",
+  á: "a", à: "a", ä: "a", â: "a", ã: "a", å: "a", é: "e", è: "e", ë: "e", ê: "e",
   í: "i", ì: "i", ï: "i", î: "i", ó: "o", ò: "o", ö: "o", ô: "o", õ: "o",
   ú: "u", ù: "u", ü: "u", û: "u", ñ: "n", ç: "c",
 };
 
+function foldAccents(text) {
+  if (typeof text.normalize === "function") {
+    return text.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+  }
+  return text.replace(/[áàäâãåéèëêíìïîóòöôõúùüûñç]/g, (c) => FOLD_ACCENTS[c]);
+}
+
 function titleTokens(text) {
-  const plain = String(text || "").toLowerCase().replace(/[áàäâéèëêíìïîóòöôõúùüûñç]/g, (c) => FOLD_ACCENTS[c]);
+  const plain = foldAccents(String(text || "").toLowerCase());
   return new Set((plain.match(/[a-z0-9]+/g) || []).filter((w) => w.length > 2));
 }
 
@@ -71,6 +82,17 @@ test("titleTokens folds accents, lowercases, and drops words of 1-2 letters", ()
   );
   assert.deepEqual([...titleTokens(undefined)], []);
   assert.deepEqual([...titleTokens("")], []);
+});
+
+test("titleTokens keeps a word whose only accent is ã or å, instead of dropping it", () => {
+  // Regression: an earlier version of FOLD_ACCENTS had no ã/å entries, so the unfolded character
+  // fell outside the [a-z0-9]+ word regex and split "São"/"Vår" into nothing at all, silently
+  // dropping the whole word rather than just leaving an accent on it.
+  assert.deepEqual(
+    [...titleTokens("São Paulo em Chamas")].sort(),
+    ["chamas", "paulo", "sao"],
+  );
+  assert.deepEqual([...titleTokens("Vår Bästa Tid")].sort(), ["basta", "tid", "var"]);
 });
 
 test("tokensOf unions the tokens of every form titleOf returns, string or array", () => {
