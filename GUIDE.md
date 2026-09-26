@@ -806,8 +806,9 @@ episodes numbered 0 are dropped), so do not copy those as intended behavior.
 
 ## 11. Cookbook
 
-Three complete shapes. The first and the third are, nearly line for line, the two reference plugins
-Kino's own tests run end to end against a fake server.
+Three complete shapes, and one smaller helper for a `search` you already have. The first and third
+full shapes are, nearly line for line, the two reference plugins Kino's own tests run end to end
+against a fake server.
 
 ### An HTML site with a login and hidden links
 
@@ -1009,3 +1010,117 @@ export async function resolve(ref) {
 
 Try it under Node with `--config server=http://192.168.1.10:8096 --config user=ana --config
 password=…` (or `sdk/config.json`, kept out of git).
+
+### A search backend that matches by loose shared words, not by title
+
+Some backends do not really search by title: they match a query against a loose bag of shared
+words, so a long title comes back buried under a wall of anything that happens to share one common
+word with it. Asking a backend like that for "The Lost City of Z: A Legend" can return twenty
+unrelated titles that merely share "lost" or "legend", with the real match on page two; asking it
+just "Lost City" often ranks the whole family well, with the title you want near the top.
+
+Three small, pure functions fix this without touching your backend's own JSON shape — you tell them
+how to read a title from whatever your backend returns with `titleOf(item)`:
+
+- **`shortQuery(q)`** — ask the backend the title's HEAD (up to its first `:`, `,`, `|`, en dash or
+  em dash) instead of the whole thing, so its own ranking has less noise to sort through. Try it
+  against your backend first: some backends do worse with a short query, not better.
+- **`sortBySimilarity(items, titles, titleOf)`** — reorders what came back so the ones sharing the
+  most words with `titles` (the forms you actually asked for — `query.q`, `query.originalTitle` and
+  `query.altTitles` are all worth trying, since a backend may only know a title in one language)
+  come first. Ties keep the backend's own order.
+- **`filterRelevant(items, titles, titleOf)`** — drops hits that only share a stray word.
+  Reordering alone still shows a full page of near-misses when the title genuinely is not on the
+  backend; this makes an absent title come back with 0 results instead.
+
+```js
+// Fixes a backend whose search only matches loose shared words, not the title as a whole: ask it a
+// short query, then rank and filter what it returns by how many words it actually shares with what
+// was asked. None of this touches your backend's own JSON shape — you tell each function how to
+// read a title with `titleOf(item)` (it may also return an array, if your backend keeps a title in
+// more than one field or language: their tokens are unioned).
+
+// Words of 3+ letters, folded to plain lowercase ascii. 1-2 letter words ("el", "de", "a", "of")
+// are dropped: they are exactly what makes unrelated titles look alike.
+const FOLD_ACCENTS = {
+  á: "a", à: "a", ä: "a", â: "a", é: "e", è: "e", ë: "e", ê: "e",
+  í: "i", ì: "i", ï: "i", î: "i", ó: "o", ò: "o", ö: "o", ô: "o", õ: "o",
+  ú: "u", ù: "u", ü: "u", û: "u", ñ: "n", ç: "c",
+};
+
+function titleTokens(text) {
+  const plain = String(text || "").toLowerCase().replace(/[áàäâéèëêíìïîóòöôõúùüûñç]/g, (c) => FOLD_ACCENTS[c]);
+  return new Set((plain.match(/[a-z0-9]+/g) || []).filter((w) => w.length > 2));
+}
+
+function tokensOf(titleOf, item) {
+  const tokens = new Set();
+  for (const form of [].concat(titleOf(item))) for (const t of titleTokens(form)) tokens.add(t);
+  return tokens;
+}
+
+function sharedCount(a, b) {
+  let n = 0;
+  for (const t of a) if (b.has(t)) n++;
+  return n;
+}
+
+// The items that share the most words with any of `titles` go first; ties keep the order the
+// backend gave them in (stable).
+function sortBySimilarity(items, titles, titleOf) {
+  const requested = titles.map(titleTokens).filter((t) => t.size > 0);
+  if (requested.length === 0) return items;
+  return items
+    .map((item, index) => {
+      const ofItem = tokensOf(titleOf, item);
+      return { item, index, score: Math.max(...requested.map((r) => sharedCount(r, ofItem))) };
+    })
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map((x) => x.item);
+}
+
+// Minimum share of a requested title's distinctive words an item must carry to count as a real
+// match (0.6 = "most of them").
+const MIN_RELEVANCE = 0.6;
+
+// Reordering alone (sortBySimilarity) still leaves a page of near-misses when the title genuinely
+// isn't on the backend; this drops them, so an absent title comes back with 0 results instead.
+function filterRelevant(items, titles, titleOf) {
+  const forms = titles.map(titleTokens).filter((t) => t.size > 0);
+  if (forms.length === 0) return items;
+  return items.filter((item) => {
+    const ofItem = tokensOf(titleOf, item);
+    return forms.some((form) => sharedCount(form, ofItem) / form.size >= MIN_RELEVANCE);
+  });
+}
+
+// Ask a loose-matching backend the title's HEAD, not the whole thing: a long title returns
+// everything that shares one common word with it, drowning the real match; the head alone keeps
+// the backend's own ranking useful. A one- or two-letter head ("El", "A") identifies nothing, so
+// the whole text is used instead. Not a plain "-": that would cut inside a hyphenated word like
+// "Spider-Man".
+function shortQuery(q) {
+  const text = String(q || "").trim();
+  const head = text.split(/[:,|–—]/)[0].trim();
+  return head.length >= 3 ? head : text;
+}
+```
+
+Wire it into `search`:
+
+```js
+export async function search(query) {
+  const titles = [query.q, query.originalTitle, ...query.altTitles].filter(Boolean);
+  const r = await kino.fetch(BASE + "/search?q=" + encodeURIComponent(shortQuery(query.q)));
+  const found = r.json().results; // whatever shape your backend answers with
+  const relevant = filterRelevant(found, titles, (x) => x.name);
+  return sortBySimilarity(relevant, titles, (x) => x.name).map(toItem);
+}
+```
+
+If your backend already ranks a full title well, skip `shortQuery` and only run
+`filterRelevant`/`sortBySimilarity` on what it gives you for `query.q` as typed: the two matter on
+their own, and the short query is only there to give a loose-matching backend less to search
+through in the first place.
+
+Tested at `sdk/test/cookbook-ranking.test.mjs` (`node --test sdk/test/cookbook-ranking.test.mjs`).
