@@ -19,7 +19,7 @@ API for your editor (`/// <reference path="./kino.d.ts" />` at the top of `plugi
 1. [What a plugin is](#1-what-a-plugin-is)
 2. [A first plugin](#2-a-first-plugin)
 3. [The manifest](#3-the-manifest)
-4. [The contract (apiVersion 1 to 5)](#4-the-contract-apiversion-1-to-5)
+4. [The contract (apiVersion 1 to 6)](#4-the-contract-apiversion-1-to-6)
 5. [The `kino` API](#5-the-kino-api)
 6. [Limits and engine quirks](#6-limits-and-engine-quirks)
 7. [Test it locally](#7-test-it-locally)
@@ -57,14 +57,105 @@ use a build step or a library, bundle everything into that single file -- see
 | `owner/repo@v1.2.0` | a branch, tag or commit (the name cannot contain `/`); also works with a folder |
 | `https://github.com/owner/repo` or `.../tree/<ref>/<path>` | the same, pasted from the browser |
 | `https://raw.githubusercontent.com/owner/repo/<ref>/<path>/kino-plugin.json`, or `https://github.com/owner/repo/blob/<ref>/<path>/kino-plugin.json` (also `/raw/`, and `refs/heads/<branch>` as the ref) | the folder that file is in, at that ref; the file has to be a `.json` one (`kino-plugin.json`, or a Nuvio repo's `manifest.json`), any other file is refused |
+| `https://cdn.jsdelivr.net/gh/owner/repo[@<ref>]/<path>/kino-plugin.json` (also `fastly`, `gcore`, `testingcf` and `quantil.jsdelivr.net`) | the same repository folder, read from GitHub: no `@ref` or `@latest` is the default branch; the ref must be an exact branch, tag or commit, so a version range (`@1`, `@^1.2`, `@1.x`) is refused |
+| `https://<any public server>/<path>/kino-plugin.json` | a plugin hosted outside GitHub: see [Installing from a manifest URL](#installing-from-a-manifest-url) |
 
 A query string or `#fragment` in a pasted URL is ignored. A ref that only comes from a pasted URL
-(`tree`, `blob`, `raw` or `raw.githubusercontent.com`) is not a pin: a plugin with sealed secrets
+(`tree`, `blob`, `raw`, `raw.githubusercontent.com` or jsDelivr's `@ref`) is not a pin: a plugin with sealed secrets
 pasted that way installs from the default branch when that branch serves the same
 `kino-plugin.json` (see [Sealed secrets](#sealed-secrets-apiversion-4)).
 
-Kino downloads `kino-plugin.json`, your entry file and the icon from `raw.githubusercontent.com`,
-which is why the repository has to be public.
+For a repository address, Kino downloads `kino-plugin.json`, your entry file and the icon from
+`raw.githubusercontent.com`, which is why the repository has to be public. A URL of a repository's
+`kino-plugin.json` (on GitHub, raw.githubusercontent.com or jsDelivr) always becomes that repository's
+address, so sealed secrets, signatures and community search keep working for it.
+
+#### Installing from a manifest URL
+
+Your plugin does not have to live on GitHub. People can paste the `https` URL of its `kino-plugin.json`
+on any public server (your own site, GitHub Pages, a CDN such as jsDelivr's `npm/`). Kino stores it
+as the address `url:https://…/kino-plugin.json` (scheme and host lowercased, default port, query and
+fragment dropped): that URL is the plugin's identity, and it travels as is to the person's other
+devices with plugin sync.
+
+- `entry` and `icon` are read relative to the manifest URL: `"entry": "plugin.js"` next to
+  `https://example.com/kino/kino-plugin.json` is `https://example.com/kino/plugin.js`.
+- `https` only (`http://` is refused with "Kino solo instala plugins desde direcciones https…"), on a
+  public name: no IP addresses, no `localhost`, no single-label or `.local`/`.lan` names, no
+  user:password in the URL, and the file has to be named exactly `kino-plugin.json`. A name that
+  resolves to a private address, and a redirect off `https` or to such a host, are refused too.
+- **No sealed secrets**: seals are bound to a GitHub repository, so a manifest with `secrets`
+  installed from a URL is refused ("Este plugin trae datos sellados, y esos solo funcionan si lo
+  instalas desde su repositorio de GitHub…"). Publish such a plugin on GitHub.
+- **Unsigned**: a `signature` is bound to `owner/repo`, so it is not checked and the plugin installs
+  (and shows) as unsigned.
+- Everything else is the same as a repository install: the consent sheet, `hosts` and every approval
+  rule, and updates — Kino re-reads the same URL and applies a higher `version`, asking again when it
+  needs more than was approved. The plugin is never listed by community search (that only finds
+  GitHub repositories).
+
+**Stremio addons (a Kino feature for people, not something you write).** Besides repositories, people
+can install a Stremio addon in the same field: the address of its `manifest.json`, a `stremio://`
+link, or a tapped "Install" link (on the phone or the TV; it waits while the player is open). A tapped link only opens Plugins ▸ Agregar with the address filled in; Kino fetches nothing until you tap Agregar. Kino then reads the manifest and generates one plugin per
+addon (id `stremio-<slug>-<hash>`); you never author or publish that plugin, and nothing here changes
+for yours.
+
+A tapped link opens Kino only when it is a `stremio://` one. On Android 12 and later an
+`https://…/manifest.json` link opens in the browser: Android hands a web link to an app only for the
+domains that app has verified, and Kino cannot verify an addon's domain. Kino still declares those links
+(older Android versions offer it in the "Abrir con" list), and the address itself always works pasted
+into the field.
+
+- **The address stays out of the files.** It is kept only in the generated plugin's two settings: the
+  server (`addonUrl`, a `url` setting) and the rest of the path (`addonPath`, a `password` setting
+  held in the Keystore). The generated manifest, script and logs never contain it.
+- **What it gives.** Catalogs become Home rows and "Ver más" (each row's title carries its type, the
+  way Kino's own rows do: "Popular · Películas", "Popular · Series", "· Anime"), search, info pages
+  and episodes. The addon's `logo` becomes the plugin's icon (read once at install, at most 128 KB; a
+  logo that is not a PNG is converted to one with Android's own decoder, or left out).
+  `tv`/`channel` catalogs become live channels in En vivo; only then does the plugin declare the
+  `channels` capability. Subtitles come from the stream and from the addon's `subtitles` resource,
+  which also answers the player's "Buscar subtítulos en línea" for any title with an IMDb or TMDB id
+  (the plugin declares `subtitles`). An addon with only a `subtitles` resource (OpenSubtitles v3)
+  installs as a [subtitle provider](#subtitles-for-any-title): nothing on Home, in search or En vivo.
+  A subtitle **translator** addon works the same way once configured: paste its configured address
+  (the one its configure page gives, with the target language in the path, e.g. GTSubs'
+  `https://gtsubs.strem.top/es/manifest.json`). Its machine translations show as "Español (traducido)":
+  a track whose `lang` carries GTSubs' `gt` mark (`esgt`), or any track an addon whose name or
+  description says it translates serves from its own server. GTSubs' `info:` notice tracks are skipped.
+  For an addon that plays movies, series or anime, those can be downloaded for offline viewing on
+  phones (the plugin declares `download`; an HLS stream is saved as one file, DASH is refused); live
+  channels never, and a channels-only addon has no download option.
+- **Catalogs on another host.** Some addons answer their catalogs with a redirect to another server
+  (Cinemeta sends them to `cinemeta-catalogs.strem.io`), and a plugin may follow a redirect from the
+  person's server only to that server or to a declared host. So at install Kino probes the catalog
+  addresses the plugin will use (each Home row's first page and one later page, each search catalog,
+  each live category: at most 30, a few at a time, about 10 s in all) at the addon's own address,
+  following its redirects to their targets (never into the person's network, unless it is the server
+  they typed), and declares every public https host they redirect to. The person sees those hosts on the consent
+  sheet like any other. A redirect to a local or private address, or over plain http, is never
+  declared, and a probe that fails just adds nothing: it never stops the install.
+- **Where it plays.** Exactly where Stremio would ask it: its `stream` resource's `types` and
+  `idPrefixes` (an object resource's own lists, else the manifest's). A catalog-only addon (Cinemeta,
+  Kitsu) plays nothing: its titles say "<addon> solo trae el catálogo" with the player's "Ver otras
+  fuentes", and it answers no title card's search (a typed search still lists its catalog). An id or
+  type outside the stream resource is never asked about (a `kitsu:` id to a `tt`-only addon). A
+  `tv`/`channel`-only addon (US Live TV) answers no title search at all.
+- **What it plays.** Only direct `http(s)` links. Peer-to-peer (`infoHash`), Usenet, archives (rar, zip, tgz, tar),
+  YouTube and external-page links are dropped. Of the playable ones Kino picks the best: web-ready
+  first; then by the resolution the addon names (1080p, 720p, unlabelled, 2160p last); within a tier
+  HLS/MP4 links win and HEVC combined with DTS/Dolby audio is avoided; ties keep the addon's order.
+- **Refused**, among others: something that is not a Stremio addon, an addon that offers nothing Kino
+  can use (a subtitles-only one is told that Kino already searches subtitles itself), one that needs configuring first (`configurationRequired`), adult addons, an addon whose
+  configuration is too long to keep (over 2048 characters) and an address that redirects to a local
+  address.
+- **Updates and sync.** An update re-reads the addon at the saved address and probes its catalogs
+  again. An update that brings something new to approve (a new host the catalogs redirect to,
+  `download` for an addon installed before downloads existed, `channels`) waits for the person's
+  approval: "Buscar actualización" shows the consent sheet. A probe that fails during an update keeps
+  the hosts already declared. The plugin and its settings sync both ways between the person's paired
+  devices; the server travels in the sync row and the path travels sealed end to end. On their other
+  devices an update applies on its own only within what they approved.
 
 ## 2. A first plugin
 
@@ -153,19 +244,24 @@ names the field.
 
 | Field | Rule |
 | --- | --- |
-| `id` | Required. `^[a-z0-9][a-z0-9-]{1,39}$` (2 to 40 lowercase letters, digits or hyphens, not starting with a hyphen). Not one of `magis`, `ditu`, `live`, `local`, `unknown`, `plugin`. It is the plugin's identity: never change it once people have installed it. |
+| `id` | Required. `^[a-z0-9][a-z0-9-]{1,39}$` (2 to 40 lowercase letters, digits or hyphens, not starting with a hyphen). Not one of `live`, `local`, `unknown`, `plugin`, `own`, `subtitle-keys`, `subtitle-prefs` (Kino's own names). It is the plugin's identity: never change it once people have installed it. |
 | `name` | Required. 1 to 40 characters. |
 | `version` | Required. `MAJOR.MINOR.PATCH` and nothing else (no `-beta`, no `+build`), each number up to 6 digits and without leading zeros. |
-| `apiVersion` | Required. `1`, `2`, `3`, `4` or `5` (5 only for a [signed plugin](#signed-plugins-apiversion-5-kino-0946)). A higher number than Kino supports is refused with "Este plugin necesita una versión más nueva de Kino". Declare the lowest number that has what you use, so your plugin also runs on older Kino builds. |
+| `apiVersion` | Required. `1` to `6`. `5` adds only the author's [signature](#signed-plugins-apiversion-5-kino-0945) (Kino 0.9.45); `6` adds typed and larger sealed secrets, `migrate`, request-signed streams, the settings form's `section`/`status`/`action`, `debug`, `telemetry`, `section`, `categories`, `theme`, [18+ entries](#what-you-return) shown behind the person's 18+ code, [`"browser": true` and `kino.browser.capture`](#kinobrowsercaptureurl-options-apiversion-6), [`"browser": "pages"` and `kino.browser.page`](#kinobrowserpageurl-options-apiversion-6) and [labelled and lazy copies](#labelled-and-lazy-copies-apiversion-6) (Kino 0.9.50). A higher number than Kino supports is refused with "Este plugin necesita una versión más nueva de Kino". Declare the lowest number that has what you use, so your plugin also runs on older Kino builds. |
 | `entry` | Required. Relative path of the JavaScript file: letters, digits, `.`, `_`, `-` and `/` only, no `..`, at most 200 characters, ends in `.js`. The file is at most 1 MB. |
-| `signature` | Optional, apiVersion 5 only: `{ "authorKey": …, "value": … }`, written by `sdk/seal.mjs --sign` — your signature over the entry file. See [Signed plugins](#signed-plugins-apiversion-5-kino-0946). |
+| `signature` | Optional, from apiVersion 5: `{ "authorKey": …, "value": … }`, written by `sdk/seal.mjs --sign` — your signature over the entry file. See [Signed plugins](#signed-plugins-apiversion-5-kino-0945). |
 | `hosts` | Required. At least 1 entry, with no upper limit from Kino 0.9.45 (only the manifest's 16 KB bounds it); Kino 0.9.44 and older refuse more than 20, and `sdk/validate.mjs` warns "Más de 20 hosts: Kino 0.9.44 o anterior rechaza este plugin; necesita Kino 0.9.45 o superior". From apiVersion 2 it may be empty, `[]`, when the plugin has a `url` setting: see [The person's own servers](#the-persons-own-servers). Each a lowercase DNS name (`archive.org`), `*.` plus a DNS name (`*.archive.org`), or (apiVersion 2 only) an object `{ "host": "…", "insecureHttp": true }` (below). Host names only: no scheme, port or path. No bare `*`, no IP addresses, no `localhost`, nothing ending in `.local`, `.lan`, `.internal`, `.localhost` or `.home.arpa`, and at least one dot. **`*.x` covers subdomains only, not `x` itself**: if you need both, list both. |
-| `capabilities` | Required. A subset of `search`, `home`, `browse`, `episodes`, `resolve`, `download`, `drm`, `channels`. Must include `resolve` and at least one of `search` or `home`. `search`, `home`, `browse`, `episodes` and `resolve` must each be an exported function of the entry file, or the install fails with "El plugin no carga: le falta ...". `download` and `drm` need `apiVersion: 2` and are declarative flags instead — the app acts on them, not your code, so nothing extra to export; declaring one shows its consent line ("Puede descargar videos para verlos sin conexión" / "Reproduce video protegido (DRM)") and needs approval again on an update that adds it. `download` gives your titles offline downloads (see [Downloads](#downloads-apiversion-2)); `drm` lets a `Stream` carry a Widevine license (see [A Widevine-protected stream](#a-widevine-protected-stream-apiversion-2)). `channels` needs `apiVersion: 3` and the exports `liveCategories` and `liveChannels` (see [Channels in the En vivo tab](#channels-in-the-en-vivo-tab-apiversion-3)). |
+| `capabilities` | Required. A subset of `search`, `home`, `browse`, `episodes`, `resolve`, `download`, `drm`, `channels`, `migrate`, `scopedSearch`, `meta`, `subtitles`. Must include `resolve` and at least one of `search` or `home` -- except `["subtitles"]` alone, a [subtitle provider](#subtitles-for-any-title). `search`, `home`, `browse`, `episodes` and `resolve` must each be an exported function of the entry file, or the install fails with "El plugin no carga: le falta ...". `download` and `drm` need `apiVersion: 2` and are declarative flags instead — the app acts on them, not your code, so nothing extra to export; declaring one shows its consent line ("Puede descargar videos para verlos sin conexión" / "Reproduce video protegido (DRM)") and needs approval again on an update that adds it. `download` gives your titles offline downloads (see [Downloads](#downloads-apiversion-2)); `drm` lets a `Stream` carry a Widevine license (see [A Widevine-protected stream](#a-widevine-protected-stream-apiversion-2)). `channels` needs `apiVersion: 3` and the exports `liveCategories` and `liveChannels` (see [Channels in the En vivo tab](#channels-in-the-en-vivo-tab-apiversion-3)). `migrate` needs `apiVersion: 6` and the export `migrate`; declaring it shows "Revisar lo que tienes guardado (biblioteca, historial, favoritos) para pasarlo a este plugin" and needs approval again on an update that adds it (see [Moving saved titles to your plugin](#moving-saved-titles-to-your-plugin-migrate-apiversion-6)). `scopedSearch` needs `apiVersion: 6` and `search` (refused otherwise with "La capacidad \"scopedSearch\" necesita también \"search\""); it exports nothing of its own: your `search` gets `within` when the person searches inside a "Ver más" page (see [Searching inside a "Ver más" page](#searching-inside-a-ver-más-page-scopedsearch-apiversion-6)). `meta` needs `apiVersion: 6` and the export `meta`, no consent line: your plugin describes titles other sources listed (see [Describing other titles](#describing-other-titles-meta-apiversion-6)). `subtitles` needs the export `subtitles` (see [Subtitles for any title](#subtitles-for-any-title)). |
 | `settings` | Optional. What the person fills in on your plugin's "Configurar" screen: see below. |
 | `permissions` | Optional. A list of names from the closed list in `contract.json`. **The list is empty in this version**: any name is refused with "permiso desconocido: …". It exists so a later version can add permissions (each one shown on the consent screen) without a new `apiVersion`. |
 | `color` | Optional `#RRGGBB`: the accent of your plugin's tab and chips. A neutral color by default. |
 | `icon` | Optional relative path to a square `.png`, at most 128 KB. An icon that is missing or too big is skipped without failing the install. |
 | `discoverable` | Optional `true` or `false` (default `true`), at every `apiVersion`. `false` keeps the plugin out of Kino's community search (see [Get found](#get-found)); people can still install it by typing its address. Any other value is refused with "El campo \"discoverable\" debe ser true o false". |
+| `categories` | Optional, at every `apiVersion`: what your plugin offers, for the category chips of Kino's plugin marketplace (Recomendados, "De la comunidad", "Elige tus fuentes"). A list without repeats of `movies`, `series`, `anime`, `live`, `radio`, `subtitles`, `utilities`, `adult`. When present it replaces Kino's guess from your capabilities (`channels` is `live`, `episodes` is `series`, anything that lists and plays is `movies`); an `adult` plugin's chip only shows while the person's 18+ code is unlocked. Any other value is refused with "El campo \"categories\" debe ser una lista sin repetidos de: movies, series, anime, live, radio, subtitles, utilities, adult". This field is only the marketplace tag; the apiVersion 6 `categories()` export is a different thing (tiles of content inside Kino's Categorías), see [Your own categories](#your-own-section-categories-and-colors-apiversion-6). |
+| `debug` | Optional `true` or `false` (default `false`), from `apiVersion` 6; ignored below. A development aid: while it is `true`, every failed call of your plugin shows a panel on screen (the function, the error code, the technical message, the JavaScript stack and your last `kino.log` lines) and your plugin's tab in Ajustes gets a "Registro" page with the last 200 events and a button to copy them. The Registro is kept in a private file on the device, so it survives a restart; it is never synced or backed up, and it is deleted when the plugin is uninstalled or an update drops `debug`. Secrets are redacted there like everywhere else. `validate.mjs` reminds you to remove it before publishing. Any other value is refused with "El campo \"debug\" debe ser true o false". |
+| `telemetry` | Optional `true`, `false` or `"verbose"` (default `false`), from `apiVersion` 6; ignored below. Asks to share your plugin's diagnostic `kino.log` lines with Kino's error tracker when a call fails, whatever repository the plugin comes from, and turns on [`kino.log.report`](#kinologargs). The consent sheet says "Comparte registros de errores con Kino para corregir fallas". For now (while plugins are being stabilized) the lines of every plugin that declares it are always sent, recommended or not, and there is no switch; a later Kino build will add an "Enviar registros de errores" switch to your plugin's tab in Ajustes, on by default, that the person can turn off on each device. A plugin that does not declare `telemetry` never sends a log line. An update that newly declares it waits for the person's approval, like a new host. Every line is scrubbed as described under [`kino.log`](#kinologargs). `"verbose"` shares everything `true` does plus [playback metrics](#playback-metrics-and-problem-reports) of plays that went well (a sample), live and cast problem reports and edge cases (a re-resolve, a failover, a decoder switch, a sign timeout, `migrate` results, settings synced from another device), at most 60 events per plugin until Kino restarts and one a minute per area; its consent line is "Comparte registros detallados de reproducción y errores con Kino para corregir fallas", and an update from `true` (or nothing) to `"verbose"` waits for the person's approval, while `"verbose"` to `true` applies silently. Any other value is refused with "El campo \"telemetry\" debe ser true, false o \"verbose\"". |
+| `section` | Optional `{ "label": "…" }`, from `apiVersion` 6 (label 1 to 20 characters); ignored below. Gives your plugin its own section and requires the `section` export: see [Your own section, categories and colors](#your-own-section-categories-and-colors-apiversion-6). |
+| `theme` | Optional object, from `apiVersion` 6; ignored below. Up to five `#RRGGBB` colors: `accent`, `onAccent`, `background`, `surface`, `highlight`; any other key is refused with "El campo \"theme\" tiene un color desconocido". The manifest only checks the format; the guardrails run when Kino uses the colors (below). |
 | `fetchHosts` | Not for your plugin: Kino writes `"fetchHosts": "any"` into the manifests it makes when it converts a Nuvio scraper, and honors it **only** on those (after the person approves it in red), so a converted scraper's `kino.fetch` may reach any public host. On a plugin written by hand it is ignored: your `kino.fetch` stays on your `hosts`, and `sdk/validate.mjs` warns "fetchHosts solo tiene efecto en plugins convertidos desde Nuvio; en tu plugin se ignora". From `apiVersion: 4` its only value is `"any"`; any other is refused with "El campo \"fetchHosts\" solo admite \"any\"". Below apiVersion 4 it is ignored. |
 | `description`, `author`, `homepage` | Optional strings. Trimmed and cut to 300, 60 and 200 characters. Kino shows the name, author, version and description when it asks the person to install. |
 
@@ -175,7 +271,8 @@ subtitles, its `audioTracks` and a `drm` block's `licenseUrl` (besides the perso
 
 ### Settings
 
-`settings` is a list of at most 12 entries. Each one becomes a field on the plugin's "Configurar"
+`settings` is a list of at most 12 entries that hold a value (plus, from apiVersion 6, at most 16 that
+only show or do something: see "The settings form" below). Each one becomes a field on the plugin's "Configurar"
 screen (Ajustes ▸ Plugins), and your code reads its value with `kino.config.get(key)`:
 
 ```json
@@ -198,6 +295,9 @@ screen (Ajustes ▸ Plugins), and your code reads its value with `kino.config.ge
 | `toggle` | `true` / `false` | no (always has a value) | yes | — |
 | `select` | one of the `options` values | no (always has a value) | yes | — |
 | `list` | a list of entries, each an object of the list's `fields` | yes | no | — |
+| `section` | none (apiVersion 6) | no (holds no value) | no | — |
+| `status` | none (apiVersion 6) | no (holds no value) | no | — |
+| `action` | none (apiVersion 6) | no (holds no value) | no | — |
 <!-- contract:settings:end -->
 
 - `key` matches `^[a-z][a-zA-Z0-9_]{0,31}$` and is unique; `label` is 1 to 40 characters; `hint`
@@ -229,6 +329,101 @@ screen (Ajustes ▸ Plugins), and your code reads its value with `kino.config.ge
   rows, so the next call starts a new session with the new values. `kino.storage` is **not** cleared:
   if you keep a token there, key it by the user and server it belongs to (the cookbook does).
 - Uninstalling deletes the settings, passwords included.
+
+#### The settings form and its own tab (apiVersion 6)
+
+Every installed plugin that is enabled and has `settings` gets **its own tab in Ajustes** (phone and
+TV), named after the plugin; Plugins ▸ Configurar opens the same form. From `"apiVersion": 6` the
+form can also show and do things, with three types that hold no value (never in `kino.config`, never
+`required`, no `default`), at most 16 of them on top of the 12 valued settings:
+
+```json
+"settings": [
+  { "key": "account", "label": "Tu cuenta", "type": "section", "hint": "Opcional: sin cuenta usas la sesión anónima" },
+  { "key": "email", "label": "Correo", "type": "text" },
+  { "key": "password", "label": "Contraseña", "type": "password" },
+  { "key": "linked", "label": "Estado", "type": "status" },
+  { "key": "logout", "label": "Cerrar sesión", "type": "action", "confirm": "¿Cerrar la sesión de esta cuenta?" }
+]
+```
+
+- `section`: a heading; `hint` is its explanation.
+- `status`: a read-only line. Kino calls your `settingsStatus()` when the form opens (10 s) and shows
+  the text you return under that key: `{ linked: "Vinculada como ana@…" }` (at most 200 characters).
+  Until it answers the line reads "Cargando…"; a missing key or a value that is not a text shows
+  "Sin información"; a timeout or an error shows "No se pudo consultar". The rest of the form keeps
+  working either way. **Required export** when a `status` setting exists.
+- `action`: a button. Kino calls your `action(key)` (30 s), one action at a time (the other buttons
+  and Guardar wait), and shows the `message` you return (at most 300 characters) or "Listo"; if it
+  throws or times out, the person sees the error text instead. Kino asks `settingsStatus()` again
+  after every action (and when the form opens), so the status lines describe what it just did; `refresh: true` is
+  still accepted and changes nothing. `confirm` (1 to 120 characters) asks first, with Cancelar focused. **Required export** when
+  an `action` setting exists.
+
+  An action may also **forget settings of your own** with `clearSettings`: up to 12 keys of your
+  declared valued settings (`text`, `url`, `password`, `toggle`, `select`, `list`). After the action
+  returns, Kino empties them exactly as if the person had emptied the fields and pressed Guardar (a
+  `password` also leaves the Keystore), closes your sandbox and forgets cookies and cached Home rows
+  as for any saved change (`kino.storage` survives), reloads the form and asks `settingsStatus()`
+  again; your `message` is still shown. It is how a "Cerrar sesión" button stops the next expired
+  token from signing the person in again with the saved account. Only the action's own plugin is
+  ever touched. An entry that is not a string, is unknown, names a `section`/`status`/`action`,
+  names a `required` setting (clearing it would make every later call fail), repeats, or comes
+  after the twelfth is dropped with a log line (`run.mjs` shows `[dropped by Kino]`); a value that
+  is not an array is ignored. An action that throws or times out clears nothing.
+
+  ```js
+  export async function action(key) {
+    if (key === "logout") {
+      await api.logout();                       // tell the server first: a throw here keeps the saved account
+      return { message: "Sesión cerrada", clearSettings: ["email", "password"] };
+    }
+  }
+  ```
+  (`email` and `password` must be optional settings here; mark the account `required` only if the
+  plugin cannot work signed out.)
+- `validateSettings(values)` (optional, 20 s) runs **before** Kino saves. `values` holds only the
+  valued settings: strings trimmed, toggles as booleans, lists as arrays of objects. Return `null` to
+  accept; `{ password: "La contraseña no es correcta" }` to refuse with that text under the field
+  (at most 200 characters); or a text to refuse with a general message. A key that is not one of your
+  valued settings also refuses, its text shown as the general message. Nothing is saved on a refusal
+  and the person keeps what they typed. If it throws, times out or answers something Kino cannot
+  read (an array, a number…), nothing is saved either, and the form offers **"Guardar sin
+  comprobar"**; that button is offered only then, never after a refusal with messages.
+- Texts you return are shown after Kino removes any of your stored secrets from them.
+- These three exports run even while a `required` setting is still empty, so a status line can say
+  what is missing. Saving any setting closes your sandbox, as described above; `kino.storage` survives.
+
+Try them with the kit (it prints what the app would keep): `node sdk/run.mjs . settingsStatus`,
+`node sdk/run.mjs . action logout`, `node sdk/run.mjs . validateSettings '{"email":"ana@x.co"}'`
+(`--raw` prints your answer untouched). The kit does not apply the app's secret scrubbing, and `validateSettings` receives exactly the JSON you type: the app sends only valued settings, trimmed. A working example is `plugins/sdk/test/settings-demo`.
+
+#### On the person's other devices
+
+When the person pairs two of their devices (phone and TV), Kino keeps their plugins in step. What
+crosses, and what does not:
+
+- **Crosses:** install, updates, on/off, uninstall, and the host approvals. Each device fetches your
+  code itself; only the address and the approval travel. The other device installs **silently** when
+  what it fetched asks for nothing beyond what the person approved on the first one; if you now ask
+  for more (a new host, permission or capability), it waits in "Plugins de tus otros aparatos" for
+  the normal consent sheet.
+- **Crosses:** the values of `text`, `select`, `toggle`, `url` and `list` settings (a `list` that has
+  a `password` field does not travel), and `password` settings, sealed end to end with the key the
+  devices agreed when they paired, never readable on the way.
+- **Crosses:** clears. A field the person empties, or an action's `clearSettings`, empties it on their
+  other devices too (passwords included). A `required` setting is never cleared remotely. A device
+  running an older Kino build ignores clears and keeps its value.
+- **Never crosses:** `kino.storage`, cookies, the cached Home rows.
+
+A value that arrives this way is applied **without** your `validateSettings`, and, like any saved
+change, closes your sandbox. So write the plugin as if a setting can change under it at any time:
+key any session you keep in `kino.storage` by the account it belongs to, and never put a device
+identity in a setting, because it would be copied to the other device.
+
+```js
+const sessionKey = `session:${kino.config.get("email") ?? ""}`;   // not just "session"
+```
 
 ### The person's own servers
 
@@ -305,7 +500,8 @@ What downloads, and what does not:
   manifest (`.mpd`, `application/dash+xml`, …), a live HLS playlist (no `EXT-X-ENDLIST`), SAMPLE-AES
   or any DRM key, a key that is not 16 bytes or does not decrypt, an empty segment, a master whose
   every video variant needs a separate audio rendition (Kino does not save a silent video), a
-  DRM-protected stream and a live channel. Subtitle renditions inside the playlist are not saved (your `subtitles` are). There is no separate "resolve for download" call.
+  DRM-protected stream and a live channel (a live channel never even shows a download button, also in
+  a plugin that declares both `channels` and `download`). Subtitle renditions inside the playlist are not saved (your `subtitles` are). There is no separate "resolve for download" call.
 - The queue downloads one title at a time, so a `ref` may wait a while before `resolve` is called:
   keep something stable in it and look the fresh link up inside `resolve` (as recommended above). A
   retry resumes the partial file even when your URL changed. A `resolve` the queue makes that times
@@ -321,8 +517,12 @@ and an update that newly declares it waits for the person's approval ([section 8
 
 ### Live channels (apiVersion 2)
 
-With `"apiVersion": 2` an item may be a live channel: `kind: "live"`, in any `home` row, `browse`
-page or `search` result, next to your movies and series. Nothing to declare beyond the version.
+With `"apiVersion": 2` an item may be a live channel: `kind: "live"`, in a `browse` page or `search`
+result, next to your movies and series. Nothing to declare beyond the version. In a `home` row a
+channel stays only from `"apiVersion": 6`: it shows as a channel card with the "En vivo" badge and
+opens like a channel from En vivo (a row of channels on Home is just a `home` row whose items are
+`kind: "live"`); below 6 Kino drops it from Home. An `adult: true` channel follows the same 18+ lock
+as any 18+ item, and a row left with nothing to show is not shown.
 
 ```js
 export async function home() {
@@ -380,6 +580,37 @@ needs one of them (a plugin with only channels exports a `home()` that returns `
 `"live"` in your rows keep working; a plugin can do both. On install, and on an update that adds it,
 the person reads and approves "Agrega canales en vivo a la pestaña En vivo".
 
+### Subtitles for any title
+
+Export `subtitles({ imdbId, tmdbId, kind, season, episode, title, year, languages })` and Kino lists
+what you answer in the player's "Buscar subtítulos en línea" (phone and TV), under your plugin's
+name, next to OpenSubtitles and SubDL: for **any** movie or episode the person plays -- your titles,
+another plugin's, a Stremio addon's -- as long as Kino knows its IMDb or TMDB id (a title known only by name is
+never sent to you). The person picks a track, Kino downloads it, turns it into SRT and adds it like
+any online subtitle (sync offset, style, remembered for the title).
+
+Two ways to offer it:
+
+- **A subtitle provider**: `"capabilities": ["subtitles"]` and nothing else. No `resolve`, `search`
+  or `home` needed; the plugin appears nowhere but the subtitle search and Ajustes ▸ Plugins (it is
+  not a source in "Elige tus fuentes"). The consent screen says "Agrega subtítulos a tus películas y
+  series". Older Kino versions refuse a capability they do not know: they do not install it.
+- **Alongside your videos**: keep your capabilities and just export `subtitles` (declaring
+  `subtitles` too adds the consent line, but older Kino versions would then refuse the plugin).
+  Kino asks every plugin whose install found the export; older versions never call it.
+
+The argument: `imdbId` (`tt…`) and/or `tmdbId` (a number), at least one of them; `kind` `"movie"` or
+`"series"` -- for an episode the ids are the **series'** and `season`/`episode` are set; `title` and
+`year` are hints; `languages` are the person's subtitle languages, ISO 639-1, best first (`["es",
+"en"]`). Return an array of `{ lang, url, format?, label?, translated? }`, a `Stream`'s `subtitles`
+entries plus an optional `label` and `translated: true` for a machine translation: the menu then says
+"Español (traducido)" and lists it after the person-made tracks of that language. Kino keeps 30,
+then lists only those in the person's languages, in that order, 15 per plugin: put the asked
+languages first. `label` (60 characters) is shown next to the language, a release name for example.
+Each `url` follows a `Stream`'s subtitle rule: your `hosts`, the person's server, or any public host
+with [`streamHosts: "any"`](#playing-from-any-server-streamhosts-apiversion-4). The call is a
+background one (10 s, it never marks your plugin "No responde"); return `[]` when you have nothing.
+
 ### Playing from any server (`streamHosts`, apiVersion 4)
 
 Some sources serve their video from CDNs whose domains you cannot list (they change, or sit on bare
@@ -406,6 +637,101 @@ images and DRM license servers stay on your declared `hosts`, and local or priva
 still refused. The consent screen shows it in red ("Puede reproducir video desde cualquier servidor
 que indique"), and an update that adds it waits for the person to approve again. Prefer listing the
 real domains when you can: people trust a narrow list more.
+
+### Opening hidden web pages (`browser`, apiVersion 6)
+
+Some sites never put the video address in their HTML: an embedded player builds it in the page with its own
+scripts, and the only way to learn it is to run the page. With `"apiVersion": 6` a plugin may add:
+
+```json
+"apiVersion": 6,
+"browser": true,
+"streamHosts": "any"
+```
+
+and then call [`kino.browser.capture`](#kinobrowsercaptureurl-options-apiversion-6) from `resolve` -- only a
+`resolve` the person started: they pressed play, or they started a download. The consent
+screen shows it in red ("Puede abrir páginas web ocultas para encontrar el video"), and an update that adds it waits
+for the person to approve again; below apiVersion 6 the field is ignored. A plugin approved for it gets a longer
+`resolve` limit (75 s instead of 20 s), since each page may take up to 25 s.
+
+The page you open must be on a host your `kino.fetch` may reach (your `hosts`), over https. The page itself may then
+load from **any public server** (an embed's player lives on hosts you cannot list in advance), but never from the
+home network: every request it makes to a local name, a private or loopback address, or a public name that resolves
+into the home network is answered empty on the device. Since the video it finds is usually on such a server, a
+plugin that plays what it captures also needs `"streamHosts": "any"`.
+
+All of that page's traffic goes through a proxy inside Kino (on the device's loopback, open only while that capture
+runs, answering only that capture's page through a one-time credential) that connects only to the address it checked, so a name
+cannot answer one address to the check and another to the connection; the WebView itself resolves no name. Every
+method works (`POST` included), redirects are followed by the page as in a browser, and WebSocket connections pass
+the same check. WebRTC is switched off. A device whose WebView cannot be pointed at a proxy still captures, with Kino
+fetching each `GET`/`HEAD` itself (a `POST` then only reaches a public IPv4 address written as such, and WebSocket is
+off); one whose WebView cannot run scripts at document start gets `browser_unavailable`.
+
+To also **read** pages through that hidden browser with
+[`kino.browser.page`](#kinobrowserpageurl-options-apiversion-6) -- for a site that answers every plain `kino.fetch`
+with its automatic browser check (Cloudflare's "Just a moment…") -- from `search`, `home`, `browse`, `episodes`,
+`section`, `categories` and `resolve`, ask for it by name:
+
+```json
+"apiVersion": 6,
+"browser": "pages"
+```
+
+`"pages"` includes everything `true` gives (`kino.browser.capture` too). The red line then says so: "Puede abrir
+páginas web ocultas para mostrar contenido y encontrar el video". `"browser": true` stays capture-only, with the old
+line, and its `kino.browser.page` answers `not_allowed`. A plugin the person approved with `true` asks again when its
+update says `"pages"` -- also on the automatic update pass after a Kino upgrade, and on another device that only
+approved the old line. Any other value is refused: "El campo "browser" debe ser true, false o "pages"".
+
+### Labelled and lazy copies (apiVersion 6)
+
+A source often has the same episode in several languages and on several servers, and finding each server's video
+costs time (a page to open, sometimes a [hidden web page](#opening-hidden-web-pages-browser-apiversion-6) of 5-25 s).
+Resolving all of them before the first frame would make every play slow. From `"apiVersion": 6`, a Stream's
+`alternatives` may name a copy **without resolving it**: `{ label, ref }` instead of `{ url }`. Kino passes that
+`ref` to your `resolve(ref)` only when the copy is actually needed:
+
+- the person picks it in the player's **Servidor** menu (the copy on screen keeps playing while it opens, then the new
+  one starts at the same spot);
+- the automatic fallback reaches it (the copy on screen cannot play on this device, or is gone);
+- a download's copy choice gets to it (inside the same 30 s budget it spends probing copies; a lazy copy that has not
+  answered by then is skipped, never waited for).
+
+That call is a normal `resolve`: the same time limit (75 s for an approved `browser` plugin), the same checks on what
+it returns, `kino.browser.capture` allowed (for a download's copy choice: only when no other page is open, else
+`busy` and the copy is skipped), host questions asked as for the title. From its answer Kino uses `url`,
+`headers`, `mime`, `subtitles` (when it brings some; otherwise the title's are kept) and `expiresInSeconds` (a lazy
+copy past its expiry is resolved again, not the whole title) and `skip` (it shows the "Saltar intro" button while that
+copy plays, never saved: the Stream's own `skip` stays the episode's, and a hand correction still wins). Its own
+`alternatives` are ignored -- a copy never expands into more copies. A `resolve` that fails moves on to the next copy; when the person picked it, they read "No se
+pudo abrir …" and keep watching the copy they had.
+
+```js
+export async function resolve(ref) {
+  // A copy's own ref: "<episode>|<server>". Resolve just that server.
+  if (ref.includes("|")) return resolveServer(ref);
+  const servers = await listServers(ref);            // [{ id, lang, name }], fast: no page opened yet
+  const first = await resolveServer(`${ref}|${servers[0].id}`);
+  return {
+    ...first,
+    label: `${servers[0].lang} · ${servers[0].name}`,  // "Latino · Streamwish"
+    alternatives: servers.slice(1, 9).map((s) => ({
+      label: `${s.lang} · ${s.name}`,                // "Subtitulado · Voe"
+      ref: `${ref}|${s.id}`,
+    })),
+  };
+}
+```
+
+Rules: `ref` is a non-blank string of at most 512 characters with no control characters (a bad or repeated one is
+dropped); an entry with a `url` is a normal copy whatever else it carries; lazy and concrete copies mix freely and
+share the limit of 8; each `label` is trimmed, at most 48 characters, no control characters, or it is dropped while
+the copy still counts. Keep the ref enough to find that one server again: it may be resolved minutes after the
+title (a person switching servers mid-episode). Below apiVersion 6 the keys are unknown: a `label` is ignored and a
+`{ ref }` entry, having no `url`, is dropped exactly as before. Try it with `node sdk/run.mjs ./plugin.js resolve
+'<ref>'`, which prints each copy with its label, then `resolve '<a copy's ref>'` to resolve that copy.
 
 ### Channels from any server (`liveStreamHosts`, apiVersion 3)
 
@@ -450,6 +776,205 @@ What it never allows:
 The consent sheet shows it in red, "Puede reproducir canales desde cualquier servidor que indique su
 lista", and an update that newly adds it waits for the person's approval, like a new host.
 
+### Signing every request (`signing`, apiVersion 6)
+
+Some origins want a fresh signature on **every** request: a header that expires in seconds. Return
+`signing: "request"` in the stream, and export `sign`:
+
+```js
+export async function resolve(ref, options) {
+  const session = await openSession(options?.retry); // a retry says why: "conflict" or "expired"
+  return { url: session.playlist, signing: "request", signContext: JSON.stringify({ token: session.token }),
+           headers: { "Content-License": session.license } };
+}
+
+export async function sign({ url, kind, ref, context }) { // kind: "playlist" | "segment"
+  const { token } = JSON.parse(context);
+  return { headers: { "Content-Auth": await signatureFor(token, Date.now()) } };
+}
+```
+
+Kino plays the stream through a local proxy. Before every playlist and segment request it calls
+`sign()` and sends its headers, merged over the stream's own `headers`. Rules:
+
+- **HLS only**: an HLS `mime`, or a `.m3u8` path. No `drm`, no `audioTracks` (subtitles are fine:
+  they get the stream's own `headers`, like any stream's subtitles, but are never `sign()`ed).
+  An inline `stream` of a `liveChannels` item can't ask for it: a channel that also has a `ref`
+  plays through `resolve(ref)` (the inline stream is set aside), and one without a `ref` is dropped.
+  A stream that breaks these is refused with `La firma por petición solo funciona con
+  video HLS (.m3u8)`, `Un video firmado por petición no puede llevar drm ni pistas de audio aparte` or
+  `Un canal con firma por petición debe reproducirse con resolve()`. A signed video can't be downloaded: its download ends with `Este video no se puede descargar`.
+- **`sign()` runs apart from your other functions**, so a slow `home` never delays a segment. It gets
+  `kino.crypto`, `kino.secret`, `kino.config`, `kino.html` and `kino.log`, and nothing else:
+  `kino.fetch` answers a `host_not_allowed` error ("sign no puede usar la red"), and `kino.storage`,
+  `kino.cookies` and `kino.sleep` fail with the code `not_allowed` and "sign() no puede usar
+  kino.storage: lo que necesites debe venir en signContext" (likewise for the others). It also
+  can't see anything the main runtime holds in memory. What it needs travels in `context`, the
+  `signContext` your `resolve()` returned (a string of up to 4096 characters; a longer or non-string
+  one refuses the stream with `El dato "signContext" no es válido`). A `kino.secret()` marker means
+  nothing there (a marker only works in the runtime that made it): call `kino.secret()` inside
+  `sign()` itself; a `signContext` carrying one is refused with "signContext no puede llevar un
+  kino.secret(): llámalo dentro de sign()".
+- A stream asking for `signing: "request"` from a plugin that doesn't export `sign` is refused with
+  "El plugin pide firmar el video pero no exporta sign()".
+- **1.5 s per call.** A slow answer counts as a failed signature.
+- Answer `{ headers }`, filtered like a stream's `headers` (same names and size rules). A value
+  containing a `kino.secret()` marker is refused ("sign no puede devolver datos sellados"): a marker
+  is only good inside `kino.crypto`, so compute the header there.
+- Three failed signatures in a row stop the video.
+- Below apiVersion 6, `signing` and `signContext` are ignored.
+- **Reopening.** If the origin answers 409, or 401/403 twice in a row, Kino calls
+  `resolve(ref, { retry: { reason, attempt, status } })` again: `"conflict"` (the access is in use
+  elsewhere: get another one) or `"expired"`, `attempt` from 1 to 3, and `status`, the origin's HTTP
+  status that caused it (401, 403 or 409; absent when Kino did not hear one), for your log. The budget refills once the
+  video has played well for a minute; after the third retry the person sees the error. `options` is `undefined`
+  on a normal call, and only apiVersion 6 plugins ever get it.
+- **Other hosts that serve the same stream** (`alternateHosts`, up to 6 `"host"` or `"host:port"`, no
+  scheme or path): Kino tries the playlist on each, the one that served last first, for up to 3 rounds,
+  and moves a segment, key or map to another host when its own fails 3 times. `sign()` always gets the
+  URL of the host being asked, so choose that host's token from `context`. Each entry meets the same
+  host rule as `url`: a declared host (plain http only on one declared `insecureHttp`), or any public
+  host under `liveStreamHosts: "any"`, never a local one. An entry that fails it, repeats `url`'s host
+  or another entry, or comes after the sixth is dropped (`run.mjs` and `validate.mjs` show it as
+  `[dropped by Kino]`); a value that is not an array of strings refuses the stream with
+  `El dato "alternateHosts" no es válido`. With them, the stream counts as `"expired"` only when
+  **every** host rejected the signature, and as `"conflict"` only when the last one answered 409; a
+  host answering 404 or not at all just moves Kino on. A host the playlist names that is not one of
+  these is never swapped. Ignored without `signing`.
+- **Chromecast and DLNA.** A signed stream can be sent to a TV like any other HLS. The TV never
+  signs anything: it pulls the stream through Kino on the phone, which calls `sign()` for every
+  playlist and segment the TV asks for, exactly as for its own player (the same 1.5 s limit, the same
+  "three failed signatures stop the video"). So the phone must stay on the same Wi-Fi as the TV with
+  Kino running for the whole cast. If the origin refuses the stream while the TV plays it (the
+  **Reopening** rule above) while the player is open on the phone, Kino calls `resolve(ref, { retry })`
+  again and the TV reloads it from the same point (a live channel from its edge). Once the person
+  leaves the player, a Chromecast keeps playing until it is stopped or sent something else, but a
+  refusal is no longer re-resolved: the TV's playback just ends. Leaving the player stops a DLNA TV,
+  as for any title. A signed stream with `drm` is never cast. Kino plays one signed stream at a time:
+  opening another one on the phone ends the cast of the first.
+
+  ```js
+  return { url: "http://cdn1.example/live/ch.m3u8", signing: "request",
+           alternateHosts: ["cdn2.example", "cdn3.example:8080"],
+           signContext: JSON.stringify({ "cdn1.example": t1, "cdn2.example": t2, "cdn3.example:8080": t3 }) };
+  // sign({ url, context }): const tokens = JSON.parse(context); const token = tokens[new URL(url).host];
+  ```
+
+Test it from your terminal: `node sdk/run.mjs ./plugin.js sign '{"url":"https://cdn.example/seg.ts","kind":"segment","ref":"<ref>","context":"<signContext>"}'`
+runs `sign` in the same restricted lane, and `node sdk/run.mjs --retry conflict:1 ./plugin.js resolve '<ref>'` (or `conflict:1:409` to pass a `status`)
+calls `resolve` with a retry.
+
+### Moving saved titles to your plugin (`migrate`, apiVersion 6)
+
+When your plugin changes how its refs look, or takes over titles another source used to open,
+declare the `migrate` capability and export `migrate(input)`. Kino calls it in the background for
+every value it has saved and can no longer open: a library title (`{ kind: "title", ref }`), each of
+its chapters (`{ kind: "chapter", ref, season, episode }`) and live favorites or recents
+(`{ kind: "live", provider, code }`). Answer with what `search()` would return for it today —
+`{ kind: "movie" | "series", id, ref }`, `{ kind: "episode", ref, season, number }` or
+`{ kind: "live", code }` — or `null` when it is not yours.
+
+- Declaring `migrate` adds "Revisar lo que tienes guardado (biblioteca, historial, favoritos) para
+  pasarlo a este plugin" to the consent sheet, and an update that adds it waits for the person's
+  approval like any new reach: your plugin sees what they saved.
+- Kino asks the installed plugins with `migrate` in order of their id; the first answer wins.
+- A series moves only when every saved chapter is answered as an `episode`.
+- Watched progress, intro/outro marks, downloads and favorites move with the title.
+- A `null` is remembered until your plugin's next version, so returning `null` is cheap. So is a
+  throw from your own code, or a `kino.error` with any code but `timeout`, `network`,
+  `host_not_allowed`, `unavailable`, `rate_limited` or `auth_required`: those few mean "not now",
+  and Kino asks again on a later run (meanwhile no plugin after yours is asked about that value).
+- Never return a ref that starts with `plg1:`; never fetch from inside `migrate` unless you must:
+  it runs for every saved value, 10 s each.
+
+### Your own section, categories and colors (apiVersion 6)
+
+Three optional widenings, all from `"apiVersion": 6`. None of them needs a capability of its own.
+
+**A section of your own.** Declare `"section": { "label": "Demo" }` (1 to 20 characters) and export
+`section({ tab })`:
+
+```js
+export async function section({ tab }) {   // tab is null the first time
+  const tabs = [{ id: "pelis", label: "Películas" }, { id: "series", label: "Series" }];
+  const chosen = tabs.some((t) => t.id === tab) ? tab : "pelis";
+  return {
+    tabs,                                    // optional, at most 8, labels at most 24 characters
+    tab: chosen,                             // the tab this answer is for
+    hero: { title: "Destacado", text: "…" }, // optional; also image (http or https); text at most 300 characters
+    rows: [{ id: `${chosen}-a`, title: "Destacadas", ref: `${chosen}-a`, items: [/* KinoItem */] }],
+  };
+}
+```
+
+- `rows` are exactly the rows of `home` (same shape, same checks and limits); a row with a `ref` gets
+  "Ver más", which calls `browse(ref, null)`. Return `rows: []` for an empty tab: Kino says there is nothing there.
+- Choosing a tab calls `section({ tab })` again with that tab's `id`. 20 s per call.
+- Where it shows: on the **TV**, an entry in the sidebar after "Categorías" (at most 3 plugins have
+  one); on the **phone**, a chip in the strip at the top of Inicio (scrollable, at most 8). Only plugins
+  that are enabled, usable and need no setup appear: one that is off, or still asks for a required
+  setting, gets no entry. Entries are ordered by label, then by plugin id. A call that fails shows an
+  error inside the section and never touches the rest of the app.
+- A manifest that declares `section` must export it: the install fails otherwise, like any other
+  required export.
+
+**Your own categories.** Not to be confused with the manifest's `categories` field, which only tags your
+plugin for the marketplace chips (see the [manifest table](#3-the-manifest)): this one is an export, and what it
+returns are tiles that people browse inside Kino. Export `categories()` (needs the `browse` capability; no
+manifest field, Kino sees the export):
+
+```js
+export async function categories() {
+  return [{ id: "accion", title: "Acción", ref: "accion", art: "https://image.tmdb.org/t/p/w500/x.jpg" }];
+}
+```
+
+At most 24 tiles, shown in your order; `title` at most 40 characters, `ref` at most 4,096, `art` an
+image URL (the Images rule of [section 4](#what-you-return): `http` or `https`, not checked against `hosts`). They appear in Categorías as one group named after your plugin, and each
+tile opens `browse(ref, null)`, paged like any `browse`. If `categories()` fails or times out you
+simply contribute no group. 20 s per call. A tile with `adult: true` is shown only while the person's
+18+ code is unlocked on that device, like any [18+ entry](#what-you-return); a group left with only such tiles is not shown.
+
+**Your colors.** `"theme"` takes up to five colors, each `#RRGGBB`, each optional:
+
+```json
+"theme": { "accent": "#3D5AFE", "onAccent": "#FFFFFF", "background": "#101820", "surface": "#1A2733", "highlight": "#F7C948" }
+```
+
+| Token | What it paints |
+| --- | --- |
+| `accent` | in your section and your Ajustes tab: selected chip and tab, buttons, focus, the "Ver más" arrow; in the player: the progress bar, the slider, active states and the TV focus border |
+| `onAccent` | text and icons drawn on top of `accent` |
+| `background` | the screen behind your section and your Ajustes tab |
+| `surface` | in your section: the cards, the "Ver más" card and the tabs that are not selected |
+| `highlight` | emphasized text there; in Categorías, the title of your group |
+
+Scope: your section, your Ajustes tab, the title of your group in Categorías (only that title, in
+`highlight`; its tiles and background stay Kino's) and, while your content plays, the player's
+`accent` and `onAccent` only (the player keeps Kino's background and surfaces). Nothing else in
+Kino changes, and **errors are always shown in Kino's red**, whatever your theme says.
+
+Kino protects readability, so each color is checked when it is used:
+
+- `background` must be dark (relative luminance at most 0.05).
+- `surface` must be dark (at most 0.12) and at least 1.05:1 apart from the background.
+- `accent` must reach 3:1 against the background.
+- `onAccent` must reach 4.5:1 against `accent`.
+- `highlight` must reach 4.5:1 against the background.
+- No color may be close to Kino's red `#E50914` (CIE76 distance below 25).
+
+A color that fails falls back to Kino's own for that token only (`accent` and `onAccent` are judged and
+fall back **as a pair**); the install still succeeds and the other colors stay. A color that is not a
+valid `#RRGGBB` is refused at install time. Preview it, with the ratios and the warnings Kino would
+print, before publishing:
+
+```
+node sdk/run.mjs . theme
+```
+
+`sdk/validate.mjs` shows the same warnings. A complete example of the three is `plugins/sdk/test/section-demo`
+(its `highlight` fails on purpose so you can see the fallback).
+
 ### Sealed secrets (apiVersion 4)
 
 A plugin that ships a fixed key (an API token baked into a site's own client, a per-tenant secret its
@@ -463,7 +988,7 @@ node sdk/seal.mjs --repo owner/repo --name apiKey
 address people install from: a trailing `/` and a `.git` are dropped, but a URL
 (`https://github.com/...`) and an `@ref` are refused rather than guessed at. The value is read from a
 hidden prompt or piped on stdin — never as a command-line argument, which would land in shell
-history. It must be 1 to 4,096 bytes (UTF-8); the tool prints one line, `kino-sealed:v1:...`, to paste
+history. It must be 1 to 4,096 bytes (UTF-8) — up to 8,192 with `"apiVersion": 6`; the tool prints one line, `kino-sealed:v1:...`, to paste
 into the manifest:
 
 ```json
@@ -498,6 +1023,33 @@ into the manifest:
 - Declaring any secret adds "Usa datos sellados por su autor" to the consent sheet; an update that
   brings secrets to a plugin that had none asks again, exactly like a new host. Adding, changing or
   removing a secret in a plugin that already declared some does not.
+
+#### Typed cipher keys (apiVersion 6)
+
+A sealed value used as the key of `kino.crypto.encrypt`/`decrypt` can be declared as a key, so Kino
+reads its bytes with an encoding fixed in the manifest instead of whatever `keyEncoding` the code
+passes. That is what lets a sealed key work for `des-ede3-*` too (an untyped sealed key stays AES-only):
+
+    node sdk/seal.mjs --repo owner/repo --name portalKey --use cipher-key --encoding hex
+
+prints one JSON line to paste as the secret's value:
+
+```json
+"apiVersion": 6,
+"secrets": { "portalKey": { "seal": "kino-sealed:v1:...", "use": "cipher-key", "encoding": "hex" } }
+```
+
+- `use` must be `"cipher-key"`; `encoding` is `"hex"` or `"base64"`; no other field is allowed.
+- The value must decode, under that encoding, to a 16, 24 or 32-byte key: `seal.mjs` refuses anything
+  else, and Kino refuses the install with "El secreto "portalKey" debe ser una clave de 16, 24 o 32 bytes".
+- `kino.secret("portalKey")` works as the **whole** `key` of any `encrypt`/`decrypt`; the `keyEncoding`
+  you pass is ignored. It is refused, with "no se puede usar un dato sellado aquí", as an HMAC key, a
+  `pbkdf2` input, anywhere in `data`/`iv`/`aad`, and anywhere in a `kino.fetch` request (the URL,
+  header names or values, a text, JSON or form body): a typed key is for `kino.crypto` only and never
+  goes on the wire.
+- Below apiVersion 6 an object here is not a seal: the manifest is refused.
+- The SDK kit simulates all of this from the plain value in `.kino-secrets.json`; the key's bytes, in
+  hex (either case) or base64, are also redacted from anything a server sends back.
 
 **What this protects, and what it does not.** This is obfuscation, not secrecy: the private key that
 opens a seal ships inside every copy of Kino. Sealing a value keeps it out of your manifest and your
@@ -572,12 +1124,12 @@ it know every update comes from you. Your code stays plain, readable JavaScript 
 nothing. Nothing changes for any unsigned plugin, at any apiVersion.
 
 ```json
-"apiVersion": 5,
+"apiVersion": 6,
 "entry": "plugin.js",
 "signature": { "authorKey": "<64 hex>", "value": "<128 hex>" }
 ```
 
-Kino 0.9.45 and older refuse an apiVersion 5 manifest with "Este plugin necesita una versión más
+Kino 0.9.44 and older refuse an apiVersion 5 manifest with "Este plugin necesita una versión más
 nueva de Kino"; `sdk/validate.mjs` reminds you. Below apiVersion 5 a `signature` is ignored.
 
 **What is signed.** `value` is an Ed25519 signature, by the key in `authorKey`, over the UTF-8 text
@@ -604,6 +1156,23 @@ ya no está firmada por su autor…"); only uninstalling and installing again ac
 key safe and backed up: losing it means everyone has to reinstall. An unsigned plugin that becomes
 signed asks the person again before updating.
 
+**The same plugin at two addresses.** A plugin is normally known by the exact address it was
+installed from: the same `id` from another repo is another plugin (a second install of that `id` is
+refused with "Ya hay un plugin con ese id"). A signed plugin is the exception: when the person has
+your plugin from one repo on their phone and from another repo on their TV, both installs are
+**the same plugin** when they have the same `id` and both pinned the **same author key**. Then
+switching it on or off, the approved hosts, the settings and passwords (still sealed end to end, per
+setting), and an uninstall sync between those devices both ways, exactly as for one address. Each
+device keeps the address it installed from and keeps updating from it; nothing is moved. An
+unsigned install on either side, or another key, keeps the exact-address rule: never merged, and
+neither ever receives the other's settings or passwords. Your manifest's own sealed `secrets` are
+bound to each repo and never travel between devices, so sign and seal each repo's manifest for that
+repo. If you publish the same plugin at two addresses (a move, a mirror), sign both with the same key.
+In the recommended list, an entry that names your key (`"signed": true, "authorKey": "<64 hex>"`)
+shows "Instalado" for someone who already has your plugin from your other repo; any other plugin
+with that `id` installed here makes the entry say "Ya tienes otro plugin con ese id" ("No disponible",
+nothing to install).
+
 **The workflow.**
 
 ```
@@ -623,7 +1192,7 @@ an update people accept without your key. It does not make the first install tru
 what the first-time line says), it does not protect a leaked key, and it does not hide your code.
 Keep using `secrets` for keys and tokens.
 
-## 4. The contract (apiVersion 1 to 5)
+## 4. The contract (apiVersion 1 to 6)
 
 Your entry file is one ES module that exports one `async` function for each capability you
 declared, and nothing is called that you did not declare:
@@ -637,6 +1206,7 @@ export async function resolve(ref) { /* -> Stream */ }
 export async function liveCategories() { /* -> Array<LiveCategory | Playlist> or Playlist */ }
 export async function liveChannels({ categoryId, cursor }) { /* -> { items: LiveChannel[], next? } */ }
 export async function guide({ channelIds, from, to }) { /* -> GuideEntry[] */ }
+export async function subtitles({ imdbId, tmdbId, kind, season, episode, title, year, languages }) { /* -> { lang, url, format?, label?, translated? }[] */ }
 ```
 
 (`kino.d.ts` has the same shapes as TypeScript declarations.)
@@ -659,12 +1229,17 @@ return plain data: strings, numbers, booleans, arrays and objects.
     nothing on a source that names things in another language.
   - `cursor` is `null`, except when the person asked for more results and your previous page said
     where to continue (see `Page` below).
+  - `within` (apiVersion 6, only for a plugin that declares `scopedSearch`) is present when the person
+    searches inside one of your "Ver más" pages: see [Searching inside a "Ver más" page](#searching-inside-a-ver-más-page-scopedsearch-apiversion-6).
 - `home()` gets `null`.
 - `browse(ref, cursor)` gets the `ref` of one of your Home rows (or a `ref` a previous page gave),
   and `cursor` `null` for the first page or the `next` of the page before.
 - `episodes(ref)` gets the `ref` of a `series` item, as you returned it.
 - `resolve(ref)` gets the `ref` of a `movie` item, the `ref` of an episode, or (apiVersion 2) the
   `ref` of a `live` item.
+- `subtitles(arg)` gets `{ imdbId?, tmdbId?, kind, season?, episode?, title?, year?, languages }` (see
+  [Subtitles for any title](#subtitles-for-any-title)) and returns an array shaped like a `Stream`'s
+  `subtitles`, each entry with an optional `label` and `translated`.
 
 ### What you return
 
@@ -686,7 +1261,11 @@ Stream     = { url: string, mime?: string, headers?: Record<string, string>,
                subtitles?: { lang: string, url: string, format?: "vtt" | "srt" }[],
                audioTracks?: { lang: string, url: string, label?: string }[],
                durationMs?: number, expiresInSeconds?: number,
-               drm?: { type: "widevine", licenseUrl: string, licenseHeaders?: Record<string, string> } }
+               drm?: { type: "widevine", licenseUrl: string, licenseHeaders?: Record<string, string> },
+               label?: string,                                                        // apiVersion 6
+               alternatives?: ({ url: string, mime?: string, headers?: Record<string, string>, label?: string }
+                               | { ref: string, label?: string })[],                  // { ref } from apiVersion 6
+               skip?: { openingStartMs?: number, openingEndMs?: number, endingStartMs?: number } }
 ```
 
 **How the pieces connect.** A `movie` item's `ref` goes to `resolve`. A `series` item's `ref` goes to
@@ -723,6 +1302,63 @@ A `next` (and a row's `ref`) is only kept when you declare `browse`; without it 
 line in the log. Cursors are opaque to Kino: a page number, an offset, a URL, at most 2048
 characters.
 
+#### Searching inside a "Ver más" page (`scopedSearch`, apiVersion 6)
+
+Every "Ver más" page (a Home row, a row of your section, one of your Categorías) has a search field at
+the top ("Buscar en esta categoría"). For every plugin, Kino filters the titles already loaded on that
+page by name (accents and case aside, every word anywhere in the title); with fewer than 24 matches it
+keeps loading the next pages of the same `ref` ("Buscando en más páginas…"), at most 10 pages or 300
+titles per round, and the person may ask for another round. A new query cancels the running one.
+
+Declare `"scopedSearch"` (apiVersion 6, together with `search`; nothing more to export, no consent line)
+to answer that search yourself, e.g. with your backend's search restricted to that category. Kino then
+calls your `search` with the usual query plus `within`, the page's browse `ref` exactly as you gave it:
+
+```js
+export async function search(query) {
+  if (query.within) {
+    const category = categoryOf(query.within);      // your own ref
+    if (!category) return null;                      // "can't search there": Kino filters the page itself
+    return searchCategory(category, query.q, query.cursor); // Item[] or Page, paged by your `next`
+  }
+  /* the plain search */
+}
+```
+
+`type` is always `"any"` there, and `season`, `episode`, `tmdbId` and `year` are `0`. The answer is
+checked like any search answer (the same caps, `adult` titles only while the 18+ code is unlocked), and a
+`Page`'s `next` pages it as the person scrolls. Kino falls back to its own filter when you answer `null`,
+throw, or have not answered after 6 s (the page then searches its own titles and drops your late answer;
+your call keeps the search limit of 15 s); a failure reaches the error board like any failed call, never
+with the query or the `ref`. Answering `null` is not a failure. `sdk/validate.mjs` warns when you declare `scopedSearch` and your
+entry never reads `within`; try it with `node sdk/run.mjs --within '<ref>' ./plugin.js search "texto"`.
+
+#### Describing other titles (`meta`, apiVersion 6)
+
+Declare `"meta"` and export `meta(query)` to fill in what Kino could not find about a title on its info page, whatever
+plugin listed it: a synopsis, a poster or background, genres, a year, a runtime, an episode list. Kino asks TMDB first and,
+for an anime, AniList; your answer only fills what they left empty, never replaces a value they gave (and never the title's
+own plugin's). It is the way to describe titles TMDB does not know, like `kitsu:` anime.
+
+```js
+export async function meta(query) {
+  // query: { type: "movie" | "series", ids: { imdb?, tmdb?, kitsu?, mal?, anilist? }, id?, lang? }
+  //   id: the title's own Stremio-style id in its source ("kitsu:1376", "tt0944947"), when it has one
+  //   lang: the person's language ("es")
+  const found = await lookUp(query.ids);
+  if (!found) return null;                         // not a title you know: no failure
+  return {
+    title, overview, poster, backdrop, year: "2011", genres: ["Drama"], runtimeMinutes: 57,
+    episodes: [{ season: 1, number: 1, title, overview, still, airDate: "2011-04-17", id: "tt0944947:1:1" }],
+  };
+}
+```
+
+Every field is optional. Images follow the same rules as an item's. `episodes[].id` is the episode's Stremio-style video
+id: a Stremio addon's title whose own listing failed can then play those episodes by it. Kino asks every `meta` plugin of
+the person at once, at most 6 s each, uses the first answer in install order, and remembers it for 30 minutes; a failure
+or a timeout is just no answer, and the page never waits for you.
+
 **`id` is stable, `ref` may change.** `id` is the identity of a title: the person's library,
 progress and "Continuar viendo" hang off it, so it must be the same every time the same title comes
 back, in every search and on every Home refresh. `ref` is opaque to Kino: it is just what your
@@ -744,10 +1380,10 @@ all or nothing.
 | `seasons` (in the `episodes` result) | Optional; at most 50. Each needs an `id` (same pattern as an item id; a repeated one is dropped), a non-empty `ref` of at most 4096 characters and a non-blank `title` (up to 200 characters), or it is dropped. `number` from 1 to 999 and `current` a boolean; a wrong one is ignored, not the season. Anything that is not a list is ignored. |
 | `id` | `^[A-Za-z0-9._~-]{1,128}$`. Anything else drops the item, so if your source's own ids have other characters (spaces, `/`, `:`, `%`), derive a stable id yourself, such as a slug. Repeated ids in one list are dropped. |
 | `ref` | A non-empty string of at most 4096 characters. |
-| `kind` | `"movie"`, `"series"` or (apiVersion 2) `"live"`. A `series` item from a plugin that does not declare `episodes` is dropped: it could never be opened; a `live` item from an apiVersion 1 plugin is dropped too (see [Live channels](#live-channels-apiversion-2)). |
+| `kind` | `"movie"`, `"series"` or (apiVersion 2) `"live"`; a `live` item stays in a `home` row only from apiVersion 6 (below it, it is dropped from Home). A `series` item from a plugin that does not declare `episodes` is dropped: it could never be opened; a `live` item from an apiVersion 1 plugin is dropped too (see [Live channels](#live-channels-apiversion-2)). |
 | Text fields | `title` is required and non-blank, up to 200 characters. `overview` up to 2000; `lang` and `quality` up to 20 (for example `"es"`, `"1080p"`); `year` up to 10 (a number is accepted and converted). Longer text is cut; the text of `SeriesInfo` and `Episode` is cut the same way (200 characters for titles, 2000 for overviews). |
 | Extra item fields | All optional; a wrong one is ignored, not the item. `genres` at most 5, each at most 30 characters; `badges` (shown as chips, e.g. `"HD"`, `"Latino"`) at most 3 of at most 20; `rating` from 0 to 10; `runtimeMinutes` from 1 to 1000; `ids.tmdb` a positive integer (Kino uses it to match your title with TMDB, to find it again from search, and to enrich its info page -- see below); `ids.imdb` matches `^tt\d{5,10}$` (also enriches a movie's info page when you have no `ids.tmdb`). An episode's `airDate` is `YYYY-MM-DD`. |
-| `adult` | An item with `adult: true` is dropped: Kino has no place behind its 18+ lock for plugin titles yet. |
+| `adult` | From apiVersion 6, `adult: true` marks an 18+ entry: Kino shows it only while the person's 18+ code is unlocked on that device (Ajustes ▸ Adultos), and hides it again when they lock it; below apiVersion 6 it is dropped. It applies on Home, in search, "Ver más", your section and Categorías. |
 | Images | `poster`, `backdrop` and `still` must be `http` or `https` URLs of at most 2048 characters, or they are ignored. Images are loaded by Kino directly and are **not** checked against `hosts` (they are display only), and Kino does not send your headers or cookies with them. This is the one exception to the host rule, with one limit: an image on the home network, a private or reserved IP address, or a local name (`localhost`, `.local`, `.lan`, …) is ignored too, unless it is on a server the person typed in your settings. A public IPv4 address is fine. |
 
 **`ids.tmdb` enriches the info page, not only matching.** When TMDB has this exact title (matched by
@@ -821,6 +1457,20 @@ It does **not** add a poster, a backdrop or seasons from TMDB -- those stay exac
   `Transfer-Encoding` and `Connection` are ignored.
 - `subtitles`: at most 30, each `{ lang, url, format? }`. `lang` is a short language code such as
   `"es"` (up to 20 characters; blank becomes `"und"`), `format` is `"vtt"` or `"srt"`.
+- `alternatives`: at most 8, each `{ url, mime?, headers? }` -- other copies of the same video, best first. When
+  `url` cannot play on the device (a codec it has no decoder for, a broken or unsupported file) or is gone (404, 403),
+  Kino moves on to the next alternative by itself, at the same spot, and only shows an error once none is left. A lost
+  network is not a reason to move on: that is retried as usual. Each entry is checked exactly like `url`, `mime` and
+  `headers`; a bad one is dropped and the rest still count. They share the stream's `subtitles` and `audioTracks`.
+  Ignored next to `drm`, with `signing` (`alternateHosts` is a signed stream's failover) and for a live channel. Return
+  them when your source offers several files of one title (other
+  servers, resolutions, encodes): a device that cannot decode the first one still gets to watch.
+- `label` (apiVersion 6): the Stream's own short name, and each alternative may carry one too -- e.g.
+  `"Latino · Streamwish"`. Trimmed; at most 48 characters, no control characters, or it is dropped (the copy still
+  plays). When a Stream has two or more copies the player shows them all, by label, in a **Servidor** section at the
+  top of its "Audio y subtítulos" menu (phone and TV, reachable with the D-pad), where the person can switch at any
+  moment and keep watching from the same spot; a copy without a label shows as "Opción 2", "Opción 3"… Labels also go
+  to the plugin's log, with the host only (never a URL or a token). See [Labelled and lazy copies](#labelled-and-lazy-copies-apiversion-6).
 - `audioTracks`: at most 8, each `{ lang, url, label? }` -- a dub or an alternate mix your source
   serves as its own file, separate from the video. Checked exactly like a subtitle: `url` must be
   `https` on a declared host, or the person's own server exactly as typed; a bad entry is dropped and
@@ -839,6 +1489,21 @@ It does **not** add a poster, a backdrop or seasons from TMDB -- those stay exac
   };
   ```
 - `durationMs` is optional, in milliseconds.
+- `skip` is optional: where THIS file's opening and ending are, in milliseconds from its start --
+  `{ openingStartMs?, openingEndMs?, endingStartMs? }`. Kino shows its "Saltar intro" button from
+  `openingStartMs` (0 when left out or `null`) to `openingEndMs`, and "Saltar outro" (to the next episode) from
+  `endingStartMs`. Every value must be a finite number between 0 and `durationMs` (or 24 h when you
+  give no `durationMs`); the opening needs its `openingEndMs`, after its start; `endingStartMs` must
+  not be before the opening's end. A bad part is dropped and the rest still count; a bad `skip` never
+  stops the stream. Send times for the exact file you return: a different cut of the same episode
+  (an extra logo, a recap trimmed) has its opening somewhere else. Kino keeps them as the episode's
+  markers, also for a downloaded copy, and they sync to the person's other device. A correction the
+  person makes by hand always wins over yours; yours win over the community times Kino looks up on
+  its own for anime (AniSkip), which is not asked at all when you send `skip`. Ignored for a live
+  channel. Older Kino versions ignore the field.
+  ```js
+  return { url: videoUrl, durationMs: 1_420_000, skip: { openingStartMs: 62_000, openingEndMs: 152_000, endingStartMs: 1_290_000 } };
+  ```
 - `expiresInSeconds` (30 to 86400) says when your URL may stop working. If playback fails after that
   long, Kino calls `resolve` once more and continues where the person was.
 - **DRM only when declared.** A stream carrying any of `drm`, `license`, `licenseUrl`, `drmLicenseUrl`,
@@ -852,14 +1517,16 @@ It does **not** add a poster, a backdrop or seasons from TMDB -- those stay exac
 
 #### Live channels (apiVersion 3)
 
-With the `channels` capability ([§3](#channels-in-the-en-vivo-tab-apiversion-3)) Kino calls three
-more functions. Their arguments:
+With the `channels` capability ([§3](#channels-in-the-en-vivo-tab-apiversion-3)) Kino calls up to
+four more functions. Their arguments:
 
 - `liveCategories()` gets `null`.
 - `liveChannels({ categoryId, cursor })` gets the `id` of one of your categories, and `cursor` `null`
   for the first page or the `next` of the page before.
 - `guide({ channelIds, from, to })` gets at most 50 of your channel ids and a window of at most
   24 hours: `from` and `to` are epoch milliseconds.
+- `liveSearch({ query })` (optional) gets what the person typed in En vivo's search, trimmed, at
+  least 2 characters.
 
 They return:
 
@@ -880,7 +1547,8 @@ A plugin can give its channels in three ways, and mix them:
    like a `live` item's, and its Stream plays as live.
 2. **A channel with an inline `stream`.** A `Stream` checked by the same rules as `resolve()`'s
    answer; it plays with no call to your plugin. A channel whose `stream` is refused is dropped. With
-   both `ref` and `stream`, the stream plays and the `ref` is only the fallback. A channel with
+   both `ref` and `stream`, the stream plays and the `ref` is only the fallback (but a signed inline
+   stream is set aside, and the `ref` plays). A channel with
    neither is dropped. Some channels only answer a known player: give the `Stream` a `headers` with
    the `User-Agent` (or `Referer`) it insists on, and the player sends it with every request for that channel.
 3. **A playlist.** Put `{ playlist: { ... } }` entries next to your categories in the
@@ -894,7 +1562,12 @@ A plugin can give its channels in three ways, and mix them:
    credentials and go only to the list's host, never to the many hosts the channels are on. A header an
    M3U entry names itself (`#EXTVLCOPT:http-user-agent=...`, `#EXTHTTP:{"User-Agent":"..."}`, a
    `url|User-Agent=...&Referer=...` suffix, or `#KODIPROP` stream headers) wins; only `User-Agent`,
-   `Referer`, `Origin` and `Cookie` are kept, and a value with a control character is dropped. Kino versions before the one that added
+   `Referer`, `Origin` and `Cookie` are kept, and a value with a control character is dropped. The list
+   may be UTF-8, Latin-1 or UTF-16 (with or without a BOM); `#EXTINF` attributes may be double-quoted,
+   single-quoted or bare (`tvg-id=abc`). A list over 20 MB, or a guide over 50 MB, is not refused: Kino
+   keeps its start, up to its last whole line (`node sdk/run.mjs live playlist` says when). A guide
+   `<programme>` without `stop` ends where the next programme of its channel starts, or one hour
+   after its start when none follows. Kino versions before the one that added
    `streamHeaders` ignore the field, so the list plays without it. `refreshHours` is 1 to 168 (default 12); `hideGroups` lists
    group titles not to show (case doesn't matter, at most 50). With `resolve: true`, each entry plays
    through your `resolve(<entry url>)`, for lists whose links need a fresh token. At most 10 per
@@ -915,15 +1588,41 @@ The rules:
   entries and dropped. A repeated `id` in one answer is dropped. `title` is required.
 - `country` is an ISO 3166 two-letter code (`"CO"`), informational; anything else is ignored.
   `number` is 1 to 9999 (anything else counts as no number); `logo` follows the poster rules;
-  `categoryId` is optional and informational (a channel is listed under the category
-  `liveChannels` was asked for); one that is not a valid id becomes empty.
-- Kino pages `liveChannels` until `next` is missing, repeats, or brings nothing new, at most 10
-  pages per category.
+  `categoryId` is optional and informational in `liveChannels` (a channel is listed under the
+  category `liveChannels` was asked for); one that is not a valid id becomes empty. In a
+  `liveSearch` hit it is how Kino knows whether the hit is 18+ (see below).
+- Kino pages `liveChannels` until `next` is missing, repeats, or brings nothing new. A category's
+  first listing asks at most 10 pages; when the last one still has a `next`, Kino keeps it and asks
+  5 more pages each time the person scrolls near the end of the list, up to 10,000 channels (or 200
+  pages) per category. Older Kino versions stop at the first 10 pages and never ask `liveSearch`.
+- `liveSearch` is optional, for a catalog too big to list whole. Kino asks it from En vivo's search
+  (the phone's field, the TV guide's and the TV channel drawer's) when the person stops typing,
+  only while some of your channels were never listed (a category not opened yet, or one with
+  pages left), and keeps each answer 10 minutes per query. It returns channels exactly like a
+  `liveChannels` page (`next` is ignored), at most 100 kept, with the same `id` a listed channel
+  has, so favourites and recents match. Kino still shows only the ones whose name contains what
+  was typed (or whose number is it). A channel found this way plays like a listed one, and a
+  favourite Kino no longer has in memory nor in its cache is looked up again by name through
+  `liveSearch` (one call) before the first pages of your first 10 categories; without `liveSearch`,
+  only those first pages are looked at, never the pages after them. It runs as a background call: a
+  slow search never marks the plugin "No responde". Export it only when you can really search: an
+  empty answer is taken as "nothing found", and Kino keeps saying some channels were not loaded.
+  A preheat of the next channel (Kino resolving a neighbour ahead while one plays) never asks
+  `liveSearch`: it looks only through your listings, and the zap itself asks when needed.
+- **Mark every `liveSearch` hit** (apiVersion 6, when you have an 18+ category): a hit names no
+  listing, so give it `adult: true`/`adult: false`, or the `categoryId` of the category it belongs
+  to. A hit with `adult: true` or the `categoryId` of an 18+ category is 18+; one with the
+  `categoryId` of a plain category, or `adult: false`, is plain. A hit with neither counts as 18+
+  for a plugin that has any 18+ category, and, when your categories can't be read (`liveCategories`
+  failed), every hit not marked `adult: false` counts as 18+. While the 18+ code is locked, Kino
+  leaves those hits out of the search, does not open them and keeps them out of "Recientes".
+  `node sdk/run.mjs <plugin dir> live search <query>` and `sdk/validate.mjs --run liveSearch` mark
+  the hits the same way and warn about the ones that carry neither mark.
 - Kino caches your categories and channels for 1 hour and your guide for 30 minutes.
 - `guide` is optional. Kino keeps entries for the channels it asked for, with `end` after `start`,
   inside the window, at most 100 per channel and one per start time. A `guide` that fails or is not
   exported is simply not asked again for 30 minutes: your channels still list.
-- An `adult: true` category or channel is dropped.
+- `adult: true` on a category or a channel: from apiVersion 6, `adult: true` marks an 18+ entry: Kino shows it only while the person's 18+ code is unlocked on that device (Ajustes ▸ Adultos), and hides it again when they lock it; below apiVersion 6 it is dropped. Every channel of an 18+ category counts as 18+, and an 18+ channel never enters "Recientes".
 
 ### Errors people understand
 
@@ -938,7 +1637,7 @@ if (r.status === 401) throw kino.error("auth_required", "la sesión venció");
 <!-- contract:errors:start -->
 | `kino.error` code | What the person sees |
 | --- | --- |
-| `auth_required` | "Configura {plugin} en Ajustes ▸ Plugins", with a button to its Configurar screen |
+| `auth_required` | "Configura {plugin} en Ajustes ▸ {plugin}" when your plugin declares settings (its own tab in Ajustes), else "Configura {plugin} en Ajustes ▸ Plugins" ("Menú ▸ Plugins" on the phone), with a button to its Configurar screen |
 | `not_found` | "No se encontró en {plugin}" |
 | `geo_blocked` | "Este contenido no está disponible en tu región" |
 | `rate_limited` | "{plugin} está limitando las peticiones; intenta en unos minutos" |
@@ -948,12 +1647,74 @@ if (r.status === 401) throw kino.error("auth_required", "la sesión venció");
 Your message is a detail for the log (cut at 200 characters); the person reads Kino's sentence. An
 unknown code becomes a plain error.
 
+When Kino's sentence says too little (a chapter that was taken down, an account to link again), pass
+your own sentence for the person as a third argument:
+
+```js
+throw kino.error("not_found", "portal100006", { userMessage: "Este capítulo ya no está disponible." });
+throw kino.error("auth_required", "aaa100083", {
+  userMessage: "Tu cuenta se abrió en otro dispositivo. Vuelve a intentarlo, o vincúlala de nuevo.",
+});
+```
+
+Kino shows it **instead of** its own line, always as "Mensaje de <your plugin's name>: <your
+sentence>" ("Mensaje de Demo: Este capítulo ya no está disponible."), only when all of this holds;
+otherwise the person reads Kino's line and your sentence goes nowhere (it is not logged either; the
+detail is):
+
+- your plugin's name can introduce it: only the characters below, no `:`, no digit glued to a letter,
+  nothing that spells Kino (so a plugin named `M3U` or `Cuevana3` always shows Kino's line; `Cuevana 3`
+  is fine);
+- the code is one of the five above (Kino always words `timeout`, `network`, `host_not_allowed`,
+  `crypto_error` and the rest itself);
+- it is 1 to 160 characters once trimmed, made only of the letters of Basic Latin and Latin-1 (what
+  Spanish, Portuguese and English write: á é í ó ú ü ñ ç ã õ â ê ô à è…, but not ø æ ð þ ß), the
+  digits 0-9, the plain space and `` . , : ; ¿ ? ¡ ! ' ’ ‘ “ ” « » ( ) % - – — ▸ `` (a `;` only before
+  a space): so no other script, look-alike letter, small capital, line break, tab, other kind of
+  space, invisible character, emoji or `@`;
+- it reads as plain words: at least two words, no URL, no error prefix (`TypeError:`, `[Tag]`), no
+  `undefined`/`null`/`NaN`, and it doesn't end in `:` `,` `;` or `-`;
+- fewer than 6 digits in all, whatever separates them (no phone or account number, and so no full
+  date with its year), and no digit glued to a letter (`en 5 minutos` is fine, `5minutos` is not);
+- no domain: a dot glued to a letter (`site.app`), a dot after a space (`site .app`), a dot followed
+  by a lowercase word of 2 to 6 letters (`site. app`), `www`, or `punto`/`dot` glued to or followed
+  by a domain ending (`punto com`, `puntodev`; "a punto de volver" and "en este punto es mejor" are fine:
+  `es`, `la`, `me` and `to` are not read as endings);
+- it never spells Kino: read with `1`, `l`, `!`, `¡` as `i`, `0` as `o` and every non-letter dropped,
+  it holds no `kino` anywhere (so avoid a word like "Kinoshita");
+- it asks for no credentials, money or contact outside Kino, read word by word (a word split on
+  purpose is read whole: `N e q u i`, `Ne qui`, `con tra seña`, `What s app`, `pun to com`): no `pag…` (pago,
+  pagues, págalo; "página" is fine),
+  `abon…`, `recarg…`, `transfer…`, `consign…`, `deposit…`, `contraseñ…`, `passw…`, `clave…`,
+  `credencial…`, `token…`, `tarjeta`, `PIN`, Nequi, Daviplata, WhatsApp, Telegram, a `código` that
+  came by SMS or is a verification code (`verification…`; "Verifica tu conexión" is fine): your own
+  settings are the only place for those (`recarg…`
+  also refuses "Recarga la lista": say "Vuelve a cargar");
+- it holds none of the passwords the person typed in your settings (checked against your plugin's
+  stored values; while they can't be read, the sentence is not shown), nor any sealed secret's value.
+  Never echo what the person typed, in any form.
+
+A plugin that uses `userMessage` to ask people for money, credentials or contact outside Kino is
+removed from the plugin catalog.
+
+Write it for the person, in their language; Kino doesn't translate it. It takes the very place Kino's
+own line takes, so it never changes what the screen does: `auth_required` keeps the button to your
+Configurar screen; `geo_blocked` shows the player's "No se puede reproducir" dialog; the other codes
+show Kino's error line (on a live channel the person keeps zapping). It is also the reason under your
+plugin's Home row and in the search notices. Your settings form and your section pages show it for
+`not_found`, `unavailable` and `rate_limited`, and keep their own generic text for `auth_required`
+and `geo_blocked`. One thing still wins over it, whatever the code: a host the person
+refused for this call (they can act on that). The sentence counts only for the call that built the
+error: build it where you throw it, not once at the top of your module. The Node kit (`run.mjs`)
+prints what the person would read, or why the sentence is not shown. Kino builds older than this
+ignore the third argument and show their own line, so it is always safe to pass.
+
 ## 5. The `kino` API
 
 `kino` is a global object, frozen, always there. Nothing else from the outside world is.
 
 ```js
-kino.apiVersion   // 5 -- the highest apiVersion this build of Kino understands, not your manifest's
+kino.apiVersion   // 6 -- the highest apiVersion this build of Kino understands, not your manifest's
 kino.appVersion   // the version of Kino, for example "1.42.0"
 kino.lang         // "es-CO"
 ```
@@ -1087,8 +1848,66 @@ kino.crypto.uuid()
 - A wrong key size, a bad padding or a failed GCM tag throws; it never returns garbage silently.
 - A `kino.secret` marker is only accepted as the whole `key` of an AES `encrypt`/`decrypt`, or as
   part of an HMAC `key` or `pbkdf2`'s `password`/`salt` — never in `data`, `iv` or `aad`, nor as a
-  `des-ede3` key. See
+  `des-ede3` key. A [typed cipher key](#typed-cipher-keys-apiversion-6) (apiVersion 6) is the
+  exception: the whole key of any cipher, `des-ede3` included, and nothing else. See
   [Sealed secrets](#sealed-secrets-apiversion-4) for why.
+
+#### Key pairs, signatures and key agreement (apiVersion 6)
+
+Some players prove they are a real player by signing a challenge: they make a key pair, sign what the
+server sends with the private key and send back the public key. `kino.crypto` does that with keys
+that never leave Kino:
+
+```js
+// Node:      const { privateKey, publicKey } = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+// WebCrypto: await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign"]);
+async function createAttest(challenge) {
+  const { privateKey, publicKey } = kino.crypto.generateKeyPair({ type: "ec", namedCurve: "P-256" });
+  // WebCrypto's ECDSA signature is r||s (64 bytes on P-256): format "ieee-p1363". Node's default is "der".
+  const signature = kino.crypto.sign({ key: privateKey, data: challenge, hash: "SHA-256", format: "ieee-p1363" });
+  return { publicKey: publicKey.jwk, signature };   // signature is base64; pass outputEncoding: "hex" for hex
+}
+```
+
+- `generateKeyPair({ type: "ec", namedCurve: "P-256" | "P-384" })`, `{ type: "ed25519" }` or
+  `{ type: "x25519" }` answers `{ privateKey, publicKey }`. `publicKey` is `{ type, namedCurve?, jwk,
+  spki, raw }`: the JWK object in WebCrypto's key order (`{ crv, kty, x, y }`, base64url), the DER
+  SubjectPublicKeyInfo as base64, and the raw key as base64 (`04||x||y` for `ec`, 32 bytes otherwise).
+- `privateKey` is a handle, `{ type, namedCurve?, handle }`: the key itself stays inside Kino. A handle
+  works only in the sandbox that made it: not in `sign()`'s signing lane, not after the plugin restarts
+  (it closes after a few idle minutes), never on another device, so make the key in the call that uses
+  it. At most 64 live at once; a new one drops the oldest. Private keys cannot be imported or exported.
+- `sign({ key, data, encoding?, hash?, format?, outputEncoding? })` reads `data` as `utf8` unless you
+  say `hex` or `base64`, and answers base64. `ec`: `hash` `"SHA-256"` (default) or `"SHA-384"`, `format`
+  `"der"` (default) or `"ieee-p1363"` (64 bytes on P-256, 96 on P-384). `ed25519`: 64 bytes, no `hash`.
+- `verify({ key, data, signature, signatureEncoding?, hash?, format? })` answers `true`/`false`; a
+  malformed signature is `false`. `key` is a public key (yours, or a peer's from `importKey`), a bare
+  `{ jwk }`, or your own private key.
+- `importKey({ format: "jwk", key: jwkObject })`, `{ format: "spki", key: base64 }` or `{ format: "raw",
+  key: base64, type, namedCurve? }` answers a public key in the same shape; a point off its curve throws.
+- `deriveSharedSecret({ privateKey, publicKey })` is ECDH (both `ec` on the same curve: 32 bytes on
+  P-256, 48 on P-384) or X25519 (32 bytes), base64 by default. Hash it (or HKDF it with `hmac`) before
+  using it as a key.
+- No `kino.secret` marker is accepted anywhere in these five functions.
+
+| Node / WebCrypto | `kino.crypto` |
+| --- | --- |
+| `generateKeyPairSync("ec", { namedCurve: "P-256" })` / `subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, …)` | `generateKeyPair({ type: "ec", namedCurve: "P-256" })` |
+| `generateKeyPairSync("ed25519")` / `generateKeyPairSync("x25519")` | `generateKeyPair({ type: "ed25519" })` / `{ type: "x25519" }` |
+| `publicKey.export({ format: "jwk" })` / `subtle.exportKey("jwk", publicKey)` | `publicKey.jwk` |
+| `publicKey.export({ format: "der", type: "spki" }).toString("base64")` / `exportKey("spki", …)` | `publicKey.spki` |
+| `subtle.exportKey("raw", publicKey)` | `publicKey.raw` (base64) |
+| `crypto.sign("sha256", data, privateKey)` | `sign({ key: privateKey, data, hash: "SHA-256" })` (DER) |
+| `crypto.sign("sha256", data, { key, dsaEncoding: "ieee-p1363" })` / `subtle.sign({ name: "ECDSA", hash: "SHA-256" }, …)` | `sign({ key, data, hash: "SHA-256", format: "ieee-p1363" })` |
+| `crypto.sign(null, data, ed25519Key)` / `subtle.sign("Ed25519", …)` | `sign({ key, data })` |
+| `crypto.verify(…)` / `subtle.verify(…)` | `verify({ key: publicKey, data, signature, … })` |
+| `createPublicKey({ key: jwk, format: "jwk" })` / `subtle.importKey("jwk", …)` | `importKey({ format: "jwk", key: jwk })` |
+| `crypto.diffieHellman({ privateKey, publicKey })` / `subtle.deriveBits({ name: "ECDH" or "X25519", public }, …)` | `deriveSharedSecret({ privateKey, publicKey })` |
+
+Buffers become strings: pass `encoding`/`outputEncoding` (`hex` or `base64`) where Node takes or gives a
+Buffer. There is no `kino.crypto.generateKeyPairSync`: a Node or browser library calling it must be
+adapted to these calls. A plugin that uses them should declare `"apiVersion": 6`, so a Kino without
+them refuses to install it (`validate` says so).
 
 <!-- contract:crypto:start -->
 | Function | Algorithms |
@@ -1097,13 +1916,123 @@ kino.crypto.uuid()
 | `encrypt`, `decrypt` | `aes-128-cbc`, `aes-192-cbc`, `aes-256-cbc`, `aes-128-ecb`, `aes-192-ecb`, `aes-256-ecb`, `aes-128-ctr`, `aes-192-ctr`, `aes-256-ctr`, `aes-128-gcm`, `aes-192-gcm`, `aes-256-gcm`, `des-ede3-cbc`, `des-ede3-ecb` |
 | `pbkdf2` | `sha1`, `sha256`, `sha512` |
 | encodings | `utf8`, `hex`, `base64` |
+| `generateKeyPair` (apiVersion 6) | `ec`, `ed25519`, `x25519`; `ec` on `P-256`, `P-384`; at most 64 private keys alive per runtime (a new one drops the oldest) |
+| `sign`, `verify` (apiVersion 6) | ECDSA with `SHA-256`, `SHA-384` as `der` or `ieee-p1363`; Ed25519; a signature at most 512 bytes |
+| `importKey`, `deriveSharedSecret` (apiVersion 6) | public keys as `jwk`, `spki`, `raw`; ECDH (same curve) and X25519 |
 <!-- contract:crypto:end -->
 
-### `kino.sleep(ms)` and `kino.error(code, message?)`
+### `kino.browser.capture(url, options?)` (apiVersion 6)
+
+Only with `"browser": true` in the manifest, approved by the person, and only inside a `resolve` the person started:
+they pressed play, or they started a download (its copy choice included). Anywhere else -- another function, or a
+`resolve` Kino runs in the background, such as an availability check -- it throws `not_allowed`; Kino never resolves a
+browser plugin's live channels ahead while the person zaps. A download's capture never waits for another page: if one
+is open it gets `busy` at once (that copy is skipped). It opens `url` in a hidden web view on the device, lets the page run (media muted), presses
+play, and answers the video requests the page made:
+
+```js
+export async function resolve(ref) {
+  const page = await kino.browser.capture(`https://example.com/watch/${ref}`, { timeoutMs: 18000 });
+  const [first, ...rest] = page.media;              // HLS/DASH first, then MP4
+  return {
+    url: first.url,
+    headers: first.headers,                          // Referer, User-Agent (+ Origin, Cookie): send them back
+    alternatives: rest.map((m) => ({ url: m.url, headers: m.headers })),
+    subtitles: page.subtitles.map((s) => ({ url: s.url, lang: "es" })),
+  };
+}
+```
+
+| option | |
+| --- | --- |
+| `timeoutMs` | 1 to 25000 ms; default 18000. The capture ends at the first video request (plus 1 s for its siblings; manifests are returned before MP4s whatever the order they came in) or here. |
+| `headers` | Extra headers for the first page load only (a `Referer` an embed insists on). `Cookie`, `Host` and the like are dropped. |
+| `match` | A regular expression (case-insensitive, 1-500 characters) for what counts as the video; default: `.m3u8`, `.mpd`, `.mp4`, `master.txt`, `videoplayback`, `/hls/`. |
+| `autoplay` | Default `true`: start any video, click the usual play/server buttons a few times, and tap the middle of the page every 2 s (a tap reaches a cross-origin embed's player). |
+
+The answer is `{ media: [{ url, mime?, headers }], subtitles: [{ url }], finalUrl }`, at most 8 media and 10
+subtitles. A video request is **never fetched by the page**: Kino holds it (the page gets an empty answer), so a
+single-use or session-bound token in its address is still unspent when the player asks. Its `headers` are the ones
+the page's request carried (Referer, Origin, User-Agent, Accept-Language, a token header…, at most 12; never `Range`,
+`Accept-Encoding` or the app's package) plus the page's cookies for that address: return them as the Stream's
+`headers` and the player is served what the page would have been. Errors carry a code: `browser_unavailable` (this device has no WebView -- some TV boxes -- and always in
+the Node kit), `timeout` (the page showed no video), `blocked` (the start host is not yours, not https, or resolves
+into the home network; or the page asks for a human -- a CAPTCHA, ALTCHA, Turnstile, hCaptcha, "Confirme que es
+humano" -- which Kino never tries to solve: the capture ends as soon as it shows, so move on to your next server), `busy` (another page is open; one at a time in the whole app), `not_allowed` (not approved, not in `resolve`, or a
+`resolve` nobody started), and
+`invalid_request`. Try a cheaper path first (a `kino.fetch` that finds the address in the HTML) and keep the
+capture for what needs it; when one server fails, try the next.
+
+Each page starts with no cookies or storage and everything is wiped when it closes; nothing is shared with
+`kino.cookies` or with any other plugin. The page cannot open windows, download files, leave http(s), read files,
+ask for location, camera or microphone, or show dialogs, and there is no bridge from the page to your code: what
+you get back is only what the page requested.
+
+### `kino.browser.page(url, options?)` (apiVersion 6)
+
+Only with `"browser": "pages"` in the manifest (apiVersion 6), approved by the person, and only from `search`, `home`,
+`browse`, `episodes`, `section`, `categories` or `resolve` while the person is using the app: their own search, the
+Home row or section they opened, a list, a title, its categories, their play (a `resolve` also for a download they
+started). A call Kino makes on its own (a background refresh, the live zap's resolve ahead, sync, an update check)
+gets `not_allowed`, and so does a list's read while the app is not in front. It loads `url` in the same hidden web
+view as [`kino.browser.capture`](#kinobrowsercaptureurl-options-apiversion-6) -- same start-host rule, same proxy and
+home-network refusal, fresh cookies and storage, one page at a time in the whole app -- and returns the page's HTML
+once it is loaded, is **no longer the site's browser check page** (Cloudflare's "Just a moment…", its `cf-chl`
+markers) and matches `waitFor`:
+
+```js
+// A site whose every kino.fetch answers Cloudflare's 403 "Just a moment…" page.
+const BASE = "https://example.com";
+
+async function read(url, waitFor) {
+  const r = await kino.fetch(url);
+  if (r.ok && !/just a moment|cf-chl/i.test(r.text)) return r.text;       // cheap path first
+  const page = await kino.browser.page(url, { waitFor, timeoutMs: 12000 });  // under search's 15 s budget
+  return page.html;
+}
+
+export async function search(query) {
+  try {
+    const html = await read(`${BASE}/?s=${encodeURIComponent(query.q)}`, "class=\"item");
+    return kino.html.select(html, "article.item").map(/* … your items … */);
+  } catch (e) {
+    // blocked: the site wants a person (a captcha) or never let the device in. Kino never solves one: give up quietly.
+    if (e.code === "blocked" || e.code === "busy" || e.code === "rate_limited") return [];
+    throw e;
+  }
+}
+```
+
+| option | |
+| --- | --- |
+| `timeoutMs` | 1 to 25000 ms; default 15000. It counts inside your call's own limit, which ends the read when it runs out: pass less than what is left of it -- about 12000 in `search` (15 s for the whole call, your other fetches included), about 16000 in `home`, `browse`, `episodes`, `section` and `categories` (20 s). In `resolve` (75 s for a browser plugin) the full 25000 fits. |
+| `waitFor` | A JavaScript regular expression (a string or a `RegExp`, 1-500 characters, matched case-insensitively against the HTML inside the page): the page is returned only once it matches. Without it, as soon as the page is loaded and past its check page. Use it for pages that fill in their list with scripts. |
+
+The answer is `{ html, finalUrl, status, truncated }`: the doctype and the DOM's `outerHTML` after the page's own
+scripts ran (at most 2,000,000 characters, the same as `kino.html.select` takes; `truncated` is `true` when it was
+cut), the top page's last address, and the HTTP status of its last load (200 unless that load answered an error).
+
+**Kino never solves, clicks or ticks a captcha.** A page read never touches the page at all -- no click, no tap, no
+key, no scroll, no autoplay helper -- so the only check that can pass is one that completes by itself, the way it
+does when a person opens the site: Cloudflare's automatic check usually does, in a few seconds. A page that asks for
+a human -- a CAPTCHA, hCaptcha, a reCAPTCHA checkbox, ALTCHA, "Verify you are human", "Confirme que es humano" --
+ends the read at once with `blocked`, and a page still on its check page when `timeoutMs` runs out is `blocked` too
+(the site did not let the device in). Do not retry it in a loop; fall back to another source or return nothing.
+
+Errors carry a code: `browser_unavailable` (no WebView on this device, and always in the Node kit -- keep a plain
+`kino.fetch` path so the kit can still run your plugin), `timeout` (the page did not load, or `waitFor` never
+matched), `blocked` (above, or the start host is not yours, not https, or resolves into the home network), `busy`
+(another hidden page is open; a list's read waits up to 8 s for its turn, and the person pressing play ends it),
+`not_allowed` (no approved `"browser": "pages"` -- `true` is capture-only --, another function, or nobody is using the app), `rate_limited` (more
+than 20 page reads in a minute by this plugin: a site is never hammered through the hidden browser) and
+`invalid_request`. Each read opens a fresh page, so cache what you read with `kino.storage` when you can.
+
+### `kino.sleep(ms)` and `kino.error(code, message?, { userMessage }?)`
 
 `await kino.sleep(1500)` waits 0 to 5000 ms (for a site that rate-limits you); the time counts
 inside the call's own limit. `kino.error` builds the typed errors of
-[section 4](#errors-people-understand).
+[section 4](#errors-people-understand); its optional `{ userMessage }` is your own sentence for the
+person, shown under the rules there.
 
 ### `kino.config`
 
@@ -1160,8 +2089,59 @@ export async function home() {
 ### `kino.log(...args)`
 
 Also `console.log`, `console.info`, `console.warn` and `console.error`: they all go to the log
-(tag `KinoPlugin` in `adb logcat`), objects are written as JSON, and a message is cut at 2000
+(tag `KinoPlugin` in `adb logcat`; `KinoPlugin/<your id>` in a debug build of Kino, or in any build when your manifest
+says `"debug": true`), objects are written as JSON, and a message is cut at 2000
 characters. Under the Node kit they go to stderr.
+
+When a call of a plugin whose manifest says `"telemetry": true` or `"verbose"` (apiVersion 6) **fails**
+(it throws, times out, returns something unusable, including `sign`, `settingsStatus`, `action` and
+`validateSettings`), the lines it logged during that call — the last 30, each cut at 300
+characters — travel with the failure report to the maintainers' error tracker as `plugin_log`, so a
+`kino.log("home: status", r.status)` before the throw is how you see why it failed on someone else's
+phone. Each report is tagged with your plugin's id and version. At most one report per function and
+kind of failure an hour. Nothing is sent for a call that succeeds, and no line of any plugin that does
+not declare `telemetry` (recommended or not, a converted Nuvio scraper): for those Kino only notes that
+the call failed (your id and version, the function, the kind of failure). Today a declared plugin's lines
+are always sent; a later Kino build will let the person turn "Enviar registros de errores" off on each
+device, and then nothing is sent while it is off. Before it leaves the device
+every line has URLs, hostnames, IPs, e-mails, long ids, long hex/base64 runs, credential-shaped text,
+the person's setting values and the text of their search or title removed, and the whole is capped at
+2 KB (the newest lines win). Still: log what happened (a status, a step, a count), never what the
+person typed or a secret, and never a setting's value. Works on every `apiVersion`.
+
+**`kino.log.report(...args)`** (apiVersion 6, with `"telemetry": true`) writes a line like `kino.log` and also
+tells the error tracker that your plugin served a **degraded** result, even though the call worked: it fell back to a
+shared account, used a backup source, trimmed a list. The line's first word names the area, and must be a namespaced
+word of lowercase letters, digits, `_` and `:` with at least one `_` or `:`, up to 24 characters
+(`kino.log.report("myplugin:session", "shared_fallback", "tries=2")` is area `myplugin:session`); any other first word
+(a bare word, anything with a dot, `@` or `/`, or one that holds one of the person's values) is filed as `other`. At most
+one report per plugin and area an hour and 3 per plugin until Kino restarts, sent as a warning; the whole line is
+scrubbed like any log line, the text of the call running at the time included. Without `telemetry` (or, once that switch
+exists, with it off) it is just a log line. Report what happened in codes and counts, never values that came from a response.
+
+### Playback metrics and problem reports
+
+Kino measures every playback of a plugin stream (a film, a chapter, a live channel) and every cast of one to a TV, with
+no code in your plugin. Each playback gets one record: how long `resolve` took, the time to the first frame (the zap
+time for a channel), how the player reached the stream (`direct`, `proxy`, `signed_proxy`, `remux`), the video decoder
+and its switches, resolution and bitrate changes, rebuffers and the time spent stalled, player errors by class with
+their HTTP status, retries and their reason (`expired`, `conflict`, `network`, `cut`…), and for a request-signed stream
+`sign` p50/p95/max and timeouts per playlist and segment, fetch p50/p95 and errors per host **index** (0 = the stream's
+own host, 1… = its `alternateHosts`). Detectors watch for what a viewer feels: no first frame in 10 s, a frozen picture,
+long stalls, dropped-frame bursts, audio underruns or sink errors, audio and video drifting apart, the audio track lost,
+decoder errors, falling behind the live window, HTTP errors per segment class; and for a cast the receiver's load
+timeouts, errors and idle reasons, a remux that stopped, the TV starting far from the phone's position, and a session
+that dropped. Nothing they write holds a URL, a host, a token or anything the person typed: only numbers and Kino's
+own words.
+
+Where it goes:
+- your plugin's **Registro** (with `"debug": true`), one `kino:play …` line per milestone and a summary line;
+- **logcat** under the tag `KinoPlay` in a debug build of Kino, or in any build with `"debug": true`
+  (`adb logcat -s KinoPlay KinoPlugin/<your id>` shows Kino's lines and yours together);
+- the **error tracker**, only with `telemetry` (and, once that switch exists, while the person leaves it on): with `true`, one summary per playback that
+  ended on an error the person saw; with `"verbose"`, also a quarter of the playbacks that went well, and one event per
+  problem or edge case (at most 60 per plugin until Kino restarts, one a minute per area). Failure events carry the
+  Kotlin exception's stack and, when your script threw, its own stack frames (`at fn (plugin.js:12:5)`, frames only).
 
 ### `kino.rank`
 
@@ -1232,7 +2212,7 @@ does anything with season numbers or ordering: how a backend spells "season 2" i
 | --- | --- |
 | Manifest / entry file / icon | 16 KB / 1 MB / 128 KB |
 | Memory / stack, per plugin | 64 MB / 1 MB |
-| Time per call | `search` 15 s; `home`, `browse`, `episodes`, `resolve` 20 s each (`resolve` of a plugin converted from a Nuvio scraper: 75 s); `liveCategories`, `liveChannels`, `guide` 20 s each; counting all your fetches and sleeps together, but not the time the person spends answering a host question for that call |
+| Time per call | `search` 15 s; `home`, `browse`, `episodes`, `resolve` 20 s each (`resolve` of a plugin Kino itself generates, from a Nuvio scraper or a Stremio addon: 75 s); `liveCategories`, `liveChannels`, `guide` 20 s each; `liveSearch` 15 s; `subtitles` 10 s; `section`, `categories` 20 s each (apiVersion 6); `migrate` 10 s; `sign` 1.5 s (and 3 s counting its wait); counting all your fetches and sleeps together, but not the time the person spends answering a host question for that call |
 | Loading the module (its top level) | 10 s |
 | Idle sandbox | closed after 5 minutes without calls |
 | Consecutive timeouts | 3 in a row and Kino disables the plugin ("No responde") |
@@ -1241,14 +2221,14 @@ does anything with season numbers or ordering: how a backend spells "season 2" i
 | `kino.storage` | 256 KB per plugin; an entry's optional `ttlMs` is 1..2,592,000,000 ms (30 days) |
 | `kino.sleep` | 0 to 5,000 ms per call |
 | `kino.crypto` | data at most 5 MB per call; PBKDF2 at most 100,000 iterations and 64-byte keys; `randomBytes` at most 1,024 |
-| `kino.log` / `console.*` | 2,000 characters per message |
+| `kino.log` / `console.*` | 2,000 characters per message; when a call of a plugin whose manifest declares `telemetry` fails, its last 30 lines (each cut at 300 characters, scrubbed, 2,048 characters in all) go with the failure report |
 | What a function returns | at most 2,000,000 characters once turned into JSON |
 | Results | `search` 100 items; `home` 20 rows of 60; `browse` 100 per page; `episodes` 5,000 (and 50 `seasons`); `ref` 4,096 characters; `next` 2,048 characters; `id` matches `^[A-Za-z0-9._~-]{1,128}$` |
-| Live channels (apiVersion 3) | `liveCategories` 200; `liveChannels` 500 per page and 10 pages per category; `guide` 50 channels and 24 h per call, 100 entries per channel; `number` 1..9999 |
-| Settings | at most 12; `text` 500, `url` 2,048, `password` 500 characters |
-| Error messages | your `kino.error` message is shown as a detail, cut at 200 characters |
+| Live channels (apiVersion 3) | `liveCategories` 200; `liveChannels` 500 per page, 10 pages at first and 5 more per scroll, 10,000 channels (200 pages) per category; `liveSearch` 100 channels, asked from 2 characters; `guide` 50 channels and 24 h per call, 100 entries per channel; `number` 1..9999 |
+| Settings | at most 12 with a value, plus at most 16 `section`/`status`/`action` (apiVersion 6); `text` 500, `url` 2,048, `password` 500 characters |
+| Error messages | your `kino.error` message is a detail for the log, cut at 200 characters; a `userMessage` for the person is at most 160 |
 | `hosts` | at least 1 entry, no upper limit from Kino 0.9.45 (only the manifest's 16 KB; Kino 0.9.44 and older refuse more than 20); from apiVersion 2, none (`[]`) when a `url` setting exists |
-| `secrets` (apiVersion 4) | at most 16; names match `^[A-Za-z][A-Za-z0-9_]{0,31}$`; a value is 1..4,096 bytes |
+| `secrets` (apiVersion 4) | at most 16; names match `^[A-Za-z][A-Za-z0-9_]{0,31}$`; a value is 1..4,096 bytes (1..8,192 from apiVersion 6); from apiVersion 6 a cipher key may be typed: `{ seal, use: "cipher-key", encoding: "hex" | "base64" }`, 16/24/32 bytes |
 <!-- contract:limits:end -->
 
 ### How your code lives
@@ -1408,6 +2388,9 @@ node sdk/run.mjs ./plugin.js home
 node sdk/run.mjs ./plugin.js browse films 2
 node sdk/run.mjs ./plugin.js episodes 'Dragnet1951'
 node sdk/run.mjs ./plugin.js resolve 'Dragnet1951|Dragnet/Season 1/Dragnet (1951) - S01E01 - The Human Bomb.mp4'
+node sdk/run.mjs . section [tab]      # apiVersion 6: needs "section" in the manifest
+node sdk/run.mjs . categories         # apiVersion 6: needs the browse capability
+node sdk/run.mjs . theme              # apiVersion 6: your colors, contrast ratios and fallbacks
 ```
 
 The first argument is your entry file (or the folder that holds `kino-plugin.json`), then the
@@ -1415,7 +2398,7 @@ function, then its argument: the text to search for, the `ref` for `episodes` an
 `ref` and an optional cursor for `browse`. The runner reads your manifest, provides the `kino`
 global, calls that one function the way Kino does, **checks the answer with the app's rules** and
 prints what Kino would keep as JSON on stdout; every entry Kino would drop is reported on stderr with
-the reason (`--raw` prints your answer untouched). Logs, `console.*` and errors go to stderr, so you can
+the reason (`--raw` prints your answer untouched). The kit does not apply the app's secret scrubbing, and `validateSettings` receives exactly the JSON you type: the app sends only valued settings, trimmed. Logs, `console.*` and errors go to stderr, so you can
 pipe the result (`... | head -30`, `... | jq`). The exit code is 0 on success, 1 when your code
 throws and 2 when the command is wrong. The runner only runs functions your manifest declares.
 
@@ -1457,6 +2440,7 @@ node sdk/run.mjs . live categories
 node sdk/run.mjs . live channels noticias
 node sdk/run.mjs . live channels noticias 2
 node sdk/run.mjs . live guide canal1,canal2
+node sdk/run.mjs . live search caracol
 node sdk/run.mjs live playlist https://iptv-org.github.io/iptv/countries/co.m3u
 node sdk/run.mjs live playlist ./lista.m3u --epg ./guia.xml.gz
 ```
@@ -1469,6 +2453,11 @@ node sdk/run.mjs live playlist ./lista.m3u --epg ./guia.xml.gz
   first channel that has a `ref` and no `stream` the way Kino would: it sends that `ref` to
   `resolve()` and checks the answer as a live channel's (so `"liveStreamHosts": "any"` applies). With
   `validate.mjs --run liveChannels`, a refused answer there is a problem.
+- `live search <query>` calls `liveSearch({ query })`, prints the channels Kino keeps (at most 100)
+  and plays the first one with a `ref` like `live channels` does.
+- `subtitles <tt… | tmdb:<id>> [season episode]` (or the whole argument as JSON) calls `subtitles()`
+  with the argument Kino builds (`KINO_LANGS=es,en` for the languages) and prints the tracks Kino
+  keeps, each dropped one on stderr. It runs whether the plugin declares `subtitles` or only exports it.
 - `resolve <ref> --live` checks a `resolve()` answer as a live channel's. Without `--live` the kit
   cannot know the `ref` is a channel's and applies the strict rule; when only that stops the URL
   and your manifest has `"liveStreamHosts": "any"`, it says "si este ref es de un canal en vivo,
@@ -1525,6 +2514,14 @@ differences:
      already-approved host `insecureHttp`, Kino does **not** apply it: the plugin shows "Actualización
      disponible — requiere tu aprobación" and the person sees the new ones (marked "nuevo") before
      accepting. Removing them needs no approval.
+   - **After a Kino update**, the first start checks every plugin that was installed and enabled
+     before it, right away. In this release (a build switch Kino will turn off later) the updates
+     that wait for approval are then installed **without asking**, once, and only when read from the
+     plugin's own install address; a one-time notice "Se actualizaron tus plugins" lists each plugin
+     and what it may do now (for example "Envía registros de errores a Kino"), with shortcuts to its
+     tab in Ajustes, to disable it and to uninstall it. With the switch off, a one-time sheet "Hay
+     actualizaciones de tus plugins" offers "Actualizar todos" and shows each consent sheet in turn.
+     Later updates of your plugin follow the rules above.
    - A new **required** setting does not block the update: it installs and the plugin shows "Falta
      configurar" until the person fills it in.
    - If the new version needs a higher `apiVersion` than the app supports, the check reports "Este
@@ -1570,7 +2567,8 @@ To be listed:
    newer `apiVersion` than the person's Kino, or says `"discoverable": false`. A plugin in a subfolder
    can be installed by address but is not searched.
 3. Kino keeps the 30 most-starred matches, searches at most every 12 hours per device (and when the
-   person taps "Actualizar"), and shows them after the recommended plugins, labelled "De la comunidad".
+   person taps "Actualizar"), and shows them in their own tab of the Plugins screen, "De la comunidad"
+   (beside Recomendados; in "Elige tus fuentes", after the recommended plugins).
    Installing one goes through the same consent sheet as any other plugin.
 
 To stay out of the search while keeping the topic, set `"discoverable": false`;
@@ -1606,7 +2604,12 @@ To stay out of the search while keeping the topic, set `"discoverable": false`;
   `color`), next to the app's own sources; your `home` rows appear on Home after the app's own; your
   titles play in Kino's player and appear in "Continuar viendo" and the library. Titles of a plugin
   that declares `download` can be saved for offline viewing ([section 3](#downloads-apiversion-2));
-  Chromecast and DLNA are not available for plugin titles in this version. A `live` item's card
+  a plugin's stream can also be sent to a Chromecast or a DLNA TV. Kino picks the lightest route: a
+  file (mp4, webm) with no `headers` goes straight to the TV (relayed through the phone if the TV fails
+  it); one with `headers`, and every HLS stream (a Chromecast needs CORS on it), is relayed through the
+  phone; a request-signed one too, from Kino 0.9.50 (see
+  [Signing every request](#signing-every-request-signing-apiversion-6)). DRM (`drm`), DASH, a
+  progressive MPEG-TS or an unknown format is not offered. A `live` item's card
   says "EN VIVO" and plays on tap, with no info page; a channel never enters "Continuar viendo" or
   the library ([Live channels](#live-channels-apiversion-2)). A plugin found through the `kino-plugin`
   topic carries the label "De la comunidad" on its card.
@@ -2041,7 +3044,7 @@ What Kino does with it, and what it does not:
   person reads "No se pudo abrir este video protegido" (after one more `resolve` if `expiresInSeconds`
   had passed, like any stream). A protected live channel reads the same at once on a device with no
   L3; its other license failures are cuts, re-resolved like any other (see Live channels). A protected title is **never downloadable** ("Este video no se puede
-  descargar"), even with `download` declared, and cannot be sent to a Chromecast (no plugin title can).
+  descargar"), even with `download` declared, and is never offered for Chromecast or DLNA.
 - The consent sheet adds "Reproduce video protegido (DRM)" when `drm` is declared, and an update that
   newly declares it waits for the person's approval ([section 8](#8-publishing-your-plugin)).
 

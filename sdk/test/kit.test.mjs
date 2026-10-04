@@ -10,14 +10,16 @@ import { gzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkOutput, contract, validateManifest } from "../contract.mjs";
-import { createKino } from "../kino-shim.mjs";
+import { checkOutput, checkSettingsOutput, contract, markSearchHits, requiredExports, validateManifest } from "../contract.mjs";
+import { createKino, errorReport, shownSentence, signingLane } from "../kino-shim.mjs";
 import { filterRelevant, shortQuery, sortBySimilarity } from "../kino-rank.mjs";
-import { consentLines, validate } from "../validate.mjs";
+import { contrast, deltaE, formatRatio, luminance, resolvePalette } from "../palette.mjs";
+import { consentLines, KEY_PAIRS_OLD_API, validate } from "../validate.mjs";
+import { TABLES } from "../guide-tables.mjs";
 import { scaffold } from "../init.mjs";
-import { call } from "../run.mjs";
-import { normalizeBinding, seal } from "../seal.mjs";
-import { ADULT_GROUPS, loadPlaylist, normaliseName, parseM3u, parseXmltv, parseXmltvTime, summarisePlaylist } from "../live-playlist.mjs";
+import { adultLines, call, parseArgs, subtitlesArg } from "../run.mjs";
+import { decodeCipherKey, normalizeBinding, seal, sealTyped } from "../seal.mjs";
+import { ADULT_GROUPS, OPEN_END_MS, decodeM3u, keepStart, loadPlaylist, normaliseName, parseM3u, parseXmltv, parseXmltvTime, summarisePlaylist, summaryLines } from "../live-playlist.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 // Published repo: plugin.js/kino-plugin.json live at the repo root, two levels up from here.
@@ -29,9 +31,11 @@ const manifest = (extra = {}) => JSON.stringify({
 });
 
 test("contract.json is the one the app pins", () => {
-  assert.equal(contract.apiVersion, 5);
-  assert.deepEqual(contract.capabilities.names, ["search", "home", "browse", "episodes", "resolve", "download", "drm", "channels"]);
-  assert.deepEqual(contract.capabilities.declarative, ["download", "drm"]);
+  assert.equal(contract.apiVersion, 6);
+  // apiVersion 5 stays what Kino 0.9.45 made it: the author-signed entry, nothing else.
+  assert.equal(contract.manifest.signature.apiVersion, 5);
+  assert.deepEqual(contract.capabilities.names, ["search", "home", "browse", "episodes", "resolve", "download", "drm", "channels", "migrate", "scopedSearch", "meta", "subtitles"]);
+  assert.deepEqual(contract.capabilities.declarative, ["download", "drm", "scopedSearch"]);
   assert.deepEqual(contract.permissions, []);
 });
 
@@ -52,7 +56,7 @@ test("manifest rules and Spanish messages match the app", () => {
     [{ hosts: [{ host: "x.example.com", insecureHttp: true }] }, "hosts", 'Un host con "insecureHttp" necesita apiVersion 2'],
     [{ apiVersion: 2, hosts: [{ host: "*.example.com", insecureHttp: true }] }, "hosts", 'Un host con "insecureHttp" no puede tener comodín ("*.")'],
     [{ apiVersion: 2, hosts: [{ host: "nas.local", insecureHttp: true }] }, "hosts", 'El dominio "nas.local" no está permitido'],
-    [{ id: "magis" }, "id", 'El id "magis" está reservado por Kino'],
+    [{ id: "live" }, "id", 'El id "live" está reservado por Kino'],
     // The app's version regex bounds each segment to 6 digits (Regex("^(0|[1-9]\\d{0,5})...")); a
     // hand-typed unbounded copy would wrongly accept this.
     [{ version: "1234567.0.0" }, "version", 'El campo "version" debe ser del tipo 1.2.3'],
@@ -88,6 +92,43 @@ test("apiVersion 2: empty hosts validate only with a url setting, as the app rul
   assert.deepEqual(validateManifest(manifest({ apiVersion: 2, hosts: [], settings: [{ key: "user", label: "Usuario", type: "text" }] })), noUrl);
 });
 
+test("hosts: no upper limit (21, 100, 500 accepted); only the 16 KB manifest cap bounds it", () => {
+  assert.equal(contract.manifest.maxHosts, undefined);
+  for (const n of [21, 100, 500]) {
+    const hosts = Array.from({ length: n }, (_, i) => `h${i + 1}.example.com`);
+    const r = validateManifest(manifest({ hosts }));
+    assert.equal(r.ok, true, `${n} hosts`);
+    assert.deepEqual(r.manifest.hosts, hosts);
+  }
+  const tooBig = Array.from({ length: 1000 }, (_, i) => `host-number-${i + 1}.example.com`);
+  assert.deepEqual(validateManifest(manifest({ hosts: tooBig })), { ok: false, field: "kino-plugin.json", message: "El manifiesto pesa más de 16 KB" });
+});
+
+test("validate() warns, without refusing, that more than 20 hosts needs Kino 0.9.45", async () => {
+  const warning = "Más de 20 hosts: Kino 0.9.44 o anterior rechaza este plugin; necesita Kino 0.9.45 o superior";
+  assert.deepEqual(contract.manifest.legacyMaxHosts, { value: 20, refusedUpToApp: "0.9.44", noLimitFromApp: "0.9.45" });
+  const dir = mkdtempSync(join(tmpdir(), "kino-many-hosts-"));
+  try {
+    writeFileSync(join(dir, "plugin.js"), "export async function search(){ return { items: [] } }\nexport async function resolve(){ return { url: 'https://example.com/a.m3u8' } }");
+    const hosts = (n) => Array.from({ length: n }, (_, i) => `h${i + 1}.example.com`);
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ hosts: hosts(20) }));
+    assert.deepEqual((await validate(dir)).notes, []);
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ hosts: hosts(21) }));
+    const r = await validate(dir);
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.problems, []);
+    assert.deepEqual(r.notes, [warning]);
+    const cli = spawnSync(process.execPath, [join(here, "..", "validate.mjs"), dir], { encoding: "utf8" });
+    assert.equal(cli.status, 0);
+    assert.ok(cli.stderr.includes(warning), cli.stderr);
+    // Older apps counted the raw entries, duplicates included: so does the warning.
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ hosts: [...hosts(20), "h1.example.com"] }));
+    assert.deepEqual((await validate(dir)).notes, [warning]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("validate() does not require download/drm to be exported functions", async () => {
   const dir = mkdtempSync(join(tmpdir(), "kino-declarative-"));
   try {
@@ -95,6 +136,20 @@ test("validate() does not require download/drm to be exported functions", async 
     writeFileSync(join(dir, "plugin.js"), "export async function search(){ return [] }\nexport async function resolve(){ return { url: 'https://example.com/a' } }");
     const r = await validate(dir);
     assert.deepEqual(r.problems, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("validate() reports the palette guardrails as notes", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "kino-theme-"));
+  try {
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 6, theme: { accent: "#D81F26", highlight: "#F7C948" } }));
+    writeFileSync(join(dir, "plugin.js"), "export async function search(){ return [] }\nexport async function resolve(){ return { url: 'https://example.com/a' } }");
+    const r = await validate(dir);
+    assert.deepEqual(r.problems, []);
+    assert.ok(r.notes.includes("theme.accent: se parece demasiado al rojo de Kino; se usan los colores de Kino para accent y onAccent"), JSON.stringify(r.notes));
+    assert.equal(r.notes.filter((n) => n.startsWith("theme.")).length, 1);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -164,6 +219,129 @@ test("crypto gives the app's vectors", () => {
   assert.throws(() => c.randomBytes(1025), (e) => e.code === "crypto_error");
 });
 
+// --- kino.crypto key pairs (apiVersion 6): the same vectors the app's PluginKeysTest checks ---
+// Absent in a published plugin repo (sdk/ and contract.json at its root): the vectors test skips there.
+const asymVectorsFile = join(here, "..", "..", "..", "docs", "plugins", "fixtures", "crypto", "asymmetric-vectors.json");
+const asymVectors = existsSync(asymVectorsFile) ? JSON.parse(readFileSync(asymVectorsFile, "utf8")).vectors : null;
+const kinoV6 = () => createKino(JSON.parse(manifest({ apiVersion: 6 }))).kino;
+const cryptoError = (message) => (e) => e.code === "crypto_error" && (message === undefined || e.message.includes(message));
+
+test("key pairs: the shared vectors import and verify like the app", (t) => {
+  if (!asymVectors) return t.skip("no shared crypto vectors around this kit");
+  const c = kinoV6().crypto;
+  for (const v of asymVectors) {
+    const fromJwk = c.importKey({ format: "jwk", key: v.jwk });
+    assert.equal(fromJwk.spki, v.spki);
+    assert.equal(fromJwk.raw, v.raw);
+    assert.deepEqual(Object.keys(fromJwk.jwk), v.type === "ec" ? ["crv", "kty", "x", "y"] : ["crv", "kty", "x"]);
+    assert.deepEqual({ ...c.importKey({ format: "spki", key: v.spki }).jwk }, v.jwk);
+    assert.equal(c.importKey({ format: "raw", type: v.type, namedCurve: v.namedCurve, key: v.raw }).spki, v.spki);
+    if (v.type === "ec") {
+      for (const format of ["der", "ieee-p1363"]) {
+        const signature = format === "der" ? v.der : v.p1363;
+        assert.equal(c.verify({ key: fromJwk, data: v.data, signature, hash: v.hash, format }), true);
+        assert.equal(c.verify({ key: { jwk: v.jwk }, data: v.data, signature, hash: v.hash, format }), true);
+        assert.equal(c.verify({ key: fromJwk, data: v.data + "!", signature, hash: v.hash, format }), false);
+      }
+    }
+    if (v.type === "ed25519") assert.equal(c.verify({ key: fromJwk, data: v.data, encoding: "hex", signature: v.signature }), true);
+  }
+});
+
+test("key pairs: round trips, P1363 vs DER lengths, ECDH and X25519 agree", () => {
+  const c = kinoV6().crypto;
+  for (const [curve, n, hash] of [["P-256", 32, "SHA-256"], ["P-384", 48, "SHA-384"]]) {
+    const { privateKey, publicKey } = c.generateKeyPair({ type: "ec", namedCurve: curve });
+    assert.deepEqual(Object.keys(privateKey), ["type", "namedCurve", "handle"]);
+    assert.ok(Object.isFrozen(privateKey) && Object.isFrozen(publicKey) && Object.isFrozen(publicKey.jwk));
+    assert.equal(Buffer.from(publicKey.raw, "base64").length, 1 + 2 * n);
+    const p1363 = c.sign({ key: privateKey, data: "reto", hash, format: "ieee-p1363" });
+    assert.equal(Buffer.from(p1363, "base64").length, 2 * n);
+    const der = Buffer.from(c.sign({ key: privateKey.handle, data: "reto", hash }), "base64");
+    assert.equal(der[0], 0x30);
+    assert.ok(der.length > 2 * n && der.length <= 2 * n + 8);
+    assert.equal(c.verify({ key: publicKey, data: "reto", signature: p1363, hash, format: "ieee-p1363" }), true);
+    assert.equal(c.verify({ key: privateKey, data: "reto", signature: der.toString("hex"), signatureEncoding: "hex", hash }), true);
+    const other = c.generateKeyPair({ type: "ec", namedCurve: curve });
+    const ab = c.deriveSharedSecret({ privateKey, publicKey: other.publicKey });
+    assert.equal(ab, c.deriveSharedSecret({ privateKey: other.privateKey, publicKey }));
+    assert.equal(Buffer.from(ab, "base64").length, n);
+  }
+  const ed = c.generateKeyPair({ type: "ed25519" });
+  assert.deepEqual(Object.keys(ed.privateKey), ["type", "handle"]);
+  const sig = c.sign({ key: ed.privateKey, data: "68656c6c6f", encoding: "hex", outputEncoding: "hex" });
+  assert.equal(sig.length, 128);
+  assert.equal(c.verify({ key: ed.publicKey, data: "hello", signature: sig, signatureEncoding: "hex" }), true);
+  const a = c.generateKeyPair({ type: "x25519" }), b = c.generateKeyPair({ type: "x25519" });
+  const s1 = c.deriveSharedSecret({ privateKey: a.privateKey, publicKey: c.importKey({ format: "raw", type: "x25519", key: b.publicKey.raw }) });
+  assert.equal(s1, c.deriveSharedSecret({ privateKey: b.privateKey, publicKey: { jwk: a.publicKey.jwk } }));
+  assert.equal(Buffer.from(s1, "base64").length, 32);
+});
+
+test("key pairs: handles stay in their own kino, no Node alias, the app's errors", () => {
+  const first = kinoV6().crypto, second = kinoV6().crypto;
+  const { privateKey } = first.generateKeyPair({ type: "ed25519" });
+  assert.throws(() => second.sign({ key: privateKey, data: "x" }), cryptoError("clave desconocida"));
+  assert.equal(first.generateKeyPairSync, undefined);
+  assert.equal(first.createSign, undefined);
+  const x = first.generateKeyPair({ type: "x25519" });
+  const p256 = first.generateKeyPair({ type: "ec", namedCurve: "P-256" });
+  assert.throws(() => first.generateKeyPair({ type: "rsa" }), cryptoError("tipo de clave desconocido"));
+  assert.throws(() => first.generateKeyPair(), cryptoError("tipo de clave desconocido"));
+  assert.throws(() => first.generateKeyPair({ type: "ec", namedCurve: "P-521" }), cryptoError("curva desconocida"));
+  assert.throws(() => first.sign({ key: x.privateKey, data: "a" }), cryptoError("x25519 no firma"));
+  assert.throws(() => first.sign({ key: privateKey, data: "a", hash: "SHA-256" }), cryptoError("no lleva hash"));
+  assert.throws(() => first.sign({ key: p256.privateKey, data: "a", hash: "SHA-1" }), cryptoError("hash de firma"));
+  assert.throws(() => first.sign({ key: p256.privateKey, data: "a", format: "raw" }), cryptoError("formato de firma"));
+  assert.throws(() => first.sign({ key: {}, data: "x" }), cryptoError('falta "key"'));
+  assert.throws(() => first.deriveSharedSecret({ privateKey: p256.privateKey, publicKey: x.publicKey }), cryptoError("mismo tipo"));
+  assert.throws(() => first.importKey({ format: "pem", key: "AAAA" }), cryptoError("formato de clave"));
+  assert.throws(() => first.importKey({ format: "jwk", key: "x" }), cryptoError("un objeto JWK"));
+  assert.throws(() => first.importKey({ format: "spki", key: "AAAA" }), cryptoError("spki no reconocido"));
+  const offCurve = Buffer.from(p256.publicKey.raw, "base64");
+  offCurve[64] ^= 1;
+  assert.throws(() => first.importKey({ format: "raw", type: "ec", namedCurve: "P-256", key: offCurve.toString("base64") }), cryptoError("clave pública inválida"));
+  for (const [signature, format] of [["AAAA", "ieee-p1363"], ["AAAA", "der"], ["", "der"]]) {
+    assert.equal(first.verify({ key: p256.publicKey, data: "a", signature, format }), false);
+  }
+  assert.throws(() => first.verify({ data: "a", signature: "AAAA" }), cryptoError('falta "publicKey"'));
+});
+
+test("key pairs: the ring keeps the newest keys only", () => {
+  const c = kinoV6().crypto;
+  const oldest = c.generateKeyPair({ type: "ed25519" });
+  for (let i = 0; i < contract.crypto.keyPairs.maxKeysPerRuntime; i++) c.generateKeyPair({ type: "ed25519" });
+  assert.throws(() => c.sign({ key: oldest.privateKey, data: "x" }), cryptoError("clave desconocida"));
+});
+
+test("key pairs: a sealed marker is refused in every field, like the app", () => {
+  const { kino } = sealedKino({ tok: "s3cr3t-value" });
+  const m = kino.secret("tok");
+  const c = kino.crypto;
+  const ec = c.generateKeyPair({ type: "ec", namedCurve: "P-256" });
+  const refused = (fn) => assert.throws(fn, (e) => e.code === "crypto_error" && e.message === "no se puede usar un dato sellado aquí");
+  refused(() => c.sign({ key: ec.privateKey, data: m }));
+  refused(() => c.sign({ key: ec.privateKey, data: "a" + m }));
+  refused(() => c.verify({ key: ec.publicKey, data: "x", signature: m }));
+  refused(() => c.importKey({ format: "spki", key: m }));
+  refused(() => c.sign({ key: m, data: "x" }));
+  assert.equal(typeof c.sign({ key: ec.privateKey, data: "plain" }), "string");
+});
+
+test("validate() tells a plugin below apiVersion 6 that uses key pairs to declare it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "kino-keypairs-"));
+  try {
+    const code = "export async function search(){ const k = kino.crypto.generateKeyPair({ type: 'ed25519' }); return [] }\nexport async function resolve(){ return { url: 'https://example.com/a' } }";
+    writeFileSync(join(dir, "plugin.js"), code);
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 4 }));
+    assert.ok((await validate(dir)).notes.includes(KEY_PAIRS_OLD_API));
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 6 }));
+    assert.ok(!(await validate(dir)).notes.includes(KEY_PAIRS_OLD_API));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("config, storage keys, typed errors and sleep", async () => {
   const m = JSON.parse(manifest({ settings: [
     { key: "server", label: "Servidor", type: "url", required: true },
@@ -180,6 +358,83 @@ test("config, storage keys, typed errors and sleep", async () => {
   assert.equal(e.message.length, 200);
   assert.equal(kino.error("NOPE", "m").code, "unknown");
   await assert.rejects(kino.sleep(6000), (err) => err.code === "invalid_request");
+});
+
+test("kino.error's userMessage: carried as the app carries it, shown only when the app would show it", () => {
+  const { kino } = createKino(JSON.parse(manifest()));
+  const gone = "Este capítulo ya no está disponible.";
+  const e = kino.error("not_found", "portal100006", { userMessage: gone });
+  assert.equal(e.userMessage, gone);
+  assert.equal(shownSentence(e), gone);
+  assert.equal(kino.error("not_found", "x").userMessage, undefined);
+  assert.equal(kino.error("not_found", "x", { userMessage: 7 }).userMessage, undefined);
+  let ran = false;
+  assert.equal(kino.error("not_found", "x", { get userMessage() { ran = true; return gone; } }).userMessage, undefined);
+  assert.equal(ran, false);
+  assert.equal(kino.error("not_found", "x", { userMessage: "z".repeat(5000) }).userMessage.length, contract.errors.maxUserMessageChars + 1);
+  // The app's rule: one of the five codes, one short plain line, no URL or code.
+  assert.equal(shownSentence(kino.error("network", "x", { userMessage: gone })), null);
+  for (const bad of ["Hola", "Mira https://x.example/y ahora.", "Primera.\nSegunda línea.", "Usa {code} aquí mismo.", "TypeError: no se pudo leer", "y ".repeat(100)]) {
+    assert.equal(shownSentence(kino.error("not_found", "x", { userMessage: bad })), null, bad);
+  }
+  // The app's tightened rule (review C1): domains, addresses, numbers, hidden text, homoglyphs, Kino's name, credentials and money.
+  for (const bad of [
+    "Descarga la nueva version en kino-app.net ahora.", "Visita www mipagina ahora mismo.", "Entra a mipagina .app ahora mismo.",
+    "Entra a mipagina. app ahora mismo.", "Entra a mipagina punto com ahora mismo.", "Escribe a soporte@ejemplo ya mismo.",
+    "Llama al 300 123 4567 para seguir viendo.", "Linea uno.\u2028Linea dos bonita.", "Hola\u3164mundo bonito.", "Hola\u00A0mundo bonito.",
+    "Tu cuenta fue susp\u0435ndida hoy.", "Kino: tu cuenta fue suspendida.", "\u041Aino: tu cuenta fue suspendida.", "K i n o informa un cambio.",
+    "Ingresa tu contraseña para seguir.", "Escribe tu PIN para seguir.", "Paga la suscripción para seguir.", "Envía por Nequi para seguir.",
+    "Escribe el código de verificación que te llegó.",
+  ]) {
+    assert.equal(shownSentence(kino.error("not_found", "x", { userMessage: bad })), null, bad);
+  }
+  assert.equal(shownSentence(kino.error("not_found", "x", { userMessage: "Esta serie ya no está disponible. Vuelve luego." })), "Esta serie ya no está disponible. Vuelve luego.");
+  // Fix round 2 (structural): Latin-1 letters only, 6 digits in all, Kino's skeleton, stems, spelled domains.
+  for (const bad of [
+    "Descarga desde mipagina\uA78Fapp ya mismo.", "Entra a mipagina punto dev ahora.", "Entra a mipaginapuntocom ahora.", "Entra a p u n t o com ahora.",
+    "Llama al 300, 123, 4567 ya mismo.", "Marca 3001 y 234 y 567 ahora.", "\u1D0B\u026A\u0274\u1D0F informa un cambio.", "\u043A\u0456\u043F\u043E informa un cambio.",
+    "K1NO informa un cambio.", "Kin0 informa un cambio.", "K¡no informa un cambio.", "Ki no informa un cambio.", "SoporteKino informa un cambio.",
+    "No es necesario que pagues nada.", "Abona el saldo hoy mismo.", "Recarga tu saldo hoy mismo.", "Escribe tu contra seña aquí.", "Escribe tu passw0rd aquí.",
+    "Revisa tus credenciales hoy.", "Pega aquí el token nuevo.", "Escribe el código que te llegó por SMS.", "Escríbenos por WhatsApp hoy mismo.",
+  ]) {
+    assert.equal(shownSentence(kino.error("not_found", "x", { userMessage: bad })), null, bad);
+  }
+  assert.equal(shownSentence(kino.error("not_found", "x", { userMessage: "Não há mais episódios, señor, ça va." })), "Não há mais episódios, señor, ça va.");
+  // Fix round 3: letters NFD keeps whole, digits glued to letters, "; " is prose, stems word by word.
+  for (const bad of ["KINØ informa un cambio.", "Escribe tu cøntraseña aquí.", "Envía por N3qui para seguir.", "Haz el p4go hoy.", "Faltan 5minutos para volver.",
+    "Envía por N e q u i para seguir.", "Escribe tu contra seña aquí.", "Entra a p u n t o com ahora.", "Tu cuenta;vincúlala de nuevo.", "Recarga la lista para ver los capítulos."]) {
+    assert.equal(shownSentence(kino.error("not_found", "x", { userMessage: bad })), null, bad);
+  }
+  for (const ok of ["Tu cuenta se abrió en otro dispositivo; vincúlala de nuevo en Ajustes ▸ Plugins ▸ Demo.", "Este título no tiene quien lo suba.",
+    "El servidor está a punto de volver.", "Vuelve a intentarlo en 5 minutos, por favor."]) {
+    assert.equal(shownSentence(kino.error("not_found", "x", { userMessage: ok })), ok, ok);
+  }
+  // Fix round 4: a stem split across neighbouring words.
+  for (const bad of ["Envía por Ne qui para seguir.", "Envía por N e qui para seguir.", "Escribe tu con tra seña aquí.", "Escribe tu co n tra seña aquí.",
+    "Agrega tu tar je ta hoy.", "Haz una trans fe rencia hoy.", "Escríbenos por What s app hoy.", "Escríbenos por Wh ats app hoy.", "Envía por Davi pla ta hoy.",
+    "Haz un de pó sito hoy.", "Entra a mipagina pun to com ahora.", "Haz el pa go hoy mismo.", "Escribe tu cla ve aquí.", "Pega el to ken nuevo aquí."]) {
+    assert.equal(shownSentence(kino.error("not_found", "x", { userMessage: bad })), null, bad);
+  }
+  for (const ok of ["Este capítulo ya no está disponible.", "El servidor no respondió, intenta en unos minutos."]) {
+    assert.equal(shownSentence(kino.error("not_found", "x", { userMessage: ok })), ok, ok);
+  }
+  // Task 14: "verifica" alone and "punto es" are prose; a verification code is still refused.
+  for (const ok of ["Verifica tu conexión e intenta de nuevo.", "En este punto es mejor esperar."]) {
+    assert.equal(shownSentence(kino.error("not_found", "x", { userMessage: ok })), ok, ok);
+  }
+  for (const bad of ["Escribe el código de verificación que te llegó.", "Escribe tu verification code aquí.", "Entra a mipagina punto com ahora."]) {
+    assert.equal(shownSentence(kino.error("not_found", "x", { userMessage: bad })), null, bad);
+  }
+  for (const name of ["KINØ", "Cuevana3", "M3U"]) assert.match(errorReport(e, name), /userMessage no se muestra/, name);
+  assert.match(errorReport(e, "Cuevana 3"), /Mensaje de Cuevana 3: /);
+  for (const name of ["Kino", "Soporte Kino", "Kino: Aviso", "\u041A1NO", "Xu:per", "Xu\u2028per", "Xu\u00A0per", ""]) {
+    assert.match(errorReport(e, name), /userMessage no se muestra/, name);
+  }
+  // run.mjs prints what the person would read: always attributed to the plugin.
+  assert.match(errorReport(e), /\[not_found\] portal100006/);
+  assert.match(errorReport(e, "Demo"), /la persona lee: "Mensaje de Demo: Este capítulo ya no está disponible\."/);
+  assert.match(errorReport(kino.error("not_found", "x", { userMessage: "Hola" })), /userMessage no se muestra/);
+  assert.equal(errorReport(kino.error("not_found", "x")), "[not_found] x");
 });
 
 test("kino.storage entries with a ttlMs expire, are purged, and old data keeps working", () => {
@@ -480,8 +735,15 @@ test("checkOutput keeps a live item only for an apiVersion 2 plugin, and never i
   assert.ok(v1.drops.some((d) => d.includes("c1") && d.includes("live")));
   const v2 = checkOutput("search", items, { ...JSON.parse(manifest({ apiVersion: 2 })), capabilities: ["search", "resolve"] });
   assert.deepEqual(v2.value.items.map((i) => [i.id, i.kind, i.runtimeMinutes]), [["c1", "live", 0], ["m", "movie", 90]]);
+  // Below apiVersion 6 a channel never stays in a Home row (output.homeLiveApiVersion); from 6 it does.
   const home = checkOutput("home", [{ id: "vivo", title: "En vivo", items }], { ...JSON.parse(manifest({ apiVersion: 2 })), capabilities: ["home", "resolve"] });
-  assert.deepEqual(home.value[0].items.map((i) => i.kind), ["live", "movie"]);
+  assert.deepEqual(home.value[0].items.map((i) => i.kind), ["movie"]);
+  assert.ok(home.drops.some((d) => d.includes("c1") && d.includes("apiVersion 6")));
+  const home6 = checkOutput("home", [{ id: "vivo", title: "En vivo", items }], { ...JSON.parse(manifest({ apiVersion: 6 })), capabilities: ["home", "resolve"] });
+  assert.deepEqual(home6.value[0].items.map((i) => i.kind), ["live", "movie"]);
+  const onlyLive = [{ id: "vivo", title: "En vivo", items: [items[0]] }];
+  assert.equal(checkOutput("home", onlyLive, { ...JSON.parse(manifest({ apiVersion: 5 })), capabilities: ["home", "resolve"] }).value.length, 0);
+  assert.equal(contract.output.homeLiveApiVersion, 6);
   assert.deepEqual(contract.output.itemKinds, ["movie", "series", "live"]);
   assert.equal(contract.output.liveKindApiVersion, 2);
 });
@@ -742,12 +1004,49 @@ test("kino.d.ts declares exactly what the kit's kino has", () => {
   const out = new Set();
   const walk = (o, p) => Object.keys(o).forEach((k) => {
     const v = o[k];
-    if (typeof v === "function") out.add(`${p}.${k}=function`);
+    // A function's own members too (kino.log.report).
+    if (typeof v === "function") { out.add(`${p}.${k}=function`); walk(v, `${p}.${k}`); }
     else if (v !== null && typeof v === "object") walk(v, `${p}.${k}`);
     else out.add(`${p}.${k}=value`);
   });
   walk(kino, "kino");
   assert.deepEqual([...out].sort(), [...declaredKino()].sort());
+});
+
+test("telemetry: apiVersion 6 boolean, a consent line, and kino.log.report writes a line", () => {
+  assert.equal(validateManifest(manifest({ apiVersion: 6, telemetry: true })).manifest.telemetry, true);
+  assert.equal(validateManifest(manifest({ apiVersion: 6 })).manifest.telemetry, false);
+  assert.equal(validateManifest(manifest({ apiVersion: 5, telemetry: "yes" })).manifest.telemetry, false);
+  assert.deepEqual(validateManifest(manifest({ apiVersion: 6, telemetry: "yes" })), { ok: false, field: "telemetry", message: 'El campo "telemetry" debe ser true, false o "verbose"' });
+  assert.deepEqual(consentLines(validateManifest(manifest({ apiVersion: 6, telemetry: true })).manifest),
+    [{ text: "Comparte registros de errores con Kino para corregir fallas", danger: false }]);
+  const { kino } = createKino(validateManifest(manifest({ apiVersion: 6, telemetry: true })).manifest);
+  const seen = [];
+  const before = console.error;
+  // writeErr was bound at load; capture through process.stderr instead.
+  const write = process.stderr.write;
+  process.stderr.write = (chunk, ...rest) => { seen.push(String(chunk)); return true; };
+  try {
+    kino.log.report("session", "shared_fallback", "tries=2");
+  } finally {
+    process.stderr.write = write;
+    console.error = before;
+  }
+  assert.ok(seen.join("").includes("[kino.log.report] session shared_fallback tries=2"), seen.join(""));
+});
+
+test("telemetry \"verbose\": accepted at apiVersion 6, with its own consent line", () => {
+  assert.equal(validateManifest(manifest({ apiVersion: 6, telemetry: "verbose" })).manifest.telemetry, "verbose");
+  assert.equal(validateManifest(manifest({ apiVersion: 5, telemetry: "verbose" })).manifest.telemetry, false);
+  assert.deepEqual(validateManifest(manifest({ apiVersion: 6, telemetry: "Verbose" })).ok, false);
+  assert.deepEqual(consentLines(validateManifest(manifest({ apiVersion: 6, telemetry: "verbose" })).manifest),
+    [{ text: "Comparte registros detallados de reproducción y errores con Kino para corregir fallas", danger: false }]);
+});
+
+test("--retry takes an optional HTTP status", () => {
+  assert.deepEqual(parseArgs(["--retry", "conflict:1:409", "p.js", "resolve", "r"]).opts.retry, { reason: "conflict", attempt: 1, status: 409 });
+  assert.deepEqual(parseArgs(["--retry", "expired:2", "p.js", "resolve", "r"]).opts.retry, { reason: "expired", attempt: 2 });
+  assert.throws(() => parseArgs(["--retry", "expired:2:500", "p.js", "resolve", "r"]));
 });
 
 test("apiVersion 3: channels validates only on v3, and needs liveCategories + liveChannels exported", async () => {
@@ -861,6 +1160,100 @@ test("run.mjs builds the live arguments the app sends", async () => {
   ]);
 });
 
+test("liveSearch: run.mjs sends the trimmed query, checkOutput reads a page capped at the search's limit, next ignored", async () => {
+  const seen = [];
+  await call({ liveSearch: async (a) => { seen.push(a); return []; } }, "liveSearch", ["  caracol "]);
+  assert.deepEqual(seen, [{ query: "caracol" }]);
+  const m = { apiVersion: 3, capabilities: ["home", "resolve", "channels"], hosts: ["cdn.example.com"] };
+  const many = Array.from({ length: contract.live.maxSearchChannels + 5 }, (_, i) => ({ id: `c${i}`, title: `C${i}`, ref: `r${i}` }));
+  const out = checkOutput("liveSearch", { items: many, next: "more" }, m);
+  assert.equal(out.value.items.length, contract.live.maxSearchChannels);
+  assert.equal(out.value.next, undefined);
+  assert.ok(out.drops.some((d) => d.includes("liveSearch: beyond")));
+  assert.ok(contract.capabilities.optionalExports.channels.includes("liveSearch"));
+});
+
+test("liveSearch hits are 18+ like the app: own mark, category, or unmarked in a plugin with 18+ categories", () => {
+  const m = { apiVersion: 6, capabilities: ["home", "resolve", "channels"], hosts: ["cdn.example.com"] };
+  const hits = checkOutput("liveSearch", [
+    { id: "s1", title: "Rojo uno", ref: "r1" },
+    { id: "s2", title: "Rojo dos", ref: "r2", categoryId: "n" },
+    { id: "s3", title: "Rojo tres", ref: "r3", adult: false },
+    { id: "s4", title: "Rojo cuatro", ref: "r4", categoryId: "zz" },
+    { id: "s5", title: "Rojo cinco", ref: "r5", categoryId: "x" },
+  ], m).value;
+  const adultOf = (r) => r.value.items.map((h) => [h.id, h.adult === true]);
+  const both = [{ id: "x", title: "18+", adult: true }, { id: "n", title: "Noticias" }];
+  const marked = markSearchHits(hits, both, m);
+  assert.deepEqual(adultOf(marked), [["s1", true], ["s2", false], ["s3", false], ["s4", true], ["s5", true]]);
+  assert.deepEqual(marked.unmarked, ["Rojo uno", "Rojo cuatro"]);
+  // No 18+ category: nothing changes.
+  assert.deepEqual(adultOf(markSearchHits(hits, [{ id: "n", title: "Noticias" }], m)).filter(([, a]) => a), []);
+  // Categories unreadable: only adult:false stays plain (locked, Kino fails closed).
+  const unknown = markSearchHits(hits, null, m);
+  assert.deepEqual(adultOf(unknown).filter(([, a]) => !a).map(([id]) => id), ["s3"]);
+  assert.equal(unknown.unreadable, true);
+  // Below apiVersion 6 nothing is 18+.
+  assert.deepEqual(adultOf(markSearchHits(hits, both, { ...m, apiVersion: 5 })).filter(([, a]) => a), []);
+});
+
+test("validate --run liveSearch warns when a plugin with 18+ categories answers unmarked hits", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "kino-live-search-adult-"));
+  try {
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 6, hosts: ["cdn.example.com"], capabilities: ["home", "resolve", "channels"] }));
+    const entry = (hits) => "export async function home(){ return [] }\nexport async function resolve(){ return { url: 'https://cdn.example.com/a.m3u8' } }\n"
+      + "export async function liveCategories(){ return [{ id: 'x', title: '18+', adult: true }, { id: 'n', title: 'Noticias' }] }\n"
+      + `export async function liveChannels(){ return [] }\nexport async function liveSearch(){ return ${JSON.stringify(hits)} }`;
+    writeFileSync(join(dir, "plugin.js"), entry([{ id: "s1", title: "Rojo uno", ref: "r1" }, { id: "s2", title: "Rojo dos", ref: "r2", categoryId: "n" }]));
+    const r = await validate(dir, { run: "liveSearch", args: ["rojo"] });
+    assert.deepEqual(r.problems, []);
+    assert.ok(r.notes.some((n) => n.includes("liveSearch") && n.includes("Rojo uno") && n.includes("categoryId")), r.notes.join("\n"));
+    assert.equal(r.output.items.find((h) => h.id === "s1").adult, true);
+    writeFileSync(join(dir, "plugin.js"), entry([{ id: "s1", title: "Rojo uno", ref: "r1", adult: false }, { id: "s2", title: "Rojo dos", ref: "r2", categoryId: "n" }]));
+    const clean = await validate(dir, { run: "liveSearch", args: ["rojo"] });
+    assert.ok(!clean.notes.some((n) => n.includes("liveSearch")), clean.notes.join("\n"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("subtitles: declared alone it skips resolve and search/home; any other mix keeps the old rules", () => {
+  assert.equal(validateManifest(manifest({ capabilities: ["subtitles"] })).ok, true);
+  assert.equal(validateManifest(manifest({ capabilities: ["home", "resolve", "subtitles"] })).ok, true);
+  assert.equal(validateManifest(manifest({ apiVersion: 2, capabilities: ["subtitles", "download"] })).message, 'El plugin debe declarar "resolve"');
+  assert.equal(validateManifest(manifest({ capabilities: ["subtitles", "resolve"] })).message, 'El plugin debe declarar "search" o "home"');
+  assert.deepEqual(contract.capabilities.anyPluginExports, ["subtitles"]);
+  assert.equal(contract.timeoutsMs.subtitles, 10000);
+});
+
+test("subtitles: run.mjs builds the app's argument, checkOutput keeps what the app keeps", async () => {
+  process.env.KINO_LANGS = "es,en";
+  assert.deepEqual(subtitlesArg(["tt0133093"]), { kind: "movie", languages: ["es", "en"], imdbId: "tt0133093" });
+  assert.deepEqual(subtitlesArg(["tmdb:1396", "1", "2"]), { kind: "series", languages: ["es", "en"], tmdbId: 1396, season: 1, episode: 2 });
+  assert.throws(() => subtitlesArg(["matrix"]));
+  const seen = [];
+  await call({ subtitles: async (a) => { seen.push(a); return []; } }, "subtitles", ["tt0133093"]);
+  assert.equal(seen[0].imdbId, "tt0133093");
+  const m = validateManifest(manifest({ capabilities: ["subtitles"] })).manifest;
+  const many = Array.from({ length: contract.output.maxSubtitles + 3 }, (_, i) => ({ lang: "es", url: `https://example.com/${i}.srt` }));
+  const out = checkOutput("subtitles", [
+    { lang: "es", url: "https://example.com/a.srt", format: "srt", label: "x".repeat(80), translated: true },
+    { lang: "es", url: "https://example.com/a.srt" },
+    { lang: "en", url: "https://elsewhere.org/b.srt" },
+    { lang: "", url: "https://example.com/c.vtt", format: "ass" },
+  ], m);
+  assert.deepEqual(out.value, [
+    { lang: "es", url: "https://example.com/a.srt", format: "srt", label: "x".repeat(contract.output.maxSubtitleLabelChars), translated: true },
+    { lang: "und", url: "https://example.com/c.vtt" },
+  ]);
+  assert.ok(out.drops.some((d) => d.includes("elsewhere.org")));
+  assert.equal(checkOutput("subtitles", many, m).value.length, contract.output.maxSubtitles);
+  // streamHosts "any" (apiVersion 4): side tracks on any public host, never a local one.
+  const anyHost = validateManifest(manifest({ apiVersion: 4, capabilities: ["subtitles"], streamHosts: "any" })).manifest;
+  assert.equal(checkOutput("subtitles", [{ lang: "es", url: "https://elsewhere.org/b.srt" }, { lang: "es", url: "http://192.168.1.2/x.srt" }], anyHost).value.length, 1);
+  assert.deepEqual(consentLines(anyHost).map((l) => l.text), ["Agrega subtítulos a tus películas y series", "Puede traer subtítulos desde cualquier servidor que indique"]);
+});
+
 test("liveStreamHosts any is read only on v3, and needs channels there", () => {
   const caps = ["home", "resolve", "channels"];
   assert.equal(validateManifest(manifest({ apiVersion: 3, capabilities: caps, liveStreamHosts: "any" })).manifest.liveStreamHostsAny, true);
@@ -872,6 +1265,25 @@ test("liveStreamHosts any is read only on v3, and needs channels there", () => {
   assert.deepEqual(validateManifest(manifest({ apiVersion: 3, capabilities: caps, liveStreamHosts: "x" })), { ok: false, field: "liveStreamHosts", message: 'El campo "liveStreamHosts" solo admite "any"' });
   assert.equal(validateManifest(manifest({ apiVersion: 3, capabilities: caps })).manifest.liveStreamHostsAny, false);
   assert.deepEqual(contract.manifest.liveStreamHosts, { value: "any", apiVersion: 3, requires: "channels" });
+});
+
+test("meta: apiVersion 6, exports meta, no consent line", () => {
+  const ok = validateManifest(manifest({ apiVersion: 6, capabilities: ["home", "resolve", "meta"] }));
+  assert.equal(ok.ok, true);
+  assert.equal(validateManifest(manifest({ apiVersion: 5, capabilities: ["home", "resolve", "meta"] })).ok, false);
+  assert.equal(contract.capabilities.apiVersions.meta, 6);
+  assert.ok(!contract.capabilities.declarative.includes("meta"));
+  assert.ok(!contract.capabilities.needsApproval.includes("meta"));
+});
+
+test("categories: an optional list of known ids at every apiVersion, no repeats", () => {
+  assert.deepEqual(validateManifest(manifest()).manifest.categories, []);
+  for (const apiVersion of [1, 6]) {
+    assert.deepEqual(validateManifest(manifest({ apiVersion, categories: ["live", "radio"] })).manifest.categories, ["live", "radio"]);
+  }
+  for (const value of [["movies", "movies"], ["películas"], "live", [1]]) {
+    assert.deepEqual(validateManifest(manifest({ categories: value })), { ok: false, field: "categories", message: contract.manifest.categories.message });
+  }
 });
 
 test("discoverable: an optional boolean at every apiVersion; false is a note, not a problem", async () => {
@@ -936,7 +1348,15 @@ test("secrets: parsed with apiVersion 4, ignored below it, and its Spanish messa
 
   assert.deepEqual(contract.manifest.secrets, {
     apiVersion: 4, namePattern: "^[A-Za-z][A-Za-z0-9_]{0,31}$", maxSecrets: 16, maxValueBytes: 4096, prefix: "kino-sealed:v1:",
+    largeApiVersion: 6, largeMaxValueBytes: 8192,
+    typed: { apiVersion: 6, uses: ["cipher-key"], keyEncodings: ["hex", "base64"], keyBytes: [16, 24, 32] },
   });
+});
+
+test("migrate: a consent line, and an update that adds it re-asks like any new reach", () => {
+  assert.deepEqual(contract.capabilities.needsApproval, ["download", "drm", "channels", "migrate"]);
+  assert.deepEqual(consentLines(validateManifest(manifest({ apiVersion: 6, capabilities: ["search", "resolve", "migrate"] })).manifest),
+    [{ text: "Revisar lo que tienes guardado (biblioteca, historial, favoritos) para pasarlo a este plugin", danger: false }]);
 });
 
 test("secrets: a consent line, and validate notes it can't check the repo binding here", async () => {
@@ -952,7 +1372,7 @@ test("secrets: a consent line, and validate notes it can't check the repo bindin
     const r = await validate(dir);
     assert.equal(r.ok, true);
     assert.deepEqual(r.consent, [{ text: "Usa datos sellados por su autor", danger: false }]);
-    assert.deepEqual(r.notes, ["No se puede comprobar aquí para qué repositorio se sellaron los secretos: Kino lo comprueba al instalar. Además, solo se abren si la persona instala el plugin desde su rama principal, sin @rama."]);
+    assert.deepEqual(r.notes, ["No se puede comprobar aquí para qué repositorio se sellaron los secretos: Kino lo comprueba al instalar. Además, solo se abren si la persona instala el plugin desde su rama principal, sin @rama. Y desde una URL del manifest (kino-plugin.json fuera de GitHub) Kino rechaza el plugin: los sellos son de un repositorio."]);
     const cli = spawnSync(process.execPath, [join(here, "..", "validate.mjs"), dir], { encoding: "utf8" });
     assert.equal(cli.status, 0);
     assert.match(cli.stderr, /No se puede comprobar aquí para qué repositorio se sellaron los secretos/);
@@ -1055,19 +1475,101 @@ test("seal(): --repo refuses a URL, an @ref, and anything the app's PluginAddres
   assert.equal(r.stdout, "");
 });
 
-test("seal(): a value of exactly 1 and exactly 4096 UTF-8 bytes seals, 0 and 4097 don't; validate agrees on the seal's length", () => {
+test("seal(): 1..8192 UTF-8 bytes seal; validate takes up to 4096 at apiVersion 4 and 5, and 8192 from 6", () => {
   const { privateKey, publicKeyHex } = testKeypair();
-  for (const v of ["x", "x".repeat(4096), "ñ".repeat(2048)]) {
+  for (const v of ["x", "x".repeat(4096), "ñ".repeat(2048), "x".repeat(8192)]) {
     const s = seal(v, "o/r", "n", publicKeyHex);
     assert.equal(openSealed(s, "o/r", "n", privateKey, publicKeyHex), v);
-    assert.equal(validateManifest(manifest({ apiVersion: 4, secrets: { n: s } })).ok, true);
+    assert.equal(validateManifest(manifest({ apiVersion: 6, secrets: { n: s } })).ok, true);
   }
-  for (const v of ["", "x".repeat(4097), "ñ".repeat(2048) + "x"]) assert.throws(() => seal(v, "o/r", "n", publicKeyHex), /1\.\.4096 bytes/);
-  // A seal's raw bytes: 60 bytes of overhead plus the value's. Only 61..4156 are well formed.
+  for (const v of ["", "x".repeat(8193), "ñ".repeat(4096) + "x"]) assert.throws(() => seal(v, "o/r", "n", publicKeyHex), /1\.\.8192 bytes/);
+  // A seal's raw bytes: 60 bytes of overhead plus the value's.
   const rawSeal = (n) => contract.manifest.secrets.prefix + Buffer.alloc(n, 7).toString("base64url");
-  for (const [n, ok] of [[60, false], [61, true], [60 + 4096, true], [60 + 4097, false]]) {
-    assert.equal(validateManifest(manifest({ apiVersion: 4, secrets: { n: rawSeal(n) } })).ok, ok, String(n));
+  for (const [api, n, ok] of [[4, 60, false], [4, 61, true], [4, 60 + 4096, true], [4, 60 + 4097, false], [5, 60 + 4096, true], [5, 60 + 4097, false], [6, 60 + 4097, true], [6, 60 + 8192, true], [6, 60 + 8193, false]]) {
+    assert.equal(validateManifest(manifest({ apiVersion: api, secrets: { n: rawSeal(n) } })).ok, ok, `${api}/${n}`);
   }
+});
+
+test("secrets: typed cipher keys from apiVersion 6, with the app's Spanish messages", () => {
+  const typed = (o = {}) => ({ seal: FAKE_SEAL, use: "cipher-key", encoding: "hex", ...o });
+  const ok = validateManifest(manifest({ apiVersion: 6, secrets: { desKey: typed(), aesKey: typed({ encoding: "base64" }), token: FAKE_SEAL } }));
+  assert.equal(ok.ok, true);
+  assert.deepEqual(ok.manifest.secrets, { desKey: FAKE_SEAL, aesKey: FAKE_SEAL, token: FAKE_SEAL });
+  assert.deepEqual(ok.manifest.secretKeyEncodings, { desKey: "hex", aesKey: "base64" });
+
+  const bad = (secrets, api = 6) => validateManifest(manifest({ apiVersion: api, secrets }));
+  const msg = (message) => ({ ok: false, field: "secrets", message });
+  assert.deepEqual(bad({ desKey: typed() }, 4), msg('El secreto "desKey" no es un sello de Kino válido'));
+  for (const use of [undefined, "key", "CIPHER-KEY", 1, null]) assert.deepEqual(bad({ desKey: typed({ use }) }), msg('El secreto "desKey" solo admite "use": "cipher-key"'), String(use));
+  for (const encoding of [undefined, "utf8", "HEX", "base64url", 1, null]) assert.deepEqual(bad({ desKey: typed({ encoding }) }), msg('El secreto "desKey" debe tener "encoding": "hex" o "base64"'), String(encoding));
+  assert.deepEqual(bad({ desKey: typed({ alg: "des-ede3-ecb" }) }), msg('El secreto "desKey" tiene un campo desconocido: "alg"'));
+  assert.deepEqual(bad({ desKey: typed({ ["x".repeat(60)]: 1 }) }), msg(`El secreto "desKey" tiene un campo desconocido: "${"x".repeat(40)}"`));
+  // With several unknown fields the lexicographically smallest is named, like the app.
+  assert.deepEqual(bad({ desKey: typed({ zeta: 1, alg: 2 }) }), msg('El secreto "desKey" tiene un campo desconocido: "alg"'));
+  for (const s of [undefined, 42, "kino-sealed:v1:@@@"]) assert.deepEqual(bad({ desKey: typed({ seal: s }) }), msg('El secreto "desKey" no es un sello de Kino válido'), String(s));
+  for (const v of [[], 7]) assert.deepEqual(bad({ desKey: v }), msg('El secreto "desKey" no es un sello de Kino válido'));
+});
+
+test("seal.mjs: sealTyped checks the key size under its encoding and emits the typed object", () => {
+  const { privateKey, publicKeyHex } = testKeypair();
+  const hex24 = "0123456789abcdef23456789abcdef01456789abcdef0123";
+  const t = sealTyped(hex24, "o/r", "desKey", "hex", publicKeyHex);
+  assert.deepEqual(Object.keys(t), ["seal", "use", "encoding"]);
+  assert.equal(t.use, "cipher-key");
+  assert.equal(t.encoding, "hex");
+  assert.equal(openSealed(t.seal, "o/r", "desKey", privateKey, publicKeyHex), hex24);
+  assert.equal(validateManifest(manifest({ apiVersion: 6, secrets: { desKey: t } })).ok, true);
+  assert.equal(sealTyped("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=", "o/r", "aesKey", "base64", publicKeyHex).encoding, "base64");
+  for (const [v, enc] of [["00".repeat(20), "hex"], ["zz".repeat(24), "hex"], ["0".repeat(47), "hex"], ["@@@@", "base64"]]) {
+    assert.throws(() => sealTyped(v, "o/r", "k", enc, publicKeyHex), /16, 24 or 32 bytes/);
+  }
+  assert.throws(() => sealTyped(hex24, "o/r", "k", "utf8", publicKeyHex), /invalid --encoding/);
+  assert.equal(decodeCipherKey(hex24.toUpperCase(), "hex").length, 24);
+  assert.equal(decodeCipherKey("00".repeat(20), "hex"), null);
+});
+
+// The same vectors as the app's SealedSecretsV5Test: what one accepts, the other does.
+test("decodeCipherKey matches the app: base64 padding, url-safe and whitespace; degenerate triple-DES keys refused", () => {
+  const padded = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
+  for (const ok of [padded, padded.replace(/=+$/, ""), " AAECAwQFBgcICQoL\nDA0ODxAREhMUFRYXGBkaGxwdHh8=\t", "-_-_" + padded.slice(4)]) {
+    assert.equal(decodeCipherKey(ok, "base64")?.length, 32, ok);
+  }
+  for (const bad of [padded + "=", padded + "==", "AAECAwQFBgcICQoLDA0ODx=AREhMUFRYXGBkaGxwdHh8", "A" + padded.replace(/=+$/, ""), "AAE*AwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="]) {
+    assert.equal(decodeCipherKey(bad, "base64"), null, bad);
+  }
+  const k1 = "0123456789abcdef", k2 = "fedcba9876543210", k3 = "89abcdef01234567";
+  for (const bad of [k1 + k1 + k3, k1 + k2 + k2, k1 + "0023456789abcdef" + k3, "00".repeat(24)]) assert.equal(decodeCipherKey(bad, "hex"), null, bad);
+  assert.equal(decodeCipherKey(k1 + k2 + k1, "hex").length, 24);
+});
+
+test("seal.mjs's CLI: --use cipher-key --encoding hex prints the typed object; bad flag combinations exit 2", () => {
+  const { publicKeyHex } = testKeypair();
+  const script = join(here, "..", "seal.mjs");
+  const run = (args, input) => spawnSync(process.execPath, [script, ...args], { input, encoding: "utf8", env: { ...process.env, KINO_SEAL_PUBLIC_KEY: publicKeyHex } });
+  const ok = run(["--repo", "o/r", "--name", "desKey", "--use", "cipher-key", "--encoding", "hex"], "0123456789abcdef23456789abcdef01456789abcdef0123\n");
+  assert.equal(ok.status, 0, ok.stderr);
+  const printed = JSON.parse(ok.stdout.trim());
+  assert.equal(printed.use, "cipher-key");
+  assert.equal(printed.encoding, "hex");
+  assert.ok(printed.seal.startsWith("kino-sealed:v1:"));
+  assert.equal(run(["--repo", "o/r", "--name", "k", "--use", "key", "--encoding", "hex"], "00\n").status, 2);
+  assert.equal(run(["--repo", "o/r", "--name", "k", "--use", "cipher-key"], "00\n").status, 2);
+  assert.equal(run(["--repo", "o/r", "--name", "k", "--encoding", "hex"], "00\n").status, 2);
+  const wrongSize = run(["--repo", "o/r", "--name", "k", "--use", "cipher-key", "--encoding", "hex"], "0011\n");
+  assert.equal(wrongSize.status, 1);
+  assert.match(wrongSize.stderr, /16, 24 or 32 bytes/);
+  assert.equal(wrongSize.stdout, "");
+});
+
+test("validate: a typed secret whose .kino-secrets.json value isn't a key of the right size is a problem", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "kino-typed-"));
+  writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 6, secrets: { desKey: { seal: FAKE_SEAL, use: "cipher-key", encoding: "hex" } } }));
+  writeFileSync(join(dir, "plugin.js"), "export async function search(){ return [] }\nexport async function resolve(){ return null }\n");
+  writeFileSync(join(dir, ".kino-secrets.json"), JSON.stringify({ desKey: "00".repeat(20) }));
+  const r = await validate(dir);
+  assert.ok(r.problems.some((p) => p === 'secret "desKey" in .kino-secrets.json is not a 16, 24 or 32-byte key in hex'), JSON.stringify(r.problems));
+  writeFileSync(join(dir, ".kino-secrets.json"), JSON.stringify({ desKey: "0123456789abcdef23456789abcdef01456789abcdef0123" }));
+  assert.ok(!(await validate(dir)).problems.some((p) => p.includes("desKey")));
 });
 
 // The hidden prompt reads a raw-mode TTY, where a paste (and a fast typist) arrives as ONE chunk.
@@ -1149,8 +1651,8 @@ test("seal(): rejects a bad name, a missing repo, and an out-of-range value", ()
   assert.throws(() => seal("x", "o/r", "2bad", publicKeyHex));
   assert.throws(() => seal("x", "not-a-repo", "n", publicKeyHex));
   assert.throws(() => seal("", "o/r", "n", publicKeyHex));
-  assert.throws(() => seal("x".repeat(4097), "o/r", "n", publicKeyHex));
-  assert.doesNotThrow(() => seal("x".repeat(4096), "o/r", "n", publicKeyHex));
+  assert.throws(() => seal("x".repeat(8193), "o/r", "n", publicKeyHex));
+  assert.doesNotThrow(() => seal("x".repeat(8192), "o/r", "n", publicKeyHex));
 });
 
 test("seal.mjs's CLI reads the value from stdin, never argv, and prints one line", () => {
@@ -1750,16 +2252,20 @@ test("the repo's own .gitignore excludes the kit's local secrets file too", () =
 const fixturesDir = join(here, "..", "..", "..", "docs", "plugins", "fixtures", "live");
 const fixtures = existsSync(fixturesDir) ? fixturesDir : null;
 const needFixtures = (t) => { if (!fixtures) t.skip("no shared live fixtures around this kit"); return !!fixtures; };
-const M3U_FIXTURES = ["basic", "bom-crlf", "latin1", "broken", "headers", "unterminated-quote", "huge-line"];
+const M3U_FIXTURES = ["basic", "bom-crlf", "latin1", "broken", "headers", "unterminated-quote", "huge-line", "exthttp"];
 // Whole-playlist fixtures: their .expected.json holds the manifest, the typed servers, the
 // declaration and the grouped counts, checked here through loadPlaylist and in the app's
 // PluginLivePlaylistTest through PluginLiveProvider.
 const PLAYLIST_FIXTURES = ["any-hosts"];
 
+// The fields a fixture's .expected.json holds, as the app's M3uParserTest writes them.
+const FIXTURE_FIELDS = ["name", "url", "tvgId", "tvgName", "logo", "number", "group", "language", "country", "headers"];
+const asFixture = (r) => ({ total: r.total, skipped: r.skipped, entries: r.entries.map((e) => Object.fromEntries(FIXTURE_FIELDS.map((k) => [k, e[k]]))) });
+
 test("the kit's M3U reader gives the app's exact answer on every shared fixture", (t) => {
   if (!needFixtures(t)) return;
   for (const name of M3U_FIXTURES) {
-    const got = parseM3u(readFileSync(join(fixtures, `${name}.m3u`)));
+    const got = asFixture(parseM3u(readFileSync(join(fixtures, `${name}.m3u`))));
     const want = JSON.parse(readFileSync(join(fixtures, `${name}.expected.json`), "utf8"));
     assert.deepEqual(got, want, name);
   }
@@ -1806,7 +2312,101 @@ test("the kit's M3U reader drops hidden and refused entries during the parse, ne
   const r = parseM3u(text, { maxEntries: 3, hide: (e) => e.group === "XXX", allow: (url) => !url.includes("evil") });
   assert.deepEqual(r.entries.map((e) => e.name), ["C0", "C1", "C2"]);
   assert.deepEqual([r.total, r.hidden, r.refused], [5, 10, 4]);
-  assert.deepEqual(parseM3u(""), { entries: [], total: 0, skipped: 0 });
+  assert.deepEqual(parseM3u(""), { entries: [], total: 0, skipped: 0, epgUrls: [] });
+});
+
+const DRM_NONE = { drmKeyId: "", drmKey: "", drmLicenseUrl: "", drmLicenseHeaders: {} };
+const drmOf = (e) => ({ drmKeyId: e.drmKeyId, drmKey: e.drmKey, drmLicenseUrl: e.drmLicenseUrl, drmLicenseHeaders: e.drmLicenseHeaders });
+const KID = "0123456789abcdef0123456789abcdef";
+const KEY = "fedcba9876543210fedcba9876543210";
+
+test("the kit's M3U reader decodes UTF-16 lists, with a BOM or without one, like their UTF-8 text", () => {
+  const sample = "#EXTM3U\n#EXTINF:-1 group-title=\"Noticias\",Señal Ñ\nhttps://live.example.com/n.m3u8\n";
+  const be = (s) => Buffer.from(s, "utf16le").swap16();
+  const expected = parseM3u(sample);
+  assert.equal(expected.total, 1);
+  for (const [name, bytes] of [
+    ["LE BOM", Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(sample, "utf16le")])],
+    ["BE BOM", Buffer.concat([Buffer.from([0xfe, 0xff]), be(sample)])],
+    ["LE", Buffer.from(sample, "utf16le")],
+    ["BE", be(sample)],
+  ]) {
+    assert.equal(decodeM3u(bytes), sample, name);
+    assert.deepEqual(parseM3u(bytes), expected, name);
+  }
+  // UTF-8 and Latin-1 are never mistaken for UTF-16; two bytes are too few to sniff.
+  assert.equal(decodeM3u(Buffer.from(sample, "utf8")), sample);
+  assert.equal(decodeM3u(Buffer.from(sample, "latin1")), sample);
+  assert.equal(decodeM3u(Buffer.from([0x23, 0x45])), "#E");
+});
+
+test("the kit's M3U reader takes single-quoted and bare attribute values, and an apostrophe never swallows the title", () => {
+  const text = "#EXTM3U\n"
+    + "#EXTINF:-1 tvg-id=abc.co tvg-logo='http://logo.example.com/a.png' group-title='Noticias, Deportes',Canal A\n"
+    + "https://live.example.com/a.m3u8\n"
+    + "#EXTINF:-1 tvg-name=O'Brien group-title=\"Uno, Dos\",Canal B\n"
+    + "https://live.example.com/b.m3u8\n";
+  const [a, b] = parseM3u(text).entries;
+  assert.deepEqual([a.tvgId, a.logo, a.group, a.name], ["abc.co", "http://logo.example.com/a.png", "Noticias, Deportes", "Canal A"]);
+  assert.deepEqual([b.tvgName, b.group, b.name], ["O'Brien", "Uno, Dos", "Canal B"]);
+});
+
+test("the kit's M3U reader takes the header's guides: http(s) only, deduplicated, capped, single quotes too, never a late header", () => {
+  const text = "#EXTM3U url-tvg=\"https://epg.example.com/a.xml.gz, https://epg.example.com/b.xml,file:///sdcard/x.xml\" "
+    + "x-tvg-url=\"https://epg.example.com/b.xml,http://epg.example.org/c.xml,https://epg.example.org/d.xml\"\n"
+    + "#EXTINF:-1,Canal\nhttps://live.example.com/1.m3u8\n";
+  assert.deepEqual(parseM3u(text).epgUrls, ["https://epg.example.com/a.xml.gz", "https://epg.example.com/b.xml", "http://epg.example.org/c.xml"]);
+  assert.deepEqual(parseM3u("#EXTM3U url-tvg='https://epg.example.com/g.xml'\n").epgUrls, ["https://epg.example.com/g.xml"]);
+  assert.deepEqual(parseM3u("#EXTM3U\n#EXTINF:-1,A\nhttps://x.example.com/a\n").epgUrls, []);
+  assert.deepEqual(parseM3u("#EXTM3U\n#EXTINF:-1,A\nhttps://x.example.com/a\n#EXTM3U url-tvg=\"https://epg.example.com/late.xml\"\n").epgUrls, []);
+  assert.deepEqual(parseM3u(Buffer.from("\uFEFF#EXTM3U x-tvg-url=\"https://epg.example.com/g.xml\"\n#EXTINF:-1,A\nhttps://x.example.com/a\n")).epgUrls, ["https://epg.example.com/g.xml"]);
+});
+
+test("the kit's M3U reader takes a KODIPROP ClearKey license, hex or JSON, and drops a bad one or another key system", () => {
+  const one = (type, key) => parseM3u(`#EXTM3U\n#EXTINF:-1,C\n#KODIPROP:inputstream.adaptive.license_type=${type}\n#KODIPROP:inputstream.adaptive.license_key=${key}\nhttps://live.example.com/p.mpd\n`).entries[0];
+  assert.deepEqual(drmOf(one("clearkey", `${KID}:${KEY}`)), { ...DRM_NONE, drmKeyId: KID, drmKey: KEY });
+  assert.deepEqual(drmOf(one("org.w3.clearkey", `${KID.toUpperCase()}:${KEY}`)), { ...DRM_NONE, drmKeyId: KID, drmKey: KEY });
+  assert.deepEqual(drmOf(one("clearkey", '{"keys":[{"kty":"oct","kid":"ASNFZ4mrze8BI0VniavN7w","k":"_ty6mHZUMhD-3LqYdlQyEA"}],"type":"temporary"}')), { ...DRM_NONE, drmKeyId: KID, drmKey: KEY });
+  for (const bad of ["zz:yy", "0123:4567", '{"keys":[{"kid":"bad","k":"bad"}]}', '{"keys":']) assert.deepEqual(drmOf(one("clearkey", bad)), DRM_NONE, bad);
+  assert.deepEqual(drmOf(one("com.microsoft.playready", "https://license.example.com/acquire")), DRM_NONE);
+  assert.deepEqual(drmOf(parseM3u("#EXTM3U\n#EXTINF:-1,Libre\nhttps://live.example.com/l.m3u8\n").entries[0]), DRM_NONE);
+});
+
+test("the kit's M3U reader takes a KODIPROP Widevine license: its URL and request headers, by the app's limits", () => {
+  for (const type of ["com.widevine.alpha", "widevine", "WIDEVINE"]) {
+    const text = `#EXTM3U\n#EXTINF:-1,Canal widevine\n#KODIPROP:inputstream.adaptive.license_type=${type}\n`
+      + "#KODIPROP:inputstream.adaptive.license_key=https://license.example.com/acquire?id=1|User-Agent=Mozilla%2F5.0&X-Custom-Data=a+b%3D&Host=evil&bad name=x&Connection=close&X-Ctl=a%0Ab|R{SSM}|\n"
+      + "https://live.example.com/widevine.mpd\n";
+    const e = parseM3u(text).entries[0];
+    assert.deepEqual(drmOf(e), { ...DRM_NONE, drmLicenseUrl: "https://license.example.com/acquire?id=1", drmLicenseHeaders: { "User-Agent": "Mozilla/5.0", "X-Custom-Data": "a+b=" } }, type);
+    // License headers go to the license server only, never the stream.
+    assert.deepEqual(e.headers, {}, type);
+  }
+  const many = Array.from({ length: 20 }, (_, i) => `X-H${i}=${i}`).join("&");
+  const capped = parseM3u(`#EXTM3U\n#EXTINF:-1,C\n#KODIPROP:inputstream.adaptive.license_type=widevine\n#KODIPROP:inputstream.adaptive.license_key=https://l.example.com/|${many}\nhttps://live.example.com/p.mpd\n`).entries[0];
+  assert.equal(Object.keys(capped.drmLicenseHeaders).length, 16);
+  assert.equal(capped.drmLicenseHeaders["X-H15"], "15");
+  for (const key of ["", "ftp://license.example.com/x", `${KID}:${KEY}`, "https://", "https://a b.example.com/"]) {
+    const e = parseM3u(`#EXTM3U\n#EXTINF:-1,C\n#KODIPROP:inputstream.adaptive.license_type=com.widevine.alpha\n#KODIPROP:inputstream.adaptive.license_key=${key}\nhttps://live.example.com/p.mpd\n`).entries[0];
+    assert.equal(e.name, "C", key);
+    assert.deepEqual(drmOf(e), DRM_NONE, key);
+  }
+});
+
+test("the kit's M3U reader reads drm_legacy, and one entry's DRM never leaks into the next", () => {
+  const text = "#EXTM3U\n"
+    + "#EXTINF:-1,W\n#KODIPROP:inputstream.adaptive.drm_legacy=com.widevine.alpha|https://license.example.com/w|Referer=https%3A%2F%2Fsite.example.com%2F\nhttps://live.example.com/w.mpd\n"
+    + `#EXTINF:-1,C\n#KODIPROP:inputstream.adaptive.drm_legacy=org.w3.clearkey|${KID}:${KEY}\nhttps://live.example.com/c.mpd\n`
+    + "#EXTINF:-1,Libre\nhttps://live.example.com/l.m3u8\n";
+  const [w, c, libre] = parseM3u(text).entries;
+  assert.deepEqual(drmOf(w), { ...DRM_NONE, drmLicenseUrl: "https://license.example.com/w", drmLicenseHeaders: { Referer: "https://site.example.com/" } });
+  assert.deepEqual(drmOf(c), { ...DRM_NONE, drmKeyId: KID, drmKey: KEY });
+  assert.deepEqual(drmOf(libre), DRM_NONE);
+});
+
+test("the kit's M3U reader reads tvg-shift as the app: hours to minutes, at most a day either way", () => {
+  const shift = (v) => parseM3u(`#EXTM3U\n#EXTINF:-1 tvg-shift="${v}",C\nhttps://live.example.com/c.m3u8\n`).entries[0].tvgShiftMin;
+  assert.deepEqual(["+2", "-5", "2.5", "1,5", "24", "25", "abc", ""].map(shift), [120, -300, 150, 90, 1440, 0, 0, 0]);
 });
 
 test("the kit's XMLTV reader gives the app's answer on every shared guide, plain and gzip, and refuses a DOCTYPE", (t) => {
@@ -1866,6 +2466,64 @@ test("the kit's XMLTV reader: every DOCTYPE refused, caps, times and a broken ta
   assert.equal(parseXmltvTime("202609271230 +0000"), Date.parse("2026-09-27T12:30:00Z"));
   assert.equal(parseXmltvTime("basura"), null);
   assert.equal(parseXmltvTime("20261399000000"), null);
+});
+
+test("the kit's XMLTV reader ends a programme with no stop at the next one of its channel, else after an hour", () => {
+  const from = Date.parse("2026-09-27T00:00:00Z");
+  const to = Date.parse("2026-09-28T00:00:00Z");
+  const at = (hhmm) => Date.parse(`2026-09-27T${hhmm.slice(0, 2)}:${hhmm.slice(2)}:00Z`);
+  const p = (ch, start, title, stop = null) => `<programme start="20260927${start}00 +0000"${stop ? ` stop="20260927${stop}00 +0000"` : ""} channel="${ch}">${title === null ? "" : `<title>${title}</title>`}</programme>`;
+  const ends = (xml, opts = {}) => Object.fromEntries(Object.entries(parseXmltv(Buffer.from(`<tv>${xml}</tv>`), { from, to, ...opts }).programmes)
+    .map(([ch, l]) => [ch, l.map((x) => [x.title, x.start, x.end])]));
+  // In time order: each ends where the next of ITS channel starts; the last one an hour later.
+  assert.deepEqual(ends(p("a", "1000", "A1") + p("b", "1015", "B1") + p("a", "1030", "A2") + p("a", "1100", "A3", "1200") + p("a", "1300", "A4")), {
+    a: [["A1", at("1000"), at("1030")], ["A2", at("1030"), at("1100")], ["A3", at("1100"), at("1200")], ["A4", at("1300"), at("1300") + OPEN_END_MS]],
+    b: [["B1", at("1015"), at("1015") + OPEN_END_MS]],
+  });
+  // An untitled programme is not kept, but still ends the open one before it.
+  assert.deepEqual(ends(p("a", "1000", "A1") + p("a", "1020", null) + p("a", "1100", "A2", "1130")), {
+    a: [["A1", at("1000"), at("1020")], ["A2", at("1100"), at("1130")]],
+  });
+  // Out of order: an earlier one with no stop ends where the open one starts; the open one ends at
+  // the next kept start when that comes sooner than its own next programme.
+  assert.deepEqual(ends(p("a", "1100", "A2") + p("a", "1000", "A1") + p("a", "1130", "A3", "1200")), {
+    a: [["A1", at("1000"), at("1100")], ["A2", at("1100"), at("1130")], ["A3", at("1130"), at("1200")]],
+  });
+  assert.deepEqual(ends(p("a", "1030", "A2", "1045") + p("a", "1000", "A1") + p("a", "1200", "A3")), {
+    a: [["A1", at("1000"), at("1030")], ["A2", at("1030"), at("1045")], ["A3", at("1200"), at("1200") + OPEN_END_MS]],
+  });
+  // The same start twice with no stop: the second is dropped.
+  assert.deepEqual(ends(p("a", "1000", "A1") + p("a", "1000", "Dup") + p("a", "1100", "A2", "1200")), {
+    a: [["A1", at("1000"), at("1100")], ["A2", at("1100"), at("1200")]],
+  });
+  // An unparsable stop is no stop; the window applies to the end it gets; a cut guide closes what is open.
+  assert.deepEqual(ends(`<programme start="20260927100000 +0000" stop="basura" channel="a"><title>A1</title></programme>`), { a: [["A1", at("1000"), at("1100")]] });
+  assert.deepEqual(ends(p("a", "2330", "Late") + p("a", "0000", "Before", "0010"), { from: at("0005"), to: at("2345") }), {
+    a: [["Before", at("0000"), at("0010")], ["Late", at("2330"), at("2330") + OPEN_END_MS]],
+  });
+  const cut = parseXmltv(Buffer.from(`<tv>${p("a", "1000", "A1")}<programme`), { from, to });
+  assert.deepEqual([cut.programmes.a.map((x) => x.end), cut.truncated], [[at("1000") + OPEN_END_MS], true]);
+});
+
+test("a list or guide over its cap keeps its start, cut at the last whole line, as the app does", async () => {
+  assert.deepEqual(keepStart(Buffer.from("ab\ncd\nef"), 20), { bytes: Buffer.from("ab\ncd\nef"), cut: false });
+  assert.deepEqual(keepStart(Buffer.from("ab\ncd\nef"), 7), { bytes: Buffer.from("ab\ncd\n"), cut: true });
+  assert.deepEqual(keepStart(Buffer.from("abcdef"), 4), { bytes: Buffer.from("abcd"), cut: true });
+  // A declared playlist over contract.live.maxPlaylistBytes gives the channels of its start, and says so.
+  const entry = (i) => `#EXTINF:-1 group-title="G",C${i}\nhttps://live.example.com/${i}.m3u8\n`;
+  let text = "#EXTM3U\n";
+  for (let i = 0; text.length <= contract.live.maxPlaylistBytes + 100; i++) text += entry(i);
+  const body = Buffer.from(text);
+  const m = validateManifest(manifest({ apiVersion: 3, hosts: ["cdn.example.com", "live.example.com"], capabilities: ["home", "resolve", "channels"] })).manifest;
+  const fetchImpl = async () => new Response(body, { status: 200 });
+  const s = await loadPlaylist({ url: "https://cdn.example.com/big.m3u" }, { manifest: m, fetchImpl });
+  const kept = summarisePlaylist(keepStart(body, contract.live.maxPlaylistBytes).bytes);
+  assert.equal(s.cut, true);
+  assert.equal(s.total, kept.total);
+  assert.ok(s.total > 0 && s.skipped === kept.skipped);
+  assert.ok(summaryLines(s).some((l) => /Kino lee solo su comienzo/.test(l)));
+  const small = await loadPlaylist({ url: "https://cdn.example.com/s.m3u" }, { manifest: m, fetchImpl: async () => new Response(entry(1), { status: 200 }) });
+  assert.equal(small.cut, undefined);
 });
 
 test("run.mjs live playlist reports channels, groups and skipped entries", (t) => {
@@ -2136,4 +2794,991 @@ test("streamHosts any covers a movie's side subtitles and audio too, never a cha
   assert.equal(channel.url, value.url);
   assert.equal(channel.subtitles.length, 0);
   assert.equal(channel.audioTracks.length, 0);
+});
+
+/** Like sealedKino, but [encodings] names typed cipher keys ({ seal, use, encoding } in the manifest). */
+function typedKino(plainValues, encodings, fetchImpl = () => { throw new Error("must not reach the network"); }) {
+  const { dir, file } = withSecretsFile(plainValues);
+  const secrets = Object.fromEntries(Object.keys(plainValues).map((k) => [k, encodings[k] ? { seal: "x", use: "cipher-key", encoding: encodings[k] } : "x"]));
+  const m = JSON.parse(manifest({ apiVersion: 6, hosts: ["api.example.com"], secrets }));
+  const { kino } = createKino(m, { secretsFile: file, fetchImpl });
+  return { kino, dir };
+}
+
+const DES_HEX = "0123456789abcdef23456789abcdef01456789abcdef0123";
+const AES_B64 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
+const REFUSED = (e) => e.code === "crypto_error" && e.message === "no se puede usar un dato sellado aquí";
+
+test("kino.crypto: a typed hex key is a whole des-ede3 key, whatever keyEncoding the JS passes", () => {
+  const { kino } = typedKino({ desKey: DES_HEX }, { desKey: "hex" });
+  const m = kino.secret("desKey");
+  const want = kino.crypto.encrypt("des-ede3-ecb", { key: DES_HEX, keyEncoding: "hex", data: "hola" });
+  for (const keyEncoding of [undefined, "utf8", "base64"]) assert.equal(kino.crypto.encrypt("des-ede3-ecb", { key: m, keyEncoding, data: "hola" }), want);
+  assert.equal(kino.crypto.decrypt("des-ede3-ecb", { key: m, data: want }), "hola");
+});
+
+test("kino.crypto: a typed base64 key works for AES; a wrong size names the size", () => {
+  const { kino } = typedKino({ aesKey: AES_B64, shortKey: "00112233445566778899aabbccddeeff" }, { aesKey: "base64", shortKey: "hex" });
+  const iv = "000102030405060708090a0b0c0d0e0f";
+  assert.equal(kino.crypto.encrypt("aes-256-cbc", { key: kino.secret("aesKey"), iv, ivEncoding: "hex", data: "hola" }),
+    kino.crypto.encrypt("aes-256-cbc", { key: AES_B64, keyEncoding: "base64", iv, ivEncoding: "hex", data: "hola" }));
+  assert.throws(() => kino.crypto.encrypt("des-ede3-ecb", { key: kino.secret("shortKey"), data: "hola" }),
+    (e) => e.code === "crypto_error" && e.message === "la clave de des-ede3-ecb debe tener 24 bytes, tiene 16");
+});
+
+test("kino.crypto: a typed key is still exactly one marker, and never data, iv, hmac or pbkdf2", () => {
+  const { kino } = typedKino({ desKey: DES_HEX, hmacKey: "hm4c" }, { desKey: "hex" });
+  const m = kino.secret("desKey"), h = kino.secret("hmacKey");
+  assert.throws(() => kino.crypto.encrypt("des-ede3-ecb", { key: m + "A", data: "hola" }), REFUSED);
+  assert.throws(() => kino.crypto.encrypt("des-ede3-ecb", { key: "x" + m, data: "hola" }), REFUSED);
+  assert.throws(() => kino.crypto.encrypt("aes-128-ecb", { key: "0123456789abcdef", data: m }), REFUSED);
+  assert.throws(() => kino.crypto.encrypt("aes-128-cbc", { key: "0123456789abcdef", iv: m, data: "hola" }), REFUSED);
+  assert.throws(() => kino.crypto.hmac("sha256", m, "datos"), REFUSED);
+  assert.throws(() => kino.crypto.hmac("sha256", h + m, "datos"), REFUSED);
+  assert.throws(() => kino.crypto.pbkdf2("sha256", m, "salt", 10, 32), REFUSED);
+  assert.throws(() => kino.crypto.pbkdf2("sha256", "pw", m, 10, 32), REFUSED);
+  assert.equal(kino.crypto.hmac("sha1", h, "base"), kino.crypto.hmac("sha1", "hm4c", "base"));
+});
+
+test("kino.crypto: an untyped sealed key is still refused for des-ede3 at apiVersion 6", () => {
+  const { kino } = typedKino({ desKey: "0123456789abcdefghijklmn" }, {});
+  assert.throws(() => kino.crypto.encrypt("des-ede3-ecb", { key: kino.secret("desKey"), data: "hola" }), REFUSED);
+});
+
+test("a typed key's bytes, in hex of either case or base64, come back from a server as the marker", async () => {
+  const echo = [DES_HEX.toUpperCase(), Buffer.from(DES_HEX, "hex").toString("base64")].join("|");
+  const { kino } = typedKino({ desKey: DES_HEX }, { desKey: "hex" }, async () => new Response(echo));
+  const m = kino.secret("desKey");
+  const r = await kino.fetch("https://api.example.com/x");
+  assert.equal(r.text(), `${m}|${m}`);
+});
+
+test("kino.fetch: a typed key's marker is refused in the url, headers and every body kind; an untyped one still goes out", async () => {
+  const seen = [];
+  const { kino } = typedKino({ desKey: DES_HEX, token: "t0k" }, { desKey: "hex" }, async (u, init) => { seen.push(init.headers); return new Response("ok"); });
+  const m = kino.secret("desKey");
+  const refused = (e) => e.code === "invalid_request" && e.message === "no se puede usar un dato sellado aquí";
+  const U = "https://api.example.com/x";
+  await assert.rejects(kino.fetch(`${U}?k=${m}`), refused);
+  await assert.rejects(kino.fetch(U, { headers: { "X-K": m } }), refused);
+  await assert.rejects(kino.fetch(U, { method: "POST", body: m }), refused);
+  await assert.rejects(kino.fetch(U, { method: "POST", body: { json: { k: m } } }), refused);
+  await assert.rejects(kino.fetch(U, { method: "POST", body: { form: { k: m } } }), refused);
+  assert.equal(seen.length, 0);
+  const r = await kino.fetch(U, { headers: { "X-T": kino.secret("token") } });
+  assert.equal(r.status, 200);
+});
+
+test("migrate: the kit keeps what the app keeps", () => {
+  const m = JSON.parse(manifest({ apiVersion: 6, capabilities: ["search", "resolve", "migrate"] }));
+  const title = { kind: "title", ref: "old:42" };
+  const keep = (v, input = title) => checkOutput("migrate", v, m, [], { migrateInput: input });
+  assert.deepEqual(keep({ kind: "movie", id: "m42", ref: "R42" }).value, { kind: "movie", id: "m42", ref: "R42" });
+  assert.equal(keep(null).value, null);
+  assert.equal(keep(undefined).value, null);
+  for (const bad of ["plg1:x", 42, [], { kind: "episode", id: "m", ref: "r" }, { kind: "movie", id: "a b", ref: "r" },
+    { kind: "movie", id: "m", ref: "" }, { kind: "movie", id: "m", ref: "plg1:other:abc" }]) {
+    const r = keep(bad);
+    assert.equal(r.value, null, JSON.stringify(bad));
+    assert.equal(r.drops.length, 1, JSON.stringify(bad));
+  }
+  const chapter = { kind: "chapter", ref: "old:42:3", season: 1, episode: 3 };
+  assert.deepEqual(keep({ kind: "episode", ref: "E3", number: 3 }, chapter).value, { kind: "episode", ref: "E3", season: 1, number: 3 });
+  assert.equal(keep({ kind: "episode", ref: "E3", number: 0 }, chapter).value, null);
+  const live = { kind: "live", provider: "oldtv", code: "7" };
+  assert.deepEqual(keep({ kind: "live", code: "c-7" }, live).value, { kind: "live", code: "c-7" });
+  assert.equal(keep({ kind: "live", code: "a:b" }, live).value, null);
+});
+
+test("run.mjs passes migrate its input object", async () => {
+  const plugin = { migrate: async (input) => input };
+  assert.deepEqual(await call(plugin, "migrate", ['{"kind":"title","ref":"x"}']), { kind: "title", ref: "x" });
+});
+
+test("migrate is a capability that needs apiVersion 6", () => {
+  const r = validateManifest(manifest({ apiVersion: 4, capabilities: ["search", "resolve", "migrate"] }));
+  assert.equal(r.ok, false);
+  assert.equal(r.message, "Esta capacidad necesita apiVersion 6");
+  assert.ok(validateManifest(manifest({ apiVersion: 6, capabilities: ["search", "resolve", "migrate"] })).ok);
+});
+
+const v6 = (extra = {}) => ({ id: "demo", name: "Demo", version: "1.0.0", apiVersion: 6, entry: "plugin.js",
+  hosts: ["cdn.example"], capabilities: ["search", "resolve"], ...extra });
+
+test("apiVersion 6: a stream may ask for per-request signing, HLS only, never with drm or audio", () => {
+  const ok = checkOutput("resolve", { url: "https://cdn.example/a/index.m3u8", signing: "request", signContext: "c" }, v6()).value;
+  assert.equal(ok.signing, true);
+  assert.equal(ok.signContext, "c");
+  assert.equal(checkOutput("resolve", { url: "https://cdn.example/a", mime: "Application/X-MpegURL ", signing: "request" }, v6()).value.signing, true);
+  assert.throws(() => checkOutput("resolve", { url: "https://cdn.example/a.mp4", signing: "request" }, v6()), /solo funciona con video HLS/);
+  assert.throws(() => checkOutput("resolve", { url: "https://cdn.example/a.m3u8", signing: "request", audioTracks: [{ lang: "en", url: "https://cdn.example/en.aac" }] }, v6()), /no puede llevar drm ni pistas de audio/);
+  assert.throws(() => checkOutput("resolve", { url: "https://cdn.example/a.m3u8", signing: "segment" }, v6()), /El valor de "signing" no es válido/);
+  assert.throws(() => checkOutput("resolve", { url: "https://cdn.example/a.m3u8", signing: "request", signContext: "x".repeat(4097) }, v6()), /El dato "signContext" no es válido/);
+  assert.throws(() => checkOutput("resolve", { url: "https://cdn.example/a.m3u8", signing: "request", signContext: 7 }, v6()), /El dato "signContext" no es válido/);
+  assert.equal(checkOutput("resolve", { url: "https://cdn.example/a.m3u8", signing: "request", signContext: "x".repeat(4096) }, v6()).value.signContext.length, 4096);
+  const v4 = checkOutput("resolve", { url: "https://cdn.example/a.m3u8", signing: "request", signContext: "c" }, { ...v6(), apiVersion: 4 }).value;
+  assert.equal(v4.signing, undefined);
+  assert.equal(v4.signContext, undefined);
+});
+
+test("a kino.secret() marker in signContext is refused like the app refuses it", () => {
+  assert.throws(() => checkOutput("resolve", { url: "https://cdn.example/a.m3u8", signing: "request", signContext: JSON.stringify({ key: "__kinoSecret_k_ab12__" }) }, v6()),
+    /signContext no puede llevar un kino.secret\(\): llámalo dentro de sign\(\)/);
+});
+
+test("an inline liveChannels stream may not ask for signing", () => {
+  const m = v6({ capabilities: ["search", "resolve", "channels"] });
+  const page = (stream) => checkOutput("liveChannels", { items: [{ id: "c1", title: "C", stream }], next: null }, m);
+  assert.equal(page({ url: "https://cdn.example/a.m3u8" }).value.items.length, 1);
+  const refused = page({ url: "https://cdn.example/a.m3u8", signing: "request" });
+  assert.equal(refused.value.items.length, 0);
+  assert.match(refused.drops.join("\n"), /debe reproducirse con resolve\(\)/);
+});
+
+test("a channel with a ref and a signed inline stream plays through resolve(ref), as in the app", () => {
+  const m = v6({ capabilities: ["search", "resolve", "channels"] });
+  const out = checkOutput("liveChannels", { items: [{ id: "c1", title: "C", ref: "r1", stream: { url: "https://cdn.example/a.m3u8", signing: "request" } }], next: null }, m);
+  assert.equal(out.value.items.length, 1);
+  assert.equal(out.value.items[0].ref, "r1");
+  assert.equal(out.value.items[0].stream, null);
+});
+
+test("sign answers { headers }, filtered like a stream's, and never a sealed marker", () => {
+  assert.deepEqual(checkOutput("sign", { headers: { "Content-Auth": "a", Host: "x" } }, v6()).value, { headers: { "Content-Auth": "a" } });
+  assert.throws(() => checkOutput("sign", { headers: { "X-K": "__kinoSecret_k_ab__" } }, v6()), /no puede devolver datos sellados/);
+  // A marker in a NAME never gets that far: "_" is not a header-name character, so the app drops it like any bad name.
+  assert.deepEqual(checkOutput("sign", { headers: { "X-__kinoSecret_k_ab__": "v", "X-Ok": "1" } }, v6()).value, { headers: { "X-Ok": "1" } });
+  assert.throws(() => checkOutput("sign", null, v6()), /sign no devolvió \{ headers \}/);
+  assert.throws(() => checkOutput("sign", { headers: [] }, v6()), /sign no devolvió \{ headers \}/);
+});
+
+test("the signing lane refuses the network, storage, cookies and sleep as the app's does", async () => {
+  const { kino } = createKino(v6());
+  const lane = signingLane(kino);
+  const why = (api) => `sign() no puede usar ${api}: lo que necesites debe venir en signContext`;
+  await assert.rejects(async () => lane.fetch("https://cdn.example/"), (e) => e.code === "host_not_allowed" && e.message === "sign no puede usar la red");
+  for (const m of ["get", "set", "remove", "keys"]) {
+    assert.throws(() => lane.storage[m]("k"), (e) => e.code === "not_allowed" && e.message === why("kino.storage"));
+  }
+  for (const m of ["get", "clear"]) {
+    assert.throws(() => lane.cookies[m]("https://cdn.example/", "k"), (e) => e.code === "not_allowed" && e.message === why("kino.cookies"));
+  }
+  await assert.rejects(async () => lane.sleep(1), (e) => e.code === "not_allowed" && e.message === why("kino.sleep"));
+  assert.equal(lane.crypto, kino.crypto);
+  assert.equal(lane.secret, kino.secret);
+  assert.equal(lane.config, kino.config);
+  assert.equal(lane.log, kino.log);
+  assert.throws(() => { lane.fetch = 1; }, TypeError);
+});
+
+test("run.mjs calls sign with its JSON argument and resolve with a retry", async () => {
+  const plugin = {
+    sign: async (r) => ({ headers: { "X-Sig": r.kind + ":" + r.context } }),
+    resolve: async (ref, opts) => ({ url: "https://cdn.example/" + ref + (opts ? "-" + opts.retry.reason + opts.retry.attempt : "") + ".m3u8" }),
+  };
+  assert.deepEqual(await call(plugin, "sign", ['{"url":"https://cdn.example/a.ts","kind":"segment","ref":"R","context":"c"}']), { headers: { "X-Sig": "segment:c" } });
+  assert.equal((await call(plugin, "resolve", ["R"], { retry: { reason: "conflict", attempt: 1 } })).url, "https://cdn.example/R-conflict1.m3u8");
+  assert.equal((await call(plugin, "resolve", ["R"])).url, "https://cdn.example/R.m3u8");
+});
+
+test("validate --run resolve and run.mjs refuse a signed stream from a plugin that doesn't export sign, like the app", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "kino-nosign-"));
+  try {
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 6, hosts: ["cdn.example"] }));
+    writeFileSync(join(dir, "plugin.js"), "export async function search(){ return { items: [] } }\n" +
+      "export async function resolve(){ return { url: 'https://cdn.example/a.m3u8', signing: 'request', signContext: 'c' } }");
+    const r = await validate(dir, { run: "resolve", args: ["R"] });
+    assert.equal(r.ok, false);
+    assert.match(r.problems.join("\n"), /El plugin pide firmar el video pero no exporta sign\(\)/);
+    const cli = spawnSync(process.execPath, [join(here, "..", "run.mjs"), dir, "resolve", "R"], { encoding: "utf8" });
+    assert.equal(cli.status, 1, cli.stdout + cli.stderr);
+    assert.match(cli.stderr, /El plugin pide firmar el video pero no exporta sign\(\)/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- alternateHosts (apiVersion 6, only with signing: "request"), as PluginOutput.alternateHostsOf ---
+
+const cdns = () => v6({ hosts: ["cdn.example", ...[2, 3, 4, 5, 6, 7, 8].map((n) => `cdn${n}.example`)] });
+const signedWith = (alternateHosts, url = "https://cdn.example/live/a.m3u8") => ({ url, signing: "request", alternateHosts });
+
+test("a signed stream carries its other hosts, lowercased, a default port dropped and another one kept", () => {
+  const { value, drops } = checkOutput("resolve", signedWith(["cdn2.example", "CDN3.example:8443", "cdn4.example:443"]), cdns());
+  assert.deepEqual(value.alternateHosts, ["cdn2.example", "cdn3.example:8443", "cdn4.example"]);
+  assert.deepEqual(drops, []);
+  assert.equal(contract.output.signing.alternateHosts.maxEntries, 6);
+});
+
+test("an alternate host failing the stream URL's own rule, repeating one, or past six is dropped, never fatal", () => {
+  const { value, drops } = checkOutput("resolve", signedWith(["evil.example", "192.168.1.5", "localhost", "cdn.example", "CDN.example:443", "cdn2.example", "cdn2.EXAMPLE",
+    "https://cdn3.example", "cdn3.example/x", "[::1]", "cdn4.example:99999", "cdn5.example:0"]), cdns());
+  assert.deepEqual(value.alternateHosts, ["cdn2.example"]);
+  const all = drops.join("\n");
+  assert.match(all, /alternateHosts: evil\.example dropped: El servidor alternativo apunta a evil\.example, que el plugin no declaró/);
+  assert.match(all, /alternateHosts: cdn\.example repeats the stream's host or another entry, dropped/);
+  assert.match(all, /alternateHosts: "cdn3\.example\/x" is not a host or host:port, dropped/);
+  const many = checkOutput("resolve", signedWith([2, 3, 4, 5, 6, 7, 8].map((n) => `cdn${n}.example`)), cdns());
+  assert.deepEqual(many.value.alternateHosts, [2, 3, 4, 5, 6, 7].map((n) => `cdn${n}.example`));
+  assert.deepEqual(many.drops, ["alternateHosts: 6 kept, 1 more ignored"]);
+  const long = [...[2, 3, 4, 5, 6, 7].map((n) => `cdn${n}.example`), ...Array.from({ length: 200 }, (_, n) => (n % 2 ? `evil${n}.example` : `bad/${n}`))];
+  const capped = checkOutput("resolve", signedWith(long), cdns());
+  assert.deepEqual(capped.value.alternateHosts, [2, 3, 4, 5, 6, 7].map((n) => `cdn${n}.example`));
+  assert.deepEqual(capped.drops, ["alternateHosts: 6 kept, 200 more ignored"]);
+  // Another port of the primary's host is another authority.
+  assert.deepEqual(checkOutput("resolve", signedWith(["cdn.example:8080"]), cdns()).value.alternateHosts, ["cdn.example:8080"]);
+});
+
+test("alternateHosts of the wrong type refuses the signed stream, and means nothing without signing", () => {
+  for (const bad of ["cdn2.example", [5], ["cdn2.example", null], {}, true]) {
+    assert.throws(() => checkOutput("resolve", signedWith(bad), cdns()), /El dato "alternateHosts" no es válido/, JSON.stringify(bad));
+  }
+  assert.deepEqual(checkOutput("resolve", signedWith(null), cdns()).value.alternateHosts, []);
+  const plain = checkOutput("resolve", { url: "https://cdn.example/live/a.m3u8", alternateHosts: 5 }, cdns()).value;
+  assert.notEqual(plain.signing, true);
+  assert.deepEqual(plain.alternateHosts, []);
+  // Below apiVersion 6 the whole signing block is unknown: nothing kept, nothing refused.
+  const v5 = checkOutput("resolve", signedWith(["cdn2.example"]), { ...cdns(), apiVersion: 5 }).value;
+  assert.equal(v5.alternateHosts, undefined);
+});
+
+test("under liveStreamHosts any an alternate may be any public name or IPv4 literal, never a local one", () => {
+  const m = v6({ hosts: ["portal.example"], liveStreamHostsAny: true });
+  const { value } = checkOutput("resolve", signedWith(["203.0.113.7:8080", "other-cdn.net", "10.0.0.1", "localhost", "printer.local"], "http://190.2.3.4/live/a.m3u8"), m, [], { liveChannel: true });
+  assert.deepEqual(value.alternateHosts, ["203.0.113.7:8080", "other-cdn.net"]);
+});
+
+test("validate --run resolve and run.mjs surface the kept alternate hosts and say which were dropped", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "kino-alt-"));
+  try {
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 6, hosts: ["cdn.example", "cdn2.example"] }));
+    writeFileSync(join(dir, "plugin.js"), "export async function search(){ return { items: [] } }\n" +
+      "export async function resolve(){ return { url: 'https://cdn.example/a.m3u8', signing: 'request', alternateHosts: ['cdn.example', 'cdn2.example', 'evil.example'] } }\n" +
+      "export async function sign(r){ return { headers: {} } }");
+    const r = await validate(dir, { run: "resolve", args: ["R"] });
+    assert.equal(r.ok, true, r.problems.join("\n"));
+    assert.deepEqual(r.output.alternateHosts, ["cdn2.example"]);
+    assert.match(r.drops.join("\n"), /alternateHosts: cdn\.example repeats the stream's host/);
+    assert.match(r.drops.join("\n"), /alternateHosts: evil\.example dropped/);
+    const cli = spawnSync(process.execPath, [join(here, "..", "run.mjs"), dir, "resolve", "R"], { encoding: "utf8" });
+    assert.equal(cli.status, 0, cli.stdout + cli.stderr);
+    assert.deepEqual(JSON.parse(cli.stdout).alternateHosts, ["cdn2.example"]);
+    assert.match(cli.stderr, /\[dropped by Kino\] alternateHosts: evil\.example dropped/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("validate --run sign runs sign() in the signing lane, like run.mjs and the app", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "kino-lane-"));
+  try {
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 6, hosts: ["cdn.example"] }));
+    writeFileSync(join(dir, "plugin.js"), "export async function search(){ return { items: [] } }\n" +
+      "export async function resolve(){ return { url: 'https://cdn.example/a.m3u8', signing: 'request' } }\n" +
+      "export async function sign(r){ return { headers: { 'X-K': String(kino.storage.get('k')) } } }");
+    const r = await validate(dir, { run: "sign", args: ['{"url":"https://cdn.example/a.ts","kind":"segment","ref":"R","context":""}'] });
+    assert.equal(r.ok, false);
+    assert.match(r.problems.join("\n"), /sign\(\) no puede usar kino.storage/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("run.mjs --retry parses reason:attempt and refuses what the app would never send", () => {
+  assert.deepEqual(parseArgs(["--retry", "expired:2", "p", "resolve", "R"]).opts.retry, { reason: "expired", attempt: 2 });
+  assert.throws(() => parseArgs(["--retry", "nope:1"]), /--retry/);
+  assert.throws(() => parseArgs(["--retry", "conflict:4"]), /--retry/);
+  assert.throws(() => parseArgs(["--retry", "conflict"]), /--retry/);
+});
+
+test("below apiVersion 6 a stray confirm key on a setting is ignored, like the app", () => {
+  for (const apiVersion of [1, 4]) {
+    for (const confirm of ["¿Seguro?", 7]) {
+      const r = validateManifest(manifest({ apiVersion, settings: [{ key: "token", label: "Token", type: "text", confirm }] }));
+      assert.equal(r.ok, true, r.message);
+    }
+  }
+});
+
+test("section, status and action settings (apiVersion 6)", () => {
+  const base = (api, settings) => manifest({ apiVersion: api, settings });
+  const section = { key: "account", label: "Tu cuenta", type: "section", hint: "Opcional" };
+  const status = { key: "linked", label: "Estado", type: "status" };
+  const action = { key: "logout", label: "Cerrar sesión", type: "action", confirm: "¿Cerrar la sesión?" };
+  assert.equal(validateManifest(base(6, [section, status, action])).ok, true);
+  for (const [o, t, api] of [4, 5].flatMap((api) => [[section, "section", api], [status, "status", api], [action, "action", api]])) {
+    const r = validateManifest(base(api, [o]));
+    assert.equal(r.ok, false);
+    assert.match(r.message, new RegExp(`es de tipo ${t}: necesita apiVersion 6$`));
+  }
+  assert.equal(validateManifest(base(6, [{ ...status, confirm: "x" }])).message, 'Solo un ajuste de tipo action tiene "confirm" ("linked")');
+  assert.equal(validateManifest(base(6, [{ ...action, confirm: "x".repeat(121) }])).message, '"confirm" del ajuste "logout" debe ser un texto de 1 a 120 caracteres');
+  for (const bad of ["x".repeat(121), "  ", 3]) {
+    assert.equal(validateManifest(base(6, [{ ...action, confirm: bad }])).message, '"confirm" del ajuste "logout" debe ser un texto de 1 a 120 caracteres');
+  }
+  // apiVersion 4: the version refusal comes before every other check of the same setting, as in the app.
+  const need = (t, key) => `El ajuste "${key}" es de tipo ${t}: necesita apiVersion 6`;
+  assert.equal(validateManifest(base(4, [{ ...status, required: true }])).message, need("status", "linked"));
+  assert.equal(validateManifest(base(4, [{ ...status, hint: "x".repeat(81) }])).message, need("status", "linked"));
+  assert.equal(validateManifest(base(4, [action])).message, need("action", "logout"));
+  assert.equal(validateManifest(base(6, [{ ...status, required: true }])).message, 'El ajuste "linked" no puede ser obligatorio');
+  const values = Array.from({ length: 12 }, (_, i) => ({ key: `v${i}`, label: `V${i}`, type: "text" }));
+  const ui = Array.from({ length: 16 }, (_, i) => ({ key: `s${i}`, label: `S${i}`, type: "section" }));
+  assert.equal(validateManifest(base(6, [...values, ...ui])).ok, true);
+  assert.equal(validateManifest(base(6, [...values.slice(0, 11), ...ui, { key: "s17", label: "S17", type: "section" }])).message, "El plugin tiene más de 16 secciones, estados o acciones");
+  assert.equal(validateManifest(base(6, [...values, { key: "v13", label: "V", type: "text" }, ...ui.slice(0, 15)])).message, "El plugin pide más de 12 ajustes");
+  assert.deepEqual(requiredExports(["search", "resolve"], [section, status, action]).sort(), ["action", "resolve", "search", "settingsStatus"]);
+});
+
+// --- clearSettings (apiVersion 6, an action's answer), as PluginSettingsUi.parseActionResult ---
+
+test("an action's clearSettings keeps the plugin's own optional valued settings, once each, and says what it dropped", () => {
+  const m = JSON.parse(manifest({ apiVersion: 6, settings: [
+    { key: "email", label: "Correo", type: "text", required: true },
+    { key: "password", label: "Contraseña", type: "password" },
+    { key: "nickname", label: "Apodo", type: "text" },
+    { key: "linked", label: "Estado", type: "status" },
+    { key: "logout", label: "Salir", type: "action" },
+  ] }));
+  const drops = [];
+  const out = checkSettingsOutput("action", { message: "Sesión cerrada", clearSettings: ["password", "email", "linked", "logout", "ghost", 7, null, "nickname", "password"] }, m, (t) => t, (d) => drops.push(d));
+  assert.deepEqual(out, { message: "Sesión cerrada", refresh: false, clearSettings: ["password", "nickname"] });
+  assert.equal(drops.length, 1);
+  assert.match(drops[0], /clearSettings entries that cannot be cleared/);
+  assert.equal(contract.settings.ui.clearSettings.maxEntries, 12);
+  // Not an array: ignored and said, the action still succeeded.
+  const bad = [];
+  assert.deepEqual(checkSettingsOutput("action", { clearSettings: "password" }, m, (t) => t, (d) => bad.push(d)).clearSettings, []);
+  assert.match(bad[0], /clearSettings that is not an array/);
+  // Read up to the cap only.
+  const many = JSON.parse(manifest({ apiVersion: 6, settings: Array.from({ length: 12 }, (_, i) => ({ key: `k${i}`, label: `K${i}`, type: "text" })) }));
+  const keys = Array.from({ length: 40 }, (_, i) => `k${i}`);
+  assert.deepEqual(checkSettingsOutput("action", { clearSettings: keys }, many).clearSettings, keys.slice(0, 12));
+});
+
+test("run.mjs prints an action's kept clearSettings and which entries Kino dropped", () => {
+  const dir = mkdtempSync(join(tmpdir(), "kino-clear-"));
+  try {
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 6, settings: [
+      { key: "email", label: "Correo", type: "text", required: true },
+      { key: "password", label: "Contraseña", type: "password" },
+      { key: "logout", label: "Salir", type: "action" },
+    ] }));
+    writeFileSync(join(dir, "plugin.js"), "export async function search(){ return { items: [] } }\n" +
+      "export async function action(k){ return { message: 'Adiós', clearSettings: ['password', 'email'] } }");
+    const cli = spawnSync(process.execPath, [join(here, "..", "run.mjs"), dir, "action", "logout"], { encoding: "utf8" });
+    assert.equal(cli.status, 0, cli.stdout + cli.stderr);
+    assert.deepEqual(JSON.parse(cli.stdout), { message: "Adiós", refresh: false, clearSettings: ["password"] });
+    assert.match(cli.stderr, /\[dropped by Kino\] .*clearSettings entries that cannot be cleared/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("settingsStatus, action and validateSettings answers are read like the app reads them", () => {
+  const m = JSON.parse(manifest({ apiVersion: 6, settings: [
+    { key: "email", label: "Correo", type: "text" },
+    { key: "linked", label: "Estado", type: "status" },
+  ] }));
+  assert.deepEqual(checkSettingsOutput("settingsStatus", { linked: " Vinculada ", other: "x", email: "y" }, m), { linked: "Vinculada" });
+  assert.deepEqual(checkSettingsOutput("settingsStatus", "Vinculada", m), {});
+  assert.deepEqual(checkSettingsOutput("action", { message: " Listo ", refresh: true }, m), { message: "Listo", refresh: true, clearSettings: [] });
+  assert.deepEqual(checkSettingsOutput("action", undefined, m), { message: null, refresh: false, clearSettings: [] });
+  assert.deepEqual(checkSettingsOutput("validateSettings", null, m), { accepted: true });
+  assert.deepEqual(checkSettingsOutput("validateSettings", { email: "Correo inválido", account: "Bloqueada" }, m), { accepted: false, fieldErrors: { email: "Correo inválido" }, general: "Bloqueada" });
+  assert.deepEqual(checkSettingsOutput("validateSettings", "No se pudo entrar", m), { accepted: false, fieldErrors: {}, general: "No se pudo entrar" });
+  assert.throws(() => checkSettingsOutput("validateSettings", [1], m), /Kino no puede leer esta respuesta/);
+  assert.equal(checkSettingsOutput("settingsStatus", { linked: "a".repeat(500) }, m).linked.length, contract.settings.ui.statusMaxChars);
+});
+
+test("settings answers: garbage is dropped like the app drops it, never thrown", () => {
+  const m = JSON.parse(manifest({ apiVersion: 6, settings: [
+    { key: "email", label: "Correo", type: "text" },
+    { key: "password", label: "Clave", type: "password" },
+    { key: "linked", label: "Estado", type: "status" },
+  ] }));
+  for (const v of [null, undefined, [], 42, true, { linked: 3 }, { linked: { a: 1 } }, { linked: ["x"] }, { linked: "   " }]) assert.deepEqual(checkSettingsOutput("settingsStatus", v, m), {});
+  for (const v of [[], "x", 5, { message: { a: 1 }, refresh: 1 }, { message: "   ", refresh: "yes" }]) assert.deepEqual(checkSettingsOutput("action", v, m), { message: null, refresh: false, clearSettings: [] });
+  assert.deepEqual(checkSettingsOutput("validateSettings", { email: 5, password: { a: 1 }, x: [1], y: true }, m), { accepted: true });
+  assert.deepEqual(checkSettingsOutput("validateSettings", { email: "no", password: 7 }, m), { accepted: false, fieldErrors: { email: "no" }, general: null });
+  assert.deepEqual(checkSettingsOutput("validateSettings", "   ", m), { accepted: true });
+  for (const v of [true, 3, [], ["x"]]) assert.throws(() => checkSettingsOutput("validateSettings", v, m), /Kino no puede leer esta respuesta/);
+  const big = {}; for (let i = 0; i < 500; i++) big["k" + i] = "m".repeat(100);
+  assert.equal(checkSettingsOutput("validateSettings", big, m).general.length, contract.settings.ui.fieldErrorMaxChars);
+  assert.equal(checkSettingsOutput("validateSettings", { email: "e".repeat(5000) }, m).fieldErrors.email.length, contract.settings.ui.fieldErrorMaxChars);
+  assert.deepEqual(checkSettingsOutput("settingsStatus", { linked: "HolaSECRET" }, m, (t) => t.replaceAll("SECRET", "")), { linked: "Hola" });
+  assert.deepEqual(checkSettingsOutput("validateSettings", { email: "SECRETmal", z: "bloqueSECRETada" }, m, (t) => t.replaceAll("SECRET", "")), { accepted: false, fieldErrors: { email: "mal" }, general: "bloqueada" });
+});
+
+test("settings answers: a deeply nested answer is read like the app reads it (nothing, or refused), never a crash", () => {
+  const m = JSON.parse(manifest({ apiVersion: 6, settings: [{ key: "linked", label: "Estado", type: "status" }] }));
+  let deep = [];
+  for (let i = 0; i < 100000; i++) deep = [deep];
+  let deepObj = {};
+  for (let i = 0; i < 100000; i++) deepObj = { a: deepObj };
+  for (const v of [deep, deepObj]) {
+    assert.deepEqual(checkSettingsOutput("settingsStatus", v, m), {});
+    assert.deepEqual(checkSettingsOutput("action", v, m), { message: null, refresh: false, clearSettings: [] });
+  }
+  assert.throws(() => checkSettingsOutput("validateSettings", deep, m), /Kino no puede leer esta respuesta/);
+  assert.deepEqual(checkSettingsOutput("validateSettings", deepObj, m), { accepted: true });
+});
+
+test("the settings demo validates and its three exports run through call()", async () => {
+  const dir = join(here, "settings-demo");
+  const v = await validate(dir);
+  assert.deepEqual(v.problems, []);
+  const pluginFile = join(dir, "plugin.js");
+  const priorKino = globalThis.kino;
+  const { kino } = createKino(JSON.parse(readFileSync(join(dir, "kino-plugin.json"), "utf8")), { config: { email: "ana@x.co" }, storageFile: join(mkdtempSync(join(tmpdir(), "kino-demo-")), "s.json") });
+  globalThis.kino = kino;
+  const scratch = mkdtempSync(join(tmpdir(), "kino-demo-"));
+  writeFileSync(join(scratch, "p.mjs"), readFileSync(pluginFile));
+  const plugin = await import(join(scratch, "p.mjs"));
+  assert.deepEqual(await call(plugin, "settingsStatus", []), { linked: "Sin cuenta: sesión anónima", slow: 42 });
+  assert.deepEqual(await call(plugin, "action", ["test"]), { message: "Conexión correcta" });
+  assert.deepEqual(await call(plugin, "validateSettings", ['{"email":"sin-arroba"}']), { email: "Escribe un correo válido" });
+  assert.equal(await call(plugin, "validateSettings", ['{"email":"ana@x.co"}']), null);
+  // storage holds strings, so the status must read what the valid save stored
+  assert.deepEqual(await call(plugin, "settingsStatus", []), { linked: "Vinculada como ana@x.co", slow: 42 });
+  globalThis.kino = priorKino;
+  rmSync(scratch, { recursive: true, force: true });
+});
+
+test("validate refuses a status setting without settingsStatus", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "kino-ui-"));
+  writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 6, settings: [{ key: "linked", label: "Estado", type: "status" }] }));
+  writeFileSync(join(dir, "plugin.js"), "export async function search(){}\nexport async function resolve(){}");
+  const v = await validate(dir);
+  assert.equal(v.ok, false);
+  assert.match(v.problems.join("\n"), /settingsStatus/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("run.mjs runs the settings exports and prints what the app keeps", () => {
+  const demo = join(here, "settings-demo");
+  const run = (...args) => spawnSync(process.execPath, [join(here, "..", "run.mjs"), "--config", "email=ana@x.co", demo, ...args], { encoding: "utf8" });
+  const status = run("settingsStatus");
+  assert.equal(status.status, 0, status.stderr);
+  assert.deepEqual(JSON.parse(status.stdout), { linked: "Sin cuenta: sesión anónima" });
+  const act = run("action", "test");
+  assert.equal(act.status, 0, act.stderr);
+  assert.deepEqual(JSON.parse(act.stdout), { message: "Conexión correcta", refresh: false, clearSettings: [] });
+  const rejected = run("validateSettings", '{"password":"mala"}');
+  assert.deepEqual(JSON.parse(rejected.stdout), { accepted: false, fieldErrors: { password: "La contraseña no es correcta" }, general: null });
+  const garbage = run("validateSettings", '{"password":"rara"}');
+  assert.equal(garbage.status, 1);
+  assert.match(garbage.stderr, /Kino no puede leer esta respuesta/);
+  const raw = spawnSync(process.execPath, [join(here, "..", "run.mjs"), "--raw", demo, "validateSettings", '{"password":"mala"}'], { encoding: "utf8" });
+  assert.deepEqual(JSON.parse(raw.stdout), { password: "La contraseña no es correcta" });
+  const bad = run("validateSettings", "not json");
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /JSON object/);
+  rmSync(join(demo, ".kino-storage.json"), { force: true });
+});
+
+test("debug: an optional boolean from apiVersion 6, ignored below; on, it is a note for the author", async () => {
+  assert.deepEqual(contract.manifest.debug, { apiVersion: 6 });
+  assert.equal(validateManifest(manifest({ apiVersion: 6 })).manifest.debug, false);
+  assert.equal(validateManifest(manifest({ apiVersion: 6, debug: true })).manifest.debug, true);
+  assert.equal(validateManifest(manifest({ apiVersion: 4, debug: true })).manifest.debug, false);
+  assert.equal(validateManifest(manifest({ apiVersion: 4, debug: "yes" })).ok, true);
+  // apiVersion 5 is 0.9.45's: debug is an unknown field there, ignored whatever it holds.
+  assert.equal(validateManifest(manifest({ apiVersion: 5, debug: true })).manifest.debug, false);
+  assert.equal(validateManifest(manifest({ apiVersion: 5, debug: "yes" })).ok, true);
+  for (const value of ["yes", 1, null, []]) {
+    assert.deepEqual(validateManifest(manifest({ apiVersion: 6, debug: value })), { ok: false, field: "debug", message: 'El campo "debug" debe ser true o false' });
+  }
+  const dir = mkdtempSync(join(tmpdir(), "kino-debug-"));
+  try {
+    writeFileSync(join(dir, "plugin.js"), "export async function search(){ return { items: [] } }\nexport async function resolve(){ return { url: 'https://example.com/a.m3u8' } }");
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 6 }));
+    // Only the version note every apiVersion 6 plugin gets (validate.mjs); debug off adds nothing.
+    const authorNotes = (notes) => notes.filter((n) => !n.startsWith("apiVersion "));
+    assert.deepEqual(authorNotes((await validate(dir)).notes), []);
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 6, debug: true }));
+    const r = await validate(dir);
+    assert.equal(r.ok, true);
+    assert.deepEqual(authorNotes(r.notes), ['Modo debug activo ("debug": true): úsalo mientras desarrollas y quítalo antes de publicar el plugin']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("section and theme: apiVersion 6 manifest fields with the app's messages", () => {
+  assert.deepEqual(validateManifest(manifest({ apiVersion: 6, section: { label: "  Demo " } })).manifest.section, { label: "Demo" });
+  assert.equal(validateManifest(manifest({ apiVersion: 6 })).manifest.section, null);
+  const v4 = validateManifest(manifest({ apiVersion: 4, section: "nope", theme: 3 }));
+  assert.equal(v4.ok, true);
+  assert.equal(v4.manifest.section, null);
+  assert.deepEqual(v4.manifest.theme, {});
+  for (const bad of ["Demo", 3, [], null]) {
+    assert.deepEqual(validateManifest(manifest({ apiVersion: 6, section: bad })), { ok: false, field: "section", message: 'El campo "section" debe ser un objeto con "label"' });
+  }
+  for (const label of ["", "   ", "x".repeat(21), 5, null]) {
+    assert.deepEqual(validateManifest(manifest({ apiVersion: 6, section: { label } })), { ok: false, field: "section", message: 'El campo "section.label" debe tener entre 1 y 20 caracteres' });
+  }
+  assert.deepEqual(validateManifest(manifest({ apiVersion: 6, theme: { highlight: "#f7c948", accent: "#3d5afe" } })).manifest.theme, { accent: "#3D5AFE", highlight: "#F7C948" });
+  for (const bad of ["#FFFFFF", [], null]) {
+    assert.deepEqual(validateManifest(manifest({ apiVersion: 6, theme: bad })), { ok: false, field: "theme", message: 'El campo "theme" debe ser un objeto de colores' });
+  }
+  assert.deepEqual(validateManifest(manifest({ apiVersion: 6, theme: { accent: "blue" } })), { ok: false, field: "theme", message: 'El color "accent" de "theme" debe ser del tipo #RRGGBB' });
+  assert.deepEqual(validateManifest(manifest({ apiVersion: 6, theme: { surface: 123 } })), { ok: false, field: "theme", message: 'El color "surface" de "theme" debe ser del tipo #RRGGBB' });
+  assert.deepEqual(validateManifest(manifest({ apiVersion: 6, theme: { zeta: "#000000", bar: "#000000" } })), { ok: false, field: "theme", message: 'El campo "theme" tiene un color desconocido: "bar"' });
+  const m = validateManifest(manifest({ apiVersion: 6, section: { label: "Mía" } })).manifest;
+  assert.deepEqual(requiredExports(m.capabilities, m.settings, m).sort(), ["resolve", "search", "section"]);
+});
+
+test("palette: the same guardrails and Spanish warnings as the app", () => {
+  assert.equal(luminance("#FFFFFF"), 1);
+  assert.equal(contrast("#FFFFFF", "#000000"), 21);
+  assert.ok(Math.abs(deltaE("#D81F26", "#E50914") - 12.28) < 0.05);
+  const sound = resolvePalette({ accent: "#3D5AFE", onAccent: "#FFFFFF", background: "#101820", surface: "#1A2733", highlight: "#F7C948" });
+  assert.deepEqual(sound.kept, ["background", "surface", "accent", "onAccent", "highlight"]);
+  assert.deepEqual(sound.warnings, []);
+  assert.equal(sound.accent, "#3D5AFE");
+  const cases = [
+    [{ accent: "#D81F26", onAccent: "#FFFFFF" }, "theme.accent: se parece demasiado al rojo de Kino; se usan los colores de Kino para accent y onAccent"],
+    [{ accent: "#1DB954", onAccent: "#FFFFFF" }, "theme.onAccent: no se lee sobre accent (contraste 2,5:1, mínimo 4,5:1); se usan los colores de Kino para accent y onAccent"],
+    [{ accent: "#0B1E3F", onAccent: "#FFFFFF" }, "theme.accent: no se distingue sobre el fondo (contraste 1,1:1, mínimo 3:1); se usan los colores de Kino para accent y onAccent"],
+    [{ background: "#7A7A7A" }, "theme.background: es demasiado claro (el fondo debe ser oscuro); se usa el de Kino"],
+    [{ background: "#D81F26" }, "theme.background: se parece demasiado al rojo de Kino; se usa el de Kino"],
+    [{ surface: "#0E0E0E" }, "theme.surface: no se distingue del fondo (contraste 1,0:1, mínimo 1,05:1); se usa el de Kino"],
+    [{ surface: "#7A7A7A" }, "theme.surface: es demasiado claro; se usa el de Kino"],
+    [{ highlight: "#2B2B2B" }, "theme.highlight: no se lee sobre el fondo (contraste 1,3:1, mínimo 4,5:1); se usa el de Kino"],
+  ];
+  for (const [theme, warning] of cases) assert.deepEqual(resolvePalette(theme).warnings, [warning], JSON.stringify(theme));
+  assert.deepEqual(resolvePalette({ accent: "#1DB954", onAccent: "#000000" }).kept, ["accent", "onAccent"]);
+  assert.deepEqual(resolvePalette({ onAccent: "#FEFEFE" }).kept, ["onAccent"]);
+  assert.deepEqual(resolvePalette({ onAccent: "#000000" }).warnings, ["theme.onAccent: no se lee sobre accent (contraste 4,3:1, mínimo 4,5:1); se usan los colores de Kino para accent y onAccent"]);
+
+  // Parity with the app's extra cases.
+  assert.deepEqual(resolvePalette({ surface: "#D81F26" }).warnings, ["theme.surface: se parece demasiado al rojo de Kino; se usa el de Kino"]);
+  assert.deepEqual(resolvePalette({ highlight: "#F2303A" }).warnings, ["theme.highlight: se parece demasiado al rojo de Kino; se usa el de Kino"]);
+  assert.deepEqual(resolvePalette({ accent: "#3D5AFE", onAccent: "#E50914" }).warnings, ["theme.onAccent: se parece demasiado al rojo de Kino; se usan los colores de Kino para accent y onAccent"]);
+  const mix = resolvePalette({ background: "#101820", surface: "#1A2733", accent: "#1DB954", onAccent: "#FFFFFF", highlight: "#F7C948" });
+  assert.deepEqual(mix.kept, ["background", "surface", "highlight"]);
+  assert.equal(mix.warnings.length, 1);
+  assert.equal(mix.accent, "#E50914");
+  assert.equal(mix.highlight, "#F7C948");
+  const order = resolvePalette({ accent: "#D81F26", background: "#7A7A7A", surface: "#0E0E0E", highlight: "#2B2B2B" });
+  assert.deepEqual(order.warnings.map((w) => w.slice(6, w.indexOf(":"))), ["background", "surface", "accent", "highlight"]);
+  assert.deepEqual(order.kept, []);
+  assert.deepEqual(resolvePalette({ accent: "#F7C948", onAccent: "#000000" }).kept, ["accent", "onAccent"]);
+  assert.deepEqual(resolvePalette({}).warnings, []);
+  assert.deepEqual(resolvePalette().kept, []);
+  assert.equal(resolvePalette({ accent: "#3d5afe", onAccent: "#ffffff" }).accent, "#3D5AFE");
+});
+
+test("palette: malformed input never throws and falls back with a warning", () => {
+  for (const bad of ["", "red", "#12", "#GGGGGG", "#1234567", "3D5AFE", "#3D5AFE ", 12, null, {}, []]) {
+    const p = resolvePalette({ accent: bad, onAccent: bad, background: bad, surface: bad, highlight: bad, bogus: bad });
+    assert.deepEqual(p.kept, [], String(bad));
+    assert.equal(p.warnings.length, 4, String(bad));
+    assert.equal(p.background, "#0E0E0E");
+  }
+  for (const weird of [null, undefined, 5, "x", []]) assert.deepEqual(resolvePalette(weird).kept, []);
+});
+
+test("palette: ratios print floored to one decimal, identically to the app", () => {
+  const vectors = [[4.55, "4,5"], [0.35, "0,3"], [4.46, "4,4"], [4.49999, "4,4"], [21, "21,0"], [1, "1,0"], [1.049, "1,0"], [2.99, "2,9"]];
+  for (const [x, want] of vectors) assert.equal(formatRatio(x), want, String(x));
+});
+
+test("checkOutput: section and categories read like the app", () => {
+  const m = validateManifest(manifest({ apiVersion: 6, capabilities: ["home", "browse", "resolve"], section: { label: "Mía" } })).manifest;
+  const row = { id: "top", title: "Lo más visto", ref: "top", items: [{ id: "m1", ref: "R1", title: "Uno", kind: "movie" }] };
+  const s = checkOutput("section", { tabs: [{ id: "pelis", label: "Películas" }, { id: "pelis", label: "Dup" }, { id: "bad id", label: "x" }], tab: "otra", hero: { title: "  ", image: "https://example.com/b.jpg" }, rows: [row] }, m).value;
+  assert.deepEqual(s.tabs, [{ id: "pelis", label: "Películas" }]);
+  assert.equal(s.tab, "pelis");
+  assert.equal(s.hero, null);
+  assert.deepEqual(s.rows.map((r) => r.id), ["top"]);
+  assert.deepEqual(checkOutput("section", null, m).value, { tabs: [], tab: null, hero: null, rows: [] });
+  const many = Array.from({ length: 30 }, (_, i) => ({ id: `c${i + 1}`, title: `C${i + 1}`, ref: `r${i + 1}` }));
+  const cats = checkOutput("categories", [{ id: "x", title: "t".repeat(50), ref: "accion", art: "http://10.0.0.1/a.jpg" }, { id: "w", title: "Sin ref" }, ...many], m).value;
+  assert.equal(cats.length, 24);
+  assert.deepEqual(cats[0], { id: "x", title: "t".repeat(40), art: null, ref: "accion" });
+  const noBrowse = validateManifest(manifest({ apiVersion: 6, capabilities: ["home", "resolve"] })).manifest;
+  assert.deepEqual(checkOutput("categories", [{ id: "x", title: "A", ref: "r" }], noBrowse).value, []);
+});
+
+test("checkOutput: section tabs are capped at 8, labels at 24, hero text at 300, with the app's drop messages", () => {
+  const m = validateManifest(manifest({ apiVersion: 6, section: { label: "Mía" } })).manifest;
+  const tabs = Array.from({ length: 10 }, (_, i) => ({ id: `t${i + 1}`, label: `T${i + 1}` }));
+  const r = checkOutput("section", { tabs: [{ id: "b", label: "B" }, { id: "b", label: "B2" }, ...tabs, { id: "z", label: "x".repeat(30) }], hero: { title: "H", text: "y".repeat(400), image: "http://192.168.1.2/a.jpg" }, rows: [] }, m);
+  assert.deepEqual(r.value.tabs.map((t) => t.id), ["b", "t1", "t2", "t3", "t4", "t5", "t6", "t7"]);
+  assert.ok(r.drops.includes("section: duplicate tab b dropped"));
+  assert.ok(r.drops.includes("section: tabs beyond 8 dropped"));
+  assert.deepEqual(r.value.hero, { title: "H", image: "", text: "y".repeat(300) });
+  assert.equal(checkOutput("section", { tabs: [{ id: "a", label: "x".repeat(30) }], rows: [] }, m).value.tabs[0].label, "x".repeat(24));
+  assert.ok(checkOutput("section", [], m).drops.includes("section: the answer is not a JSON object"));
+  assert.ok(checkOutput("categories", {}, m).drops.includes("categories: ignored, the plugin doesn't declare browse"));
+});
+
+test("validate() refuses a plugin that declares a section but doesn't export it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "kino-section-"));
+  try {
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 6, section: { label: "Mía" } }));
+    writeFileSync(join(dir, "plugin.js"), "export async function search(){ return [] }\nexport async function resolve(){ return { url: 'https://example.com/a' } }");
+    const missing = await validate(dir);
+    assert.ok(missing.problems.some((p) => p.includes("doesn't export section")), JSON.stringify(missing.problems));
+    writeFileSync(join(dir, "plugin.js"), "export async function search(){ return [] }\nexport async function resolve(){ return { url: 'https://example.com/a' } }\nexport async function section(){ return { rows: [] } }");
+    assert.deepEqual((await validate(dir)).problems, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("run.mjs: section, categories and theme on the demo plugin", async () => {
+  const dir = join(here, "section-demo");
+  const plugin = await import(join(dir, "plugin.js"));
+  assert.deepEqual((await call(plugin, "section", ["series"])).tab, "series");
+  assert.equal((await call(plugin, "section", [])).tab, "pelis");
+  assert.equal((await call(plugin, "categories", [])).length, 3);
+  const run = (...args) => spawnSync(process.execPath, [join(here, "..", "run.mjs"), dir, ...args], { encoding: "utf8" });
+  const theme = run("theme");
+  assert.equal(theme.status, 0, theme.stderr);
+  assert.match(theme.stdout, /accent\s+#3D5AFE\s+se usa/);
+  assert.match(theme.stdout, /onAccent sobre accent: 5,1:1/);
+  // One token fails a guardrail on purpose: the kit shows the fallback and the app's warning.
+  assert.match(theme.stdout, /highlight\s+#6B5A2A\s+Kino\s+#F5F5F5/);
+  assert.match(theme.stdout, /aviso: theme\.highlight: no se lee sobre el fondo/);
+  const sec = run("section", "vacia");
+  assert.equal(sec.status, 0, sec.stderr);
+  assert.deepEqual(JSON.parse(sec.stdout).rows, []);
+  const cats = run("categories");
+  assert.equal(cats.status, 0, cats.stderr);
+  assert.equal(JSON.parse(cats.stdout).length, 3);
+  // Without a section in the manifest the kit refuses, like the app.
+  const bare = mkdtempSync(join(tmpdir(), "kit-nosection-"));
+  try {
+    writeFileSync(join(bare, "plugin.js"), "export async function home(){return []}\nexport async function resolve(){return null}\n");
+    writeFileSync(join(bare, "kino-plugin.json"), JSON.stringify({ id: "nosec", name: "Nosec", version: "1.0.0", apiVersion: 6, entry: "plugin.js", hosts: ["example.com"], capabilities: ["home", "resolve"] }));
+    const r = spawnSync(process.execPath, [join(here, "..", "run.mjs"), bare, "section"], { encoding: "utf8" });
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /does not declare "section"/);
+  } finally { rmSync(bare, { recursive: true, force: true }); }
+});
+
+// The guide's field table is hand-written: pin its apiVersion and capabilities rows to contract.json
+// so they can't drift again (they said "1, 2, 3 or 4" well after 5 shipped). Only in Kino's repo.
+test("the guide's apiVersion and capabilities rows name every version and capability the contract has", (t) => {
+  const readme = join(here, "..", "..", "..", "docs", "plugins", "README.md");
+  if (!existsSync(readme)) return t.skip("no guide around this kit");
+  const rows = readFileSync(readme, "utf8").split("\n");
+  const row = (field) => rows.find((r) => r.startsWith(`| \`${field}\` |`));
+  assert.ok(row("apiVersion").includes(`\`1\` to \`${contract.maxApiVersion}\``), row("apiVersion"));
+  for (const c of contract.capabilities.names) assert.ok(row("capabilities").includes(`\`${c}\``), `capabilities row lacks ${c}`);
+  for (const [c, v] of Object.entries(contract.capabilities.apiVersions)) {
+    assert.ok(row("capabilities").includes(`\`${c}\``) && row("capabilities").includes(`apiVersion: ${v}`), `capabilities row lacks ${c}'s apiVersion ${v}`);
+  }
+});
+
+test("the guide's kino.fetch limits row names every fetch limit the app enforces", () => {
+  const row = TABLES.limits().split("\n").find((r) => r.startsWith("| `kino.fetch` |"));
+  assert.ok(row.includes(`at most ${contract.fetch.maxRequestsPerCall} requests per call, every hop counted, refused ones included (${contract.fetch.nuvioMaxRequestsPerCall} for a plugin converted from a Nuvio scraper)`), row);
+  assert.ok(row.includes(`at most ${contract.fetch.maxInFlight} fetches in flight at once`), row);
+  assert.ok(row.includes(`at most ${contract.fetch.maxHostQuestionsPerCall} host questions per call`), row);
+});
+
+// apiVersion 5 is Kino 0.9.45's (the author's signature, nothing else): a v5 manifest using an apiVersion 6
+// field is refused, or reads it exactly as those apps do (an unknown field, ignored).
+test("apiVersion 5 manifests read as Kino 0.9.45 and 0.9.46 read them: every apiVersion 6 field is refused or ignored", () => {
+  assert.equal(contract.maxApiVersion, 6);
+  const v5 = (extra) => validateManifest(manifest({ apiVersion: 5, ...extra }));
+  const ignored = v5({ debug: true, section: { label: "Mía" }, theme: { accent: "#3D5AFE" } });
+  assert.equal(ignored.ok, true);
+  assert.equal(ignored.manifest.debug, false);
+  assert.equal(ignored.manifest.section, null);
+  assert.deepEqual(ignored.manifest.theme, {});
+  assert.equal(v5({ debug: "yes", section: 7, theme: "red" }).ok, true);
+  assert.deepEqual(v5({ capabilities: ["search", "resolve", "migrate"] }), { ok: false, field: "capabilities", message: "Esta capacidad necesita apiVersion 6" });
+  const typed = v5({ secrets: { desKey: { seal: FAKE_SEAL, use: "cipher-key", encoding: "hex" } } });
+  assert.deepEqual(typed, { ok: false, field: "secrets", message: 'El secreto "desKey" no es un sello de Kino válido' });
+  const status = v5({ settings: [{ key: "linked", label: "Estado", type: "status" }] });
+  assert.equal(status.ok, false);
+  assert.equal(status.field, "settings");
+  // A stream's signing is ignored below 6: it plays unsigned.
+  const stream = checkOutput("resolve", { url: "https://cdn.example/a.m3u8", signing: "request", signContext: "c" }, { ...JSON.parse(manifest({ apiVersion: 5 })), hosts: ["cdn.example"] }).value;
+  assert.notEqual(stream.signing, true);
+});
+
+// apiVersion 5 shipped in Kino 0.9.45 (signature.fromApp); 6 first ships in 0.9.50 (nothing ships until the built-in source removal is done).
+test("each apiVersion above 4 names the Kino it first ships in, and validate's note reads it", async () => {
+  assert.equal(contract.manifest.signature.fromApp, "0.9.45");
+  assert.deepEqual(contract.apiVersionFromApp, { "6": "0.9.50" });
+  const dir = mkdtempSync(join(tmpdir(), "kino-from-app-"));
+  try {
+    writeFileSync(join(dir, "plugin.js"), "export async function search(){ return { items: [] } }\nexport async function resolve(){ return { url: 'https://example.com/a.m3u8' } }");
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 6 }));
+    assert.deepEqual((await validate(dir)).notes, ["apiVersion 6: requiere Kino 0.9.50 o superior; las versiones anteriores lo rechazan con «Este plugin necesita una versión más nueva de Kino»"]);
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 5 }));
+    assert.deepEqual((await validate(dir)).notes, ["apiVersion 5: requiere Kino 0.9.45 o superior; las versiones anteriores lo rechazan con «Este plugin necesita una versión más nueva de Kino»"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("checkOutput: adult entries are dropped below apiVersion 6 and kept, marked, from 6", () => {
+  const v5 = validateManifest(manifest({ apiVersion: 5, capabilities: ["home", "resolve"] })).manifest;
+  const v6 = validateManifest(manifest({ apiVersion: 6, capabilities: ["home", "resolve"] })).manifest;
+  const rows = [{ id: "r", title: "R", items: [{ id: "a", title: "A", kind: "movie", ref: "a", adult: true }] }];
+  // Its only item dropped, the row is no row at all (as in the app).
+  assert.equal(checkOutput("home", rows, v5).value.length, 0);
+  assert.equal(checkOutput("home", rows, v6).value[0].items[0].adult, true);
+  assert.equal(contract.output.adultApiVersion, 6);
+  assert.equal(contract.live.adultApiVersion, 6);
+});
+
+test("checkOutput: adult live categories, channels and category tiles follow the same gate", () => {
+  const live = (apiVersion) => ({ ...JSON.parse(manifest({ apiVersion })), capabilities: ["home", "resolve", "channels"] });
+  const cats = [{ id: "x", title: "18+", adult: true }, { id: "n", title: "Noticias" }];
+  assert.deepEqual(checkOutput("liveCategories", cats, live(5)).value.categories.map((c) => c.id), ["n"]);
+  assert.deepEqual(checkOutput("liveCategories", cats, live(6)).value.categories.map((c) => [c.id, c.adult === true]), [["x", true], ["n", false]]);
+  const channels = [{ id: "c1", title: "Uno", ref: "r1", adult: true }, { id: "c2", title: "Dos", ref: "r2" }];
+  assert.deepEqual(checkOutput("liveChannels", channels, live(5)).value.items.map((c) => c.id), ["c2"]);
+  assert.deepEqual(checkOutput("liveChannels", channels, live(6)).value.items.map((c) => [c.id, c.adult === true]), [["c1", true], ["c2", false]]);
+  const tiles = [{ id: "x", title: "18+", ref: "rx", adult: true }, { id: "n", title: "Acción", ref: "rn" }];
+  const browse = (apiVersion) => ({ ...JSON.parse(manifest({ apiVersion })), capabilities: ["home", "browse", "resolve"] });
+  assert.deepEqual(checkOutput("categories", tiles, browse(5)).value.map((c) => c.id), ["n"]);
+  assert.deepEqual(checkOutput("categories", tiles, browse(6)).value.map((c) => [c.id, c.adult === true]), [["x", true], ["n", false]]);
+});
+
+test("run.mjs marks each kept 18+ entry with [18+], wherever the answer holds it", () => {
+  const m = validateManifest(manifest({ apiVersion: 6, capabilities: ["home", "resolve"] })).manifest;
+  const rows = checkOutput("home", [{ id: "r", title: "R", items: [
+    { id: "a", title: "Adulto", kind: "movie", ref: "a", adult: true }, { id: "b", title: "Uno", kind: "movie", ref: "b" }] }], m).value;
+  assert.deepEqual(adultLines(rows), ["[18+] Adulto (Kino lo muestra solo con el código 18+ desbloqueado)"]);
+  assert.deepEqual(adultLines({ categories: [{ id: "x", title: "18+", adult: true }], playlists: [] }), ["[18+] 18+ (Kino lo muestra solo con el código 18+ desbloqueado)"]);
+  assert.deepEqual(adultLines({ items: [{ id: "c", title: "Canal" }], next: null }), []);
+});
+
+test("run.mjs prints [18+] before an adult entry it kept", () => {
+  const dir = mkdtempSync(join(tmpdir(), "kino-adult-"));
+  try {
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 6 }));
+    writeFileSync(join(dir, "plugin.js"), `export async function search(){ return [{ id: "a", ref: "a", title: "Adulto", kind: "movie", adult: true }] }
+export async function resolve(){ return { url: "https://example.com/a.m3u8" } }`);
+    const r = runCli([dir, "search", "x"]);
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stderr, /\[18\+\] Adulto/);
+    assert.equal(JSON.parse(r.stdout).items[0].adult, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- Task 14c: scopedSearch (search inside a "Ver más" page) ----
+
+test("scopedSearch: apiVersion 6, only with search, and nothing more to export", () => {
+  const ok = validateManifest(manifest({ apiVersion: 6, capabilities: ["search", "browse", "resolve", "scopedSearch"] }));
+  assert.ok(ok.ok);
+  assert.deepEqual(requiredExports(ok.manifest.capabilities).sort(), ["browse", "resolve", "search"]);
+  assert.deepEqual(validateManifest(manifest({ apiVersion: 5, capabilities: ["search", "browse", "resolve", "scopedSearch"] })),
+    { ok: false, field: "capabilities", message: "Esta capacidad necesita apiVersion 6" });
+  assert.deepEqual(validateManifest(manifest({ apiVersion: 6, capabilities: ["home", "browse", "resolve", "scopedSearch"] })),
+    { ok: false, field: "capabilities", message: 'La capacidad "scopedSearch" necesita también "search"' });
+  assert.deepEqual(contract.capabilities.needsApproval.includes("scopedSearch"), false);
+});
+
+test("validate() warns when scopedSearch is declared but search() never reads query.within", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "kino-scoped-"));
+  const warning = 'Declara "scopedSearch" pero search() no lee query.within: Kino le pide buscar dentro de una página "Ver más" y recibiría la búsqueda completa (responde null si no puede buscar en esa página)';
+  try {
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 6, capabilities: ["search", "browse", "resolve", "scopedSearch"] }));
+    const rest = "\nexport async function browse(){ return { items: [] } }\nexport async function resolve(){ return { url: 'https://example.com/a' } }";
+    writeFileSync(join(dir, "plugin.js"), "export async function search(query){ return [] }" + rest);
+    const ignoring = await validate(dir);
+    assert.deepEqual(ignoring.problems, []);
+    assert.ok(ignoring.notes.includes(warning), ignoring.notes.join("\n"));
+    writeFileSync(join(dir, "plugin.js"), "export async function search(query){ if (query.within) return null; return [] }" + rest);
+    assert.ok(!(await validate(dir)).notes.includes(warning));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("run.mjs --within sends the browse ref as the app's scoped search does", async () => {
+  const { opts } = parseArgs(["--within", "row-7", "./p", "search", "matrix"]);
+  assert.equal(opts.within, "row-7");
+  const plugin = { search: async (q) => q };
+  const q = await call(plugin, "search", ["matrix"], { within: "row-7" });
+  assert.equal(q.q, "matrix");
+  assert.equal(q.within, "row-7");
+  assert.equal(q.type, "any");
+  assert.equal((await call(plugin, "search", ["matrix"], {})).within, undefined);
+  assert.throws(() => parseArgs(["--within"]), /--within needs/);
+});
+
+// --- alternatives (Stream.alternatives, from main): checked like `url`, never next to drm or signing, as PluginOutput.alternativesOf ---
+
+test("a stream's alternatives are checked like its url: bad, repeated or surplus ones dropped, none with signing", () => {
+  const url = "https://cdn.example/a.mp4";
+  const list = [{ url: "https://cdn2.example/b.mp4", mime: "video/mp4", headers: { Referer: "https://cdn.example/" } }, { url },
+    { url: "https://evil.example/c.mp4" }, { url: "https://cdn2.example/b.mp4" }, "nope",
+    ...[3, 4, 5, 6, 7, 8].map((n) => ({ url: `https://cdn${n}.example/x.mp4` })), { url: "https://cdn2.example/last.mp4" }, { url: "https://cdn2.example/over.mp4" }];
+  const { value } = checkOutput("resolve", { url, alternatives: list }, cdns());
+  assert.equal(contract.output.maxAlternatives, 8);
+  assert.equal(value.alternatives.length, 8);
+  assert.deepEqual(value.alternatives[0], { url: "https://cdn2.example/b.mp4", mime: "video/mp4", headers: { Referer: "https://cdn.example/" } });
+  assert.ok(!value.alternatives.some((a) => a.url === url || a.url.includes("evil")));
+  assert.equal(checkOutput("resolve", { url }, cdns()).value.alternatives, undefined);
+  const signed = checkOutput("resolve", { ...signedWith([]), alternatives: [{ url: "https://cdn2.example/b.m3u8" }] }, cdns()).value;
+  assert.equal(signed.alternatives, undefined);
+});
+
+// --- labelled and lazy copies (PluginOutput.STREAM_LABELS_API_VERSION): { label, ref } alternatives, as PluginOutput.alternativesOf ---
+
+const LABELS_API = contract.output.streamLabels.apiVersion;
+const labelled = { url: "https://cdn.example/a.m3u8", label: "  Latino · Streamwish  ", alternatives: [
+  { url: "https://cdn2.example/b.mp4", label: "Latino · Voe" }, { label: "Subtitulado · Filemoon", ref: "ep-1|sub" }, { ref: "ep-1|en" }] };
+
+test("labels and lazy { label, ref } copies are kept from the labels apiVersion, as the app reads them", () => {
+  const { value, drops } = checkOutput("resolve", labelled, { ...cdns(), apiVersion: LABELS_API });
+  assert.equal(value.label, "Latino · Streamwish");
+  assert.deepEqual(value.alternatives, [
+    { url: "https://cdn2.example/b.mp4", mime: "", headers: {}, label: "Latino · Voe" },
+    { ref: "ep-1|sub", label: "Subtitulado · Filemoon" },
+    { ref: "ep-1|en" },
+  ]);
+  assert.deepEqual(drops, []);
+});
+
+test("below the labels apiVersion a label is ignored and a ref-only copy dropped, exactly as before", () => {
+  const { value } = checkOutput("resolve", labelled, { ...cdns(), apiVersion: LABELS_API - 1 });
+  assert.equal(value.label, undefined);
+  assert.deepEqual(value.alternatives, [{ url: "https://cdn2.example/b.mp4", mime: "", headers: {} }]);
+});
+
+test("a bad label is dropped with a note and its copy kept; a bad or repeated ref is dropped; lazy copies share the maximum", () => {
+  const max = contract.output.streamLabels.maxChars;
+  const { value, drops } = checkOutput("resolve", {
+    url: "https://cdn.example/a.mp4", label: "x".repeat(max + 1),
+    alternatives: [{ ref: "r1", label: "La\u0007tino" }, { ref: "" }, { ref: "  " }, { ref: "r".repeat(contract.output.streamLabels.maxRefChars + 1) },
+      { ref: 5 }, { ref: "r1" }, { ref: "y", label: "y".repeat(max) }, ...[...Array(10).keys()].map((n) => ({ ref: `k${n}` }))],
+  }, { ...cdns(), apiVersion: LABELS_API });
+  assert.equal(value.label, undefined);
+  assert.equal(value.alternatives.length, contract.output.maxAlternatives);
+  assert.deepEqual(value.alternatives.slice(0, 2), [{ ref: "r1" }, { ref: "y", label: "y".repeat(max) }]);
+  assert.equal(drops.filter((d) => /label dropped/.test(d)).length, 2);
+  assert.equal(drops.filter((d) => /invalid ref/.test(d)).length, 4);
+});
+
+test("run.mjs lists a resolve's copies the way the Servidor menu shows them, with the command for a lazy one", async () => {
+  const { copyLines } = await import("../run.mjs");
+  const { value } = checkOutput("resolve", labelled, { ...cdns(), apiVersion: LABELS_API });
+  assert.deepEqual(copyLines(value), [
+    "copias (4), como las muestra el menú Servidor:",
+    "  1. Latino · Streamwish — cdn.example",
+    "  2. Latino · Voe — cdn2.example",
+    '  3. Subtitulado · Filemoon — se resuelve al elegirla: resolve "ep-1|sub"',
+    '  4. Opción 4 — se resuelve al elegirla: resolve "ep-1|en"',
+  ]);
+  assert.deepEqual(copyLines({ url: "https://cdn.example/a.mp4" }), []);
+});
+
+test("validate.mjs --run resolve follows the first lazy copy's ref and reports a copy the app would refuse", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "kino-lazy-"));
+  try {
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: LABELS_API, hosts: ["example.com"] }));
+    writeFileSync(join(dir, "plugin.js"), `
+      export async function search() { return []; }
+      export async function resolve(ref) {
+        if (ref === "t|good") return { url: "https://example.com/good.m3u8", alternatives: [{ url: "https://example.com/x.mp4" }] };
+        if (ref === "t|bad") return { url: "https://evil.example/v.m3u8" };
+        return { url: "https://example.com/a.m3u8", label: "Latino", alternatives: [{ label: "Inglés", ref: ref.endsWith("!") ? "t|bad" : "t|good" }] };
+      }`);
+    const ok = await validate(dir, { run: "resolve", args: ["t"] });
+    assert.deepEqual(ok.problems, []);
+    assert.ok(ok.notes.some((n) => /no recursion/.test(n)));
+    const bad = await validate(dir, { run: "resolve", args: ["t!"] });
+    assert.ok(bad.problems.some((p) => /lazy copy/.test(p) && /evil\.example/.test(p)), bad.problems.join("\n"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("checkOutput keeps a stream's skip times, drops the bad parts, never refuses the stream", () => {
+  const m = JSON.parse(manifest());
+  const base = { url: "https://example.com/v.mp4", durationMs: 1_420_000 };
+  const ok = checkOutput("resolve", { ...base, skip: { openingStartMs: 62_000, openingEndMs: 152_000.4, endingStartMs: 1_290_000 } }, m);
+  assert.deepEqual(ok.value.skip, { openingStartMs: 62_000, openingEndMs: 152_000, endingStartMs: 1_290_000 });
+  assert.deepEqual(ok.drops, []);
+  // No start: the opening starts at 0. Only an ending: kept alone.
+  assert.deepEqual(checkOutput("resolve", { ...base, skip: { openingEndMs: 90_000 } }, m).value.skip, { openingStartMs: 0, openingEndMs: 90_000, endingStartMs: null });
+  assert.deepEqual(checkOutput("resolve", { ...base, skip: { endingStartMs: 1_300_000 } }, m).value.skip, { openingStartMs: null, openingEndMs: null, endingStartMs: 1_300_000 });
+  // Past the duration, reversed, a string, an ending inside the opening: dropped, the stream still plays.
+  const bad = checkOutput("resolve", { ...base, skip: { openingStartMs: 100_000, openingEndMs: 90_000, endingStartMs: 2_000_000 } }, m);
+  assert.equal(bad.value.url, base.url);
+  assert.equal(bad.value.skip, undefined);
+  assert.equal(bad.drops.length, 1);
+  const half = checkOutput("resolve", { ...base, skip: { openingEndMs: 90_000, endingStartMs: 60_000 } }, m);
+  assert.deepEqual(half.value.skip, { openingStartMs: 0, openingEndMs: 90_000, endingStartMs: null });
+  assert.deepEqual(half.drops, ["resolve: skip.endingStartMs dropped (out of range or out of order)"]);
+  assert.equal(checkOutput("resolve", { ...base, skip: { openingEndMs: "90" } }, m).value.skip, undefined);
+  // An explicit null start is the same as leaving it out (0); an invalid one drops the opening, as in the app.
+  assert.deepEqual(checkOutput("resolve", { ...base, skip: { openingStartMs: null, openingEndMs: 90_000 } }, m).value.skip, { openingStartMs: 0, openingEndMs: 90_000, endingStartMs: null });
+  assert.equal(checkOutput("resolve", { ...base, skip: { openingStartMs: -5, openingEndMs: 90_000 } }, m).value.skip, undefined);
+  assert.equal(checkOutput("resolve", { ...base, skip: [1, 2] }, m).value.skip, undefined);
+  // Without durationMs the ceiling is contract.output.skip.maxMs.
+  assert.equal(checkOutput("resolve", { url: base.url, skip: { openingEndMs: contract.output.skip.maxMs + 1 } }, m).value.skip, undefined);
+  assert.equal(checkOutput("resolve", { url: base.url, skip: { openingEndMs: 90_000 } }, m).value.skip.openingEndMs, 90_000);
+});
+
+test("a live channel's skip is ignored", () => {
+  const m = JSON.parse(manifest({ apiVersion: 2 }));
+  const r = checkOutput("resolve", { url: "https://example.com/live.m3u8", skip: { openingEndMs: 90_000 } }, m, [], { liveChannel: true });
+  assert.equal(r.value.skip, undefined);
+  assert.deepEqual(r.drops, ["resolve: skip is ignored for a live channel"]);
+});
+
+// apiVersion 6: "browser": true and kino.browser.capture, which the Node kit cannot run.
+test("browser: read from apiVersion 6, its red consent line, and the kit answers browser_unavailable", async () => {
+  const v = (extra, api = 6) => validateManifest(manifest({ apiVersion: api, ...extra }));
+  assert.equal(v({ browser: true }).manifest.browser, true);
+  assert.equal(v({ browser: true }, 5).manifest.browser, false);
+  assert.deepEqual(v({ browser: "yes" }), { ok: false, field: "browser", message: contract.manifest.browser.notBooleanMessage });
+  const lines = consentLines(v({ browser: true }).manifest);
+  assert.deepEqual(lines.find((l) => l.text === contract.manifest.browser.consentLine), { text: contract.manifest.browser.consentLine, danger: true });
+  const dir = mkdtempSync(join(tmpdir(), "kino-browser-"));
+  try {
+    writeFileSync(join(dir, "plugin.js"), "export async function search(){ return [] }\nexport async function resolve(){ try { await kino.browser.capture('https://example.com/e/1') } catch (e) { return { url: 'https://example.com/' + e.code + '.m3u8' } } }");
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 6, browser: true }));
+    const r = spawnSync(process.execPath, [join(here, "..", "run.mjs"), dir, "resolve", "x"], { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /browser_unavailable\.m3u8/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// apiVersion 6 "browser": "pages": page reads too (kino.browser.page), with its own red line; "browser": true stays
+// capture-only with the old line. The kit has no browser.
+test("browser pages: its own wider line, true keeps the old one, and page answers browser_unavailable in the kit", async () => {
+  const v = (extra, api = 6) => validateManifest(manifest({ apiVersion: api, ...extra }));
+  const text = (browser) => consentLines(v({ browser }).manifest).map((l) => l.text);
+  assert.ok(text("pages").includes(contract.manifest.browser.pageConsentLine));
+  assert.ok(!text("pages").includes(contract.manifest.browser.consentLine));
+  assert.ok(text(true).includes(contract.manifest.browser.consentLine));
+  assert.ok(!text(true).includes(contract.manifest.browser.pageConsentLine));
+  assert.equal(v({ browser: "pages" }).manifest.browser, true);
+  assert.equal(v({ browser: "pages" }).manifest.browserPages, true);
+  assert.equal(v({ browser: true }).manifest.browserPages, false);
+  assert.equal(v({ browser: "pages" }, 5).manifest.browser, false);
+  assert.deepEqual(v({ browser: "page" }), { ok: false, field: "browser", message: contract.manifest.browser.notBooleanMessage });
+  assert.equal(contract.maxApiVersion, 6);
+  assert.equal(v({}, 7).ok, false);
+  const dir = mkdtempSync(join(tmpdir(), "kino-browser-page-"));
+  try {
+    writeFileSync(join(dir, "plugin.js"), "export async function search(q){ try { await kino.browser.page('https://example.com/?s=' + q, { waitFor: 'article' }) } catch (e) { return [{ id: e.code, title: e.code, ref: e.code, kind: 'movie' }] } }\nexport async function resolve(){ return { url: 'https://example.com/a.m3u8' } }");
+    writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 6, browser: "pages" }));
+    const r = spawnSync(process.execPath, [join(here, "..", "run.mjs"), dir, "search", "x"], { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /browser_unavailable/);
+    const val = spawnSync(process.execPath, [join(here, "..", "validate.mjs"), dir], { encoding: "utf8" });
+    assert.equal(val.status, 0, val.stderr + val.stdout);
+    assert.match(val.stdout + val.stderr, /kino\.browser\.page/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

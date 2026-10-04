@@ -13,25 +13,327 @@
 // from `.kino-secrets.json` next to the manifest (`{ "<name>": "<value>" }`, written by hand during
 // development; `seal.mjs` only ever produces the sealed string that goes in the manifest) and
 // simulates the app's marker, substitution, declared-host-and-https and redaction rules on top of that.
-import { createCipheriv, createDecipheriv, createHash, createHmac, pbkdf2Sync, randomBytes, randomUUID } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, createPublicKey, diffieHellman, generateKeyPairSync, pbkdf2Sync, randomBytes, randomUUID, sign as nodeSign, verify as nodeVerify } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { contract, hostMatches, isUserServer, kb, schemeAllowed } from "./contract.mjs";
+import { decodeCipherKey } from "./seal.mjs";
 import { filterRelevant, shortQuery, sortBySimilarity } from "./kino-rank.mjs";
 
 // Captured at load: the runner later replaces console.error to keep stdout clean, and kino.log
 // must not be routed through that replacement (it would print two prefixes).
 const writeErr = console.error.bind(console);
 
-export function kinoError(code, message) {
+export function kinoError(code, message, options) {
   const c = typeof code === "string" && /^[a-z_]{1,32}$/.test(code) ? code : "unknown";
   const e = new Error(String(message ?? "").slice(0, contract.errors.maxMessageChars));
   Object.defineProperty(e, "name", { value: `KinoError_${c}` });
   Object.defineProperty(e, "code", { value: c, enumerable: true });
+  // `{ userMessage }`: the plugin's own sentence for the person. Like the app: an own data property
+  // (a getter never runs), a string only, cut one character over the limit (then it is not shown).
+  let s = null;
+  try {
+    const d = options !== null && typeof options === "object" ? Object.getOwnPropertyDescriptor(options, "userMessage") : undefined;
+    if (d && typeof d.value === "string") s = d.value.slice(0, contract.errors.maxUserMessageChars + 1);
+  } catch { s = null; }
+  if (s !== null) Object.defineProperty(e, "userMessage", { value: s, enumerable: true });
   return e;
 }
 
+// The app's PluginErrors.shownSentence / PluginErrorText.reason rule, approximated (the app is
+// authoritative; it also hides a sentence that holds one of the person's passwords).
+const URL_RE = /\b(?:https?|wss?|ftp):\/\/\S+/i;
+const PREFIX_RE = /^(?:Uncaught\b\s*|(?:[A-Za-z_$][\w$.]*)?(?:Error|Exception)\s*:\s*|\[[^\]\n]{0,40}\]\s*)/;
+const CODE_CHARS_RE = /[{}()[\]<>=;$_`"|\\/]/;
+const CODE_WORDS_RE = /\b(?:undefined|null|NaN|function|prototype|is not defined|unexpected token)\b/;
+const PROSE_ASIDE_RE = /(?<=\s)\((?=[^)]*\p{L}{2,})[\p{L}\p{N} ,.¿?¡!'%-]{1,60}\)(?=[\s.,:!?]|$)/gu;
+
+const PUNCTUATION = " .,:;¿?¡!'’‘“”«»()%-–—▸";
+const MAX_DIGITS = 6;
+// Basic Latin and Latin-1 letters (what Spanish, Portuguese and English write), 0-9, the plain space and PUNCTUATION.
+// Latin-1's × ÷ and the letters NFD keeps whole (ø æ ð þ ß) are refused: no Spanish word needs them.
+const NOT_LETTERS_HERE = "×÷ØøÆæÐðÞþß";
+const allowedChar = (ch) => /[a-zA-Z0-9]/.test(ch) || PUNCTUATION.includes(ch) || (ch >= "À" && ch <= "ÿ" && !NOT_LETTERS_HERE.includes(ch));
+const GLUED_DIGIT_RE = /\p{L}[0-9]|[0-9]\p{L}/u;
+// What a text spells: lowercase, no accents, a-z only; `one` is what a 1 reads as, 0 reads as o.
+const letters = (text, one) => [...text.normalize("NFD").replace(/\p{M}+/gu, "").toLowerCase()]
+  .map((c) => (c === "1" ? one : c === "0" ? "o" : c)).filter((c) => c >= "a" && c <= "z").join("");
+const kinoSkeleton = (text) => letters([...text].map((c) => ("lL!¡|".includes(c) ? "i" : c)).join(""), "i");
+const DOMAIN_RES = [/[\p{L}\p{N}][.]\p{L}/u, /\s[.]/u, /[.]\s+[a-z]{2,6}(?!\p{L})/u];
+const LONG_STEMS = ["contrasen", "passw", "passc", "credencial", "daviplata", "whatsapp", "telegram", "transfer", "consign", "tarjeta", "deposit", "verificati"];
+const WORD_STEMS = ["abon", "recarg", "clave", "token", "cedula"];
+const WORDS = new Set(["pin", "pins", "cvv", "cvc", "otp", "www", "dot", "arroba"]);
+const TLDS = "com|net|org|co|app|dev|io|tv|xyz|info|site|online|click|link|lat|mx|ar|cl|pe|us|biz|club|live|shop|store|top|vip|cc|gg|ws|ly";
+const SPELLED_DOMAIN_RE = new RegExp(`(?:punto|dot)(?:${TLDS})$`);
+// Runs of 3+ one-letter words read as one word ("N e q u i").
+const collapseSpelled = (words) => {
+  const out = [];
+  for (let i = 0; i < words.length;) {
+    let j = i;
+    while (j < words.length && words[j].length === 1) j++;
+    if (j - i >= 3) { out.push(words.slice(i, j).join("")); i = j; } else { out.push(words[i]); i++; }
+  }
+  return out;
+};
+// Runs of 2+ neighbouring words of up to 3 letters, joined from each of their words on ("Ne qui", "pa go").
+const shortRuns = (words) => {
+  const out = [];
+  for (let i = 0; i < words.length;) {
+    let j = i;
+    while (j < words.length && words[j].length <= 3) j++;
+    for (let k = i; k < j - 1; k++) out.push(words.slice(k, j).join(""));
+    i = Math.max(j, i + 1);
+  }
+  return out;
+};
+// Spaces kept between ordinary words, a split word read whole; 1 read as i and as l, 0 as o (the app's PluginErrors.asks).
+const asks = (s) => ["i", "l"].some((one) => {
+  const words = collapseSpelled(s.split(/\s+/).map((w) => letters(w, one)).filter((w) => w));
+  const windows = [];
+  for (let n = 1; n <= 4; n++) for (let i = 0; i + n <= words.length; i++) windows.push(words.slice(i, i + n).join(""));
+  const shorts = [...words, ...shortRuns(words)];
+  return LONG_STEMS.some((st) => windows.some((w) => w.includes(st))) || windows.some((w) => SPELLED_DOMAIN_RE.test(w)) ||
+    /codigo.*(?:sms|verific|llego)/.test(words.join(" ")) ||
+    shorts.some((w) => w.includes("nequi") || WORDS.has(w) || WORD_STEMS.some((st) => w.startsWith(st)) || (w.startsWith("pag") && !w.startsWith("pagin")));
+});
+
+/** Whether the app lets [name] introduce a plugin's sentence ("Mensaje de <name>: …"). */
+export function safeName(name) {
+  return typeof name === "string" && name.length > 0 && name.trim() === name && [...name].every(allowedChar) && !name.includes(":") && !GLUED_DIGIT_RE.test(name) && !kinoSkeleton(name).includes("kino");
+}
+
+/** Why the app would NOT show [err]'s userMessage, or null when it would (the app also checks the person's passwords). */
+function sentenceRefusal(err) {
+  if (!err || typeof err.userMessage !== "string") return "no userMessage";
+  if (!contract.errors.codes.includes(err.code)) return `the code ${err.code} is always worded by Kino`;
+  const s = err.userMessage.normalize("NFC").trim();
+  if (s.length === 0) return "empty";
+  if (s.length > contract.errors.maxUserMessageChars) return `longer than ${contract.errors.maxUserMessageChars} characters`;
+  if (![...s].every(allowedChar)) return "a character other than Latin-1 letters, 0-9, a plain space and .,:;¿?¡!'’‘“”«»()%-–—▸";
+  if (/;(?! )/.test(s)) return "a ; not followed by a space";
+  const prose = s.replace(/; /g, ", ");
+  if (URL_RE.test(s)) return "a URL";
+  if (PREFIX_RE.test(s)) return 'an error prefix ("TypeError:", "[Tag]")';
+  if (/[:,;\-–]$/.test(s)) return "it ends in : , ; or -";
+  if (CODE_CHARS_RE.test(prose.replace(PROSE_ASIDE_RE, " ")) || CODE_WORDS_RE.test(s)) return "it reads as code";
+  if ((s.match(/\p{L}{2,}/gu) || []).length < 2) return "fewer than two words";
+  if ((s.match(/[0-9]/g) || []).length >= MAX_DIGITS) return `${MAX_DIGITS} digits or more in all`;
+  if (GLUED_DIGIT_RE.test(s)) return "a digit glued to a letter";
+  if (DOMAIN_RES.some((re) => re.test(s))) return "a domain (site.app, site .app, site. app)";
+  if (kinoSkeleton(s).includes("kino")) return "it spells Kino";
+  if (asks(s)) return "it asks for credentials, money or contact outside Kino (or spells a domain)";
+  return null;
+}
+
+/** The sentence the app shows for [err] in place of its own line for the code, or null (Kino's line stays). */
+export function shownSentence(err) {
+  return sentenceRefusal(err) === null ? err.userMessage.normalize("NFC").trim() : null;
+}
+
+/** How run.mjs reports a typed error: `[code] message`, plus what the person reads ("Mensaje de <plugin>: …") when it carries a userMessage. */
+export function errorReport(err, pluginName = "Plugin") {
+  const head = `[${err.code}] ${err.message}`;
+  if (typeof err.userMessage !== "string") return head;
+  const why = safeName(pluginName) ? sentenceRefusal(err) : `the plugin's name "${pluginName}" can't introduce a sentence (a colon, Kino, a digit glued to a letter, or a character outside the alphabet)`;
+  return why === null
+    ? `${head}\n  la persona lee: "Mensaje de ${pluginName}: ${shownSentence(err)}"`
+    : `${head}\n  userMessage no se muestra (${why}): la persona lee la línea de Kino para ${err.code}`;
+}
+
 export { hostMatches as hostAllowed };
+
+// --- kino.crypto key pairs (apiVersion 6), with Node's crypto: the same answers, formats and errors
+// as the app's PluginKeys / PluginKeyRing. A private key is a KeyObject kept in this kino's own Map;
+// the plugin gets a handle that means nothing to another createKino() (another runtime in the app). ---
+
+const KP = contract.crypto.keyPairs;
+const KEY_UNKNOWN = "clave desconocida: una clave privada vive solo mientras este plugin está abierto; genera otra";
+const BAD_PUBLIC_KEY = "clave pública inválida";
+const COORD_BYTES = { "P-256": 32, "P-384": 48 };
+const SPKI_PREFIX = {
+  "P-256": Buffer.from("3059301306072a8648ce3d020106082a8648ce3d030107034200", "hex"),
+  "P-384": Buffer.from("3076301006072a8648ce3d020106052b81040022036200", "hex"),
+  ed25519: Buffer.from("302a300506032b6570032100", "hex"),
+  x25519: Buffer.from("302a300506032b656e032100", "hex"),
+};
+const OKP_CRV = { ed25519: "Ed25519", x25519: "X25519" };
+
+function keyPairApi({ pluginSecrets, buf }) {
+  const fail = (message) => { throw kinoError("crypto_error", message); };
+  const cut = (v) => String(v).slice(0, 20);
+  const ring = new Map();
+  const isObj = (v) => v !== null && typeof v === "object";
+  const optStr = (v) => (v === undefined || v === null ? undefined : String(v));
+  const handleOf = (k) => (typeof k === "string" ? k : isObj(k) && typeof k.handle === "string" ? k.handle : undefined);
+  const strings = (v, out = []) => {
+    if (typeof v === "string") out.push(v);
+    else if (isObj(v)) for (const [k, x] of Object.entries(v)) { out.push(k); strings(x, out); }
+    return out;
+  };
+  // Like the app: no sealed value in any field of these ops.
+  const refuseSealed = (o) => {
+    if (pluginSecrets && strings(o).some((t) => pluginSecrets.containsMarker(t) || pluginSecrets.containsCipherKeyMarker(t))) fail(SEALED_CRYPTO_REFUSED);
+  };
+  const keyType = (t) => (KP.types.includes(t) ? t : fail(`tipo de clave desconocido: ${cut(t ?? "")} (ec, ed25519 o x25519)`));
+  const curveOf = (c) => (KP.curves.includes(c) ? c : fail(`curva desconocida: ${cut(c ?? "")} (P-256 o P-384)`));
+  const outEnc = (e = "base64") => (e === "base64" || e === "hex" ? e : fail("una firma o un secreto sale en base64 o hex"));
+  const hashOf = (h = "SHA-256") => (KP.signHashes.includes(h) ? h.replace("-", "").toLowerCase() : fail(`hash de firma desconocido: ${cut(h)} (SHA-256 o SHA-384)`));
+  const formatOf = (f = "der") => (KP.signatureFormats.includes(f) ? f : fail(`formato de firma desconocido: ${cut(f)} (der o ieee-p1363)`));
+  const b64 = (v, field) => buf(v, "base64", field);
+
+  // { type, curve, raw } -> a Node public KeyObject (an EC point checked on its curve by Node).
+  const nodePublic = ({ type, curve, raw }) => {
+    try {
+      if (type === "ec") {
+        const n = COORD_BYTES[curve];
+        if (raw.length !== 1 + 2 * n || raw[0] !== 4) throw new Error();
+        return createPublicKey({ key: { kty: "EC", crv: curve, x: raw.subarray(1, 1 + n).toString("base64url"), y: raw.subarray(1 + n).toString("base64url") }, format: "jwk" });
+      }
+      if (raw.length !== 32) throw new Error();
+      return createPublicKey({ key: { kty: "OKP", crv: OKP_CRV[type], x: raw.toString("base64url") }, format: "jwk" });
+    } catch {
+      return fail(BAD_PUBLIC_KEY);
+    }
+  };
+  const checked = (pub) => { nodePublic(pub); return pub; };
+  const fromSpki = (der) => {
+    for (const [name, prefix] of Object.entries(SPKI_PREFIX)) {
+      if (der.length > prefix.length && der.subarray(0, prefix.length).equals(prefix)) {
+        const ec = KP.curves.includes(name);
+        return checked({ type: ec ? "ec" : name, curve: ec ? name : undefined, raw: Buffer.from(der.subarray(prefix.length)) });
+      }
+    }
+    return fail("spki no reconocido: solo P-256, P-384, Ed25519 o X25519 con curva nombrada");
+  };
+  const fromJwk = (j) => {
+    const field = (name) => (typeof j[name] === "string" ? b64(j[name], `jwk.${name}`) : fail(`al JWK le falta "${name}"`));
+    if (j.kty === "EC") {
+      const curve = curveOf(j.crv);
+      const x = field("x"), y = field("y");
+      if (x.length !== COORD_BYTES[curve] || y.length !== COORD_BYTES[curve]) fail(BAD_PUBLIC_KEY);
+      return checked({ type: "ec", curve, raw: Buffer.concat([Buffer.from([4]), x, y]) });
+    }
+    if (j.kty === "OKP") {
+      const type = j.crv === "Ed25519" ? "ed25519" : j.crv === "X25519" ? "x25519" : fail(`curva de JWK desconocida: ${cut(j.crv ?? "")}`);
+      return checked({ type, curve: undefined, raw: field("x") });
+    }
+    return fail(`kty de JWK desconocido: ${cut(j.kty ?? "")} (EC u OKP)`);
+  };
+  const rawOf = (publicKey, type) => {
+    const j = publicKey.export({ format: "jwk" });
+    return type === "ec" ? Buffer.concat([Buffer.from([4]), Buffer.from(j.x, "base64url"), Buffer.from(j.y, "base64url")]) : Buffer.from(j.x, "base64url");
+  };
+  const publicOut = ({ type, curve, raw }) => {
+    const n = COORD_BYTES[curve];
+    const jwk = Object.freeze(type === "ec"
+      ? { crv: curve, kty: "EC", x: raw.subarray(1, 1 + n).toString("base64url"), y: raw.subarray(1 + n).toString("base64url") }
+      : { crv: OKP_CRV[type], kty: "OKP", x: raw.toString("base64url") });
+    const spki = Buffer.concat([SPKI_PREFIX[curve || type], raw]).toString("base64");
+    return Object.freeze(curve ? { type, namedCurve: curve, jwk, spki, raw: raw.toString("base64") } : { type, jwk, spki, raw: raw.toString("base64") });
+  };
+  const entryOf = (k) => {
+    const h = handleOf(k);
+    if (h === undefined) fail('falta "key": la clave privada de generateKeyPair');
+    return ring.get(h) || fail(KEY_UNKNOWN);
+  };
+  // A public key given as { spki } (what generateKeyPair/importKey answer) or { jwk }; for verify, also a private key.
+  const publicOf = (k, allowPrivate) => {
+    if (isObj(k) && typeof k.spki === "string") return fromSpki(b64(k.spki, "publicKey"));
+    if (isObj(k) && isObj(k.jwk)) return fromJwk(k.jwk);
+    if (allowPrivate && handleOf(k) !== undefined) { const e = entryOf(k); return { type: e.type, curve: e.curve, raw: e.raw }; }
+    return fail('falta "publicKey": usa la de generateKeyPair o importKey');
+  };
+
+  return {
+    generateKeyPair(o) {
+      const p = isObj(o) ? o : {};
+      refuseSealed(p);
+      const type = keyType(optStr(p.type));
+      const curve = type === "ec" ? curveOf(optStr(p.namedCurve)) : undefined;
+      const { privateKey, publicKey } = type === "ec" ? generateKeyPairSync("ec", { namedCurve: curve }) : generateKeyPairSync(type);
+      const raw = rawOf(publicKey, type);
+      const handle = "kinokey_" + randomBytes(16).toString("hex");
+      ring.set(handle, { type, curve, privateKey, raw });
+      while (ring.size > KP.maxKeysPerRuntime) ring.delete(ring.keys().next().value);
+      const priv = Object.freeze(curve ? { type, namedCurve: curve, handle } : { type, handle });
+      return Object.freeze({ privateKey: priv, publicKey: publicOut({ type, curve, raw }) });
+    },
+    importKey(o) {
+      const p = isObj(o) ? o : {};
+      refuseSealed(p);
+      const format = optStr(p.format);
+      if (format === "jwk") {
+        if (!isObj(p.key)) fail('importKey con format "jwk" necesita key: un objeto JWK');
+        return publicOut(fromJwk(p.key));
+      }
+      if (format === "spki") return publicOut(fromSpki(b64(optStr(p.key), "key")));
+      if (format === "raw") {
+        const type = keyType(optStr(p.type));
+        const curve = type === "ec" ? curveOf(optStr(p.namedCurve)) : undefined;
+        return publicOut(checked({ type, curve, raw: b64(optStr(p.key), "key") }));
+      }
+      return fail(`formato de clave desconocido: ${cut(format ?? "")} (jwk, spki o raw)`);
+    },
+    sign(o) {
+      const p = isObj(o) ? o : {};
+      refuseSealed(p);
+      const data = buf(p.data === undefined ? undefined : String(p.data), p.encoding || "utf8", "data");
+      const e = entryOf(p.key);
+      let sig;
+      if (e.type === "ec") {
+        const hash = hashOf(optStr(p.hash));
+        sig = nodeSign(hash, data, { key: e.privateKey, dsaEncoding: formatOf(optStr(p.format)) });
+      } else if (e.type === "ed25519") {
+        if (p.hash !== undefined && p.hash !== null) fail('ed25519 no lleva hash: quita "hash"');
+        sig = nodeSign(null, data, e.privateKey);
+      } else {
+        fail("una clave x25519 no firma: úsala con deriveSharedSecret");
+      }
+      return sig.toString(outEnc(p.outputEncoding));
+    },
+    verify(o) {
+      const p = isObj(o) ? o : {};
+      refuseSealed(p);
+      const data = buf(p.data === undefined ? undefined : String(p.data), p.encoding || "utf8", "data");
+      const sig = buf(optStr(p.signature), p.signatureEncoding || "base64", "signature");
+      if (sig.length > KP.maxSignatureBytes) fail(`la firma pasa de ${KP.maxSignatureBytes} bytes`);
+      const pub = publicOf(p.key, true);
+      try {
+        if (pub.type === "ec") {
+          const hash = hashOf(optStr(p.hash));
+          const format = formatOf(optStr(p.format));
+          if (format === "ieee-p1363" && sig.length !== 2 * COORD_BYTES[pub.curve]) return false;
+          return nodeVerify(hash, data, { key: nodePublic(pub), dsaEncoding: format }, sig);
+        }
+        if (pub.type === "ed25519") {
+          if (p.hash !== undefined && p.hash !== null) fail('ed25519 no lleva hash: quita "hash"');
+          if (sig.length !== 64) return false;
+          return nodeVerify(null, data, nodePublic(pub), sig);
+        }
+      } catch (err) {
+        if (err && String(err.name).startsWith("KinoError")) throw err;
+        return false;
+      }
+      return fail("una clave x25519 no verifica firmas");
+    },
+    deriveSharedSecret(o) {
+      const p = isObj(o) ? o : {};
+      refuseSealed(p);
+      const e = entryOf(p.privateKey);
+      const peer = publicOf(p.publicKey, false);
+      if (peer.type !== e.type || peer.curve !== e.curve) fail("las dos claves deben ser del mismo tipo y curva");
+      if (e.type === "ed25519") fail("una clave ed25519 no deriva secretos: usa x25519 o ec");
+      let secret;
+      try {
+        secret = diffieHellman({ privateKey: e.privateKey, publicKey: nodePublic(peer) });
+      } catch (err) {
+        if (err && String(err.name).startsWith("KinoError")) throw err;
+        fail(BAD_PUBLIC_KEY);
+      }
+      return secret.toString(outEnc(p.outputEncoding));
+    },
+  };
+}
 
 // --- sealed secrets: the same encodings, marker shape and redaction the app's PluginSecrets uses
 // (spec 2026-09-29-plugin-sealed-secrets §5, §6). The kit never opens a seal: it reads the plain
@@ -133,6 +435,30 @@ function pluginSecretsFor(manifest, secretsFile) {
   if (names.length === 0) return null;
   const nonce = randomBytes(8).toString("hex");
   const markers = Object.fromEntries(names.map((n) => [n, `__kinoSecret_${n}_${nonce}__`]));
+  // apiVersion 6 typed cipher keys: from the validated manifest, or the raw { seal, use, encoding } object.
+  const keyEncodings = {};
+  for (const n of names) {
+    const raw = manifest.secrets[n];
+    const enc = (manifest.secretKeyEncodings || {})[n] ?? (raw && typeof raw === "object" ? raw.encoding : undefined);
+    if (enc) keyEncodings[n] = enc;
+  }
+  const cipherKeyEncoding = (text) => {
+    for (const [n, enc] of Object.entries(keyEncodings)) if (markers[n] === text) return enc;
+    return null;
+  };
+  const containsCipherKeyMarker = (text) => typeof text === "string" && Object.keys(keyEncodings).some((n) => text.includes(markers[n]));
+  /** The app's PluginSecrets.keyEchoForms: a typed key's bytes as hex (either case) and base64/base64url, padded or not. */
+  const formsOf = (name, plain) => {
+    const forms = echoForms(plain);
+    const enc = keyEncodings[name];
+    const bytes = enc ? decodeCipherKey(plain, enc) : null;
+    if (bytes) {
+      const hex = bytes.toString("hex"), b64 = bytes.toString("base64"), url = b64.replace(/\+/g, "-").replace(/\//g, "_");
+      for (const f of [hex, hex.toUpperCase(), b64, b64.replace(/=+$/, ""), url, url.replace(/=+$/, "")]) forms.add(f);
+      bytes.fill(0);
+    }
+    return forms;
+  };
   const values = loadJson(secretsFile, {});
   const opened = {};
   const marker = (name) => markers[name];
@@ -178,7 +504,7 @@ function pluginSecretsFor(manifest, secretsFile) {
     for (const [name, plain] of Object.entries(opened)) {
       if (!plain) continue;
       const placeholder = placeholderFor(name);
-      for (const f of echoForms(plain)) if (f) forms.push([f, placeholder]);
+      for (const f of formsOf(name, plain)) if (f) forms.push([f, placeholder]);
     }
     if (forms.length === 0) return text;
     forms.sort((a, b) => b[0].length - a[0].length); // longest first: on a position tie the longest form wins.
@@ -202,7 +528,7 @@ function pluginSecretsFor(manifest, secretsFile) {
   function containsValue(text) {
     if (typeof text !== "string" || text === "") return false;
     openAll();
-    return Object.values(opened).some((plain) => plain && [...echoForms(plain)].some((f) => text.includes(f)));
+    return Object.entries(opened).some(([name, plain]) => plain && [...formsOf(name, plain)].some((f) => text.includes(f)));
   }
   // A stable, nonce-free placeholder for [record]/[replay]'s tape (spec §6): the marker itself is
   // random per runtime, so a tape keyed or written with it could never match a later run (a fresh
@@ -225,7 +551,7 @@ function pluginSecretsFor(manifest, secretsFile) {
     }
     return out;
   }
-  return { marker, containsMarker, isMarker, substitute, redact, containsValue, redactToCanonical, fromCanonical, sealedHosts: manifest.hosts || [] };
+  return { marker, containsMarker, isMarker, cipherKeyEncoding, containsCipherKeyMarker, substitute, redact, containsValue, redactToCanonical, fromCanonical, sealedHosts: manifest.hosts || [] };
 }
 
 const loadJson = (file, fallback) => (file && existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : fallback);
@@ -266,9 +592,16 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
   // rule (checkSealedHost below) and redaction, all simulated without opening the seal.
   const pluginSecrets = pluginSecretsFor(manifest, secretsFile);
   const redact = (text) => (pluginSecrets ? pluginSecrets.redact(text) : text);
+  // kino.log(...) and, apiVersion 6, kino.log.report(...): in the app a report also reaches the error tracker when the
+  // manifest says "telemetry": true or "verbose" (always for now; later unless the person turns it off; once an hour per area); here both go to stderr.
+  const logLine = (tag, args) => writeErr(tag, ...args.map((a) => (typeof a === "string" ? redact(a) : a)));
+  const kinoLog = Object.assign((...args) => logLine("[kino.log]", args), {
+    report: (...args) => logLine(manifest && manifest.telemetry ? "[kino.log.report]" : "[kino.log.report: sin \"telemetry\", solo registro]", args),
+  });
 
   const values = {};
   for (const s of manifest.settings || []) {
+    if (contract.settings.types[s.type]?.hasValue === false) continue; // section/status/action hold no value
     // A url setting never takes a manifest default (the app refuses one): only a typed server counts.
     const v = config[s.key] !== undefined ? config[s.key] : s.default !== undefined && contract.settings.types[s.type]?.canHaveDefault !== false ? s.default : s.type === "toggle" ? false : s.type === "select" ? s.options[0].value : undefined;
     if (s.type === "list") {
@@ -411,6 +744,8 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
 
   const badHeaderChar = (ch) => { const cp = ch.codePointAt(0); return cp !== 9 && (cp < 0x20 || cp > 0x7e); };
 
+  const isFormBody = (b) => Boolean(b && typeof b === "object" && b.form && typeof b.form === "object");
+
   async function fetchGated(url, opts = {}) {
     const o = opts || {};
     let method = String(o.method === undefined ? "GET" : o.method).toUpperCase();
@@ -429,6 +764,13 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
     let current;
     try { current = new URL(String(url)); } catch { throw kinoError("invalid_request", "URL inválida: " + String(url).slice(0, 200)); }
     if (pluginSecrets) {
+      // A typed cipher key (apiVersion 6) is for kino.crypto only: its marker anywhere in a request
+      // (url, header names or values, any body) is refused before any substitution, like the app.
+      const formHolds = isFormBody(o.body) && Object.entries(o.body.form).some(([fk, fv]) => pluginSecrets.containsCipherKeyMarker(String(fk)) || pluginSecrets.containsCipherKeyMarker(String(fv)));
+      if (formHolds || pluginSecrets.containsCipherKeyMarker(String(url)) || (typeof body === "string" && pluginSecrets.containsCipherKeyMarker(body)) ||
+          Object.entries(headers).some(([hk, hv]) => pluginSecrets.containsCipherKeyMarker(hk) || pluginSecrets.containsCipherKeyMarker(hv))) {
+        throw kinoError("invalid_request", SEALED_CRYPTO_REFUSED);
+      }
       // Headers: substituted raw, then refused if the plain value put a character OkHttp can't
       // send in a header (a line break or anything else outside tab/space..tilde) -- named only by
       // the header, never the value.
@@ -583,17 +925,21 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
   const redactOut = (v) => (pluginSecrets ? pluginSecrets.redact(v) : v);
 
   function cipher(decrypt, alg, p = {}) {
+    let typedEnc = null;
     if (pluginSecrets) {
       refuseSealedDataLike(p);
+      // A typed cipher key (apiVersion 6) as the WHOLE key: read with the manifest's encoding, so it
+      // is safe for des-ede3 too; the JS-chosen keyEncoding is ignored.
+      typedEnc = typeof p.key === "string" ? pluginSecrets.cipherKeyEncoding(p.key) : null;
       // A cipher key must be EXACTLY one marker, nothing before or after it: the rest of a longer
       // key would be known, and peeling it off shrinks the search to the secret alone.
       if (sealedIn(p.key) && !pluginSecrets.isMarker(p.key)) throw kinoError("crypto_error", SEALED_CRYPTO_REFUSED);
-      // And only as an AES key: a des-ede3 key read under a JS-chosen keyEncoding can carry little
-      // entropy per byte, which puts it in reach of a search.
-      if (sealedIn(p.key) && !String(alg).startsWith("aes-")) throw kinoError("crypto_error", SEALED_CRYPTO_REFUSED);
+      // An untyped one only as an AES key: a des-ede3 key read under a JS-chosen keyEncoding can
+      // carry little entropy per byte, which puts it in reach of a search.
+      if (sealedIn(p.key) && typedEnc === null && !String(alg).startsWith("aes-")) throw kinoError("crypto_error", SEALED_CRYPTO_REFUSED);
     }
     if (!k.ciphers.includes(alg)) throw kinoError("crypto_error", "cifrado desconocido: " + String(alg).slice(0, 20));
-    const key = buf(openKeyLike(p.key), p.keyEncoding || "utf8", "key");
+    const key = buf(openKeyLike(p.key), typedEnc || p.keyEncoding || "utf8", "key");
     const data = buf(p.data, p.inputEncoding || (decrypt ? "base64" : "utf8"), "data");
     const bits = alg.startsWith("des") ? 192 : Number(alg.split("-")[1]);
     if (key.length * 8 !== bits) throw kinoError("crypto_error", `la clave de ${alg} debe tener ${bits / 8} bytes, tiene ${key.length}`);
@@ -633,6 +979,7 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
     },
     hmac(alg, key, data, p = {}) {
       if (sealedIn(String(data))) throw kinoError("crypto_error", SEALED_CRYPTO_REFUSED);
+      if (pluginSecrets && pluginSecrets.containsCipherKeyMarker(String(key))) throw kinoError("crypto_error", SEALED_CRYPTO_REFUSED);
       if (!k.hashes.includes(alg)) throw kinoError("crypto_error", "algoritmo de hmac desconocido: " + String(alg).slice(0, 20));
       // Unlike a cipher key, the hmac key may join a marker with other text (e.g. OAuth 1's
       // `consumerSecret&tokenSecret`): HMAC mixes its whole key through a hash, so a known part
@@ -644,6 +991,7 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
     encrypt: (alg, p) => cipher(false, alg, p),
     decrypt: (alg, p) => cipher(true, alg, p),
     pbkdf2(hash, password, salt, iterations, keyLength, p = {}) {
+      if (pluginSecrets && (pluginSecrets.containsCipherKeyMarker(String(password)) || pluginSecrets.containsCipherKeyMarker(String(salt)))) throw kinoError("crypto_error", SEALED_CRYPTO_REFUSED);
       if (!k.pbkdf2Hashes.includes(hash)) throw kinoError("crypto_error", "hash de pbkdf2 desconocido: " + String(hash).slice(0, 20));
       if (!Number.isInteger(iterations) || iterations < 1 || iterations > k.pbkdf2MaxIterations) throw kinoError("crypto_error", `iteraciones de pbkdf2 entre 1 y ${k.pbkdf2MaxIterations}`);
       if (!Number.isInteger(keyLength) || keyLength < 1 || keyLength > k.pbkdf2MaxKeyBytes) throw kinoError("crypto_error", `longitud de clave de pbkdf2 entre 1 y ${k.pbkdf2MaxKeyBytes} bytes`);
@@ -656,6 +1004,8 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
       return redactOut(out(randomBytes(n), enc));
     },
     uuid: () => redactOut(randomUUID()),
+    // apiVersion 6's key pairs: the kit reports apiVersion contract.apiVersion, so they are here whenever the app's are.
+    ...(contract.apiVersion >= KP.apiVersion ? keyPairApi({ pluginSecrets, buf }) : {}),
   });
 
   const kino = Object.freeze({
@@ -725,8 +1075,25 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
       if (!m) throw new Error("este plugin no declara el secreto " + s.slice(0, 40));
       return m;
     },
-    error: (code, message) => kinoError(code, message),
-    log: (...args) => writeErr("[kino.log]", ...args.map((a) => (typeof a === "string" ? redact(a) : a))),
+    error: (code, message, options) => kinoError(code, message, options),
+    log: kinoLog,
+    // apiVersion 6: the app opens a hidden WebView; Node has none, so the kit answers as a device without one would.
+    // A plugin's resolve should already fall back (another server, a plain kino.fetch path) on this code.
+    // kino.browser.page ("browser": "pages", apiVersion 6) answers the same: a plugin keeps a plain kino.fetch path for it too.
+    ...(contract.apiVersion >= contract.browser.apiVersion ? {
+      browser: Object.freeze({
+        async capture() {
+          await null;
+          throw kinoError("browser_unavailable", "el kit de Node no tiene navegador: kino.browser.capture solo funciona en la app");
+        },
+        ...(contract.apiVersion >= contract.browser.page.apiVersion ? {
+          async page() {
+            await null;
+            throw kinoError("browser_unavailable", "el kit de Node no tiene navegador: kino.browser.page solo funciona en la app");
+          },
+        } : {}),
+      }),
+    } : {}),
   });
 
   return {
@@ -735,4 +1102,23 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
     resetBudget: () => { requests = 0; },
     saveTape: () => { if (record && tape) saveJson(record, tape); },
   };
+}
+
+/**
+ * The app's signing lane (SigningLaneHost + prelude.js): sign() gets kino.crypto, kino.secret,
+ * kino.config, kino.html and kino.log, never the network, storage, cookies or sleep. The refusals
+ * are the app's: fetch rejects with host_not_allowed, the rest with not_allowed.
+ */
+export function signingLane(kino) {
+  const why = (api) => kinoError("not_allowed", `sign() no puede usar ${api}: lo que necesites debe venir en signContext`);
+  const refused = (api) => () => { throw why(api); };
+  const methods = (names, api) => Object.freeze(Object.fromEntries(names.map((n) => [n, refused(api)])));
+  return Object.freeze({
+    ...kino,
+    fetch: async () => { throw kinoError("host_not_allowed", "sign no puede usar la red"); },
+    storage: methods(["get", "set", "remove", "keys"], "kino.storage"),
+    cookies: methods(["get", "clear"], "kino.cookies"),
+    sleep: async () => { throw why("kino.sleep"); },
+    ...(kino.browser ? { browser: Object.freeze({ capture: async () => { throw why("kino.browser"); }, ...(kino.browser.page ? { page: async () => { throw why("kino.browser"); } } : {}) }) } : {}),
+  });
 }

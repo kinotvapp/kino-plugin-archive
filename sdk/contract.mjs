@@ -62,9 +62,14 @@ export function schemeAllowed(u, manifest) {
   return (manifest.insecureHosts || []).includes(h);
 }
 
-/** The functions the entry file must export for [caps], as the app's ManifestParser.requiredExports. */
-export function requiredExports(caps) {
-  return [...new Set(caps.flatMap((c) => contract.capabilities.exports[c] || (contract.capabilities.declarative.includes(c) ? [] : [c])))];
+/** What the entry must export: the capabilities' functions, settingsStatus/action for a status/action setting, and `section` for a declared section (apiVersion 6). */
+export function requiredExports(caps, settings = [], manifest = {}) {
+  const ui = contract.settings.ui.exports;
+  const fromSettings = [
+    ...(settings.some((s) => s && s.type === "status") ? [ui.status] : []),
+    ...(settings.some((s) => s && s.type === "action") ? [ui.action] : []),
+  ];
+  return [...new Set([...caps.flatMap((c) => contract.capabilities.exports[c] || (contract.capabilities.declarative.includes(c) ? [] : [c])), ...fromSettings, ...(manifest.section ? [contract.manifest.section.export] : [])])];
 }
 
 /** Same checks, same order, same Spanish messages as the app's own manifest validation. Returns { ok, field?, message?, manifest? }. */
@@ -131,11 +136,16 @@ export function validateManifest(text, { knownPermissions = contract.permissions
   if (unknownCap !== undefined) return bad("capabilities", `Capacidad desconocida: "${unknownCap}"`);
   const tooNewCap = caps.find((c) => (contract.capabilities.apiVersions[c] ?? 1) > o.apiVersion);
   if (tooNewCap !== undefined) return bad("capabilities", `Esta capacidad necesita apiVersion ${contract.capabilities.apiVersions[tooNewCap]}`);
+  // A capability declared on its own (a subtitle provider: `["subtitles"]`) needs neither `required` nor `atLeastOneOf`.
+  const standalone = caps.length === 1 && contract.capabilities.standalone.includes(caps[0]);
   const missingRequiredCap = contract.capabilities.required.find((c) => !caps.includes(c));
-  if (missingRequiredCap !== undefined) return bad("capabilities", `El plugin debe declarar "${missingRequiredCap}"`);
-  if (!contract.capabilities.atLeastOneOf.some((c) => caps.includes(c))) {
+  if (!standalone && missingRequiredCap !== undefined) return bad("capabilities", `El plugin debe declarar "${missingRequiredCap}"`);
+  if (!standalone && !contract.capabilities.atLeastOneOf.some((c) => caps.includes(c))) {
     return bad("capabilities", `El plugin debe declarar "${contract.capabilities.atLeastOneOf.join('" o "')}"`);
   }
+  // A capability that rides on another (scopedSearch on search): refused without it.
+  const lacking = Object.entries(contract.capabilities.requires || {}).find(([c, needs]) => caps.includes(c) && !caps.includes(needs));
+  if (lacking) return bad("capabilities", contract.capabilities.requiresMessage.replace("{capability}", lacking[0]).replace("{requires}", lacking[1]));
   let liveStreamHostsAny = false;
   // Below its apiVersion the field is unknown and ignored like any other (v1/v2 stay as they were).
   if (o.liveStreamHosts !== undefined && o.apiVersion >= m.liveStreamHosts.apiVersion) {
@@ -159,18 +169,81 @@ export function validateManifest(text, { knownPermissions = contract.permissions
   // Only discovery reads it (never the runtime): valid at every apiVersion, exactly true or false.
   if (o.discoverable !== undefined && typeof o.discoverable !== "boolean") return bad("discoverable", 'El campo "discoverable" debe ser true o false');
   const discoverable = o.discoverable === undefined ? m.discoverable.default : o.discoverable;
+  // Only the plugin marketplace reads it (its category chips): valid at every apiVersion, a list of known ids without repeats.
+  if (o.categories !== undefined) {
+    const ok = Array.isArray(o.categories) && o.categories.every((c) => m.categories.values.includes(c)) && new Set(o.categories).size === o.categories.length;
+    if (!ok) return bad("categories", m.categories.message);
+  }
+  const categories = o.categories || [];
+  // apiVersion 6: a development aid the app reads (errors on screen, the Registro page). Below it, unknown and ignored.
+  let debug = false;
+  if (o.debug !== undefined && o.apiVersion >= m.debug.apiVersion) {
+    if (typeof o.debug !== "boolean") return bad("debug", 'El campo "debug" debe ser true o false');
+    debug = o.debug;
+  }
+  // apiVersion 6: diagnostic lines to Kino's error tracker (opt-in). Below it, unknown and ignored.
+  // true, false or "verbose" (playback summaries of good plays, live/cast problems and edge cases too).
+  let telemetry = false;
+  if (o.telemetry !== undefined && o.apiVersion >= m.telemetry.apiVersion) {
+    if (typeof o.telemetry !== "boolean" && o.telemetry !== m.telemetry.verbose.value) return bad("telemetry", m.telemetry.notBooleanMessage);
+    telemetry = o.telemetry;
+  }
+  // apiVersion 6: hidden web pages from resolve (kino.browser.capture), approved in red; "pages" also reads them
+  // (kino.browser.page), with its own red line. Below it, unknown and ignored.
+  let browser = false;
+  let browserPages = false;
+  if (o.browser !== undefined && o.apiVersion >= m.browser.apiVersion) {
+    if (typeof o.browser !== "boolean" && o.browser !== m.browser.pagesValue) return bad("browser", m.browser.notBooleanMessage);
+    browser = o.browser === true || o.browser === m.browser.pagesValue;
+    browserPages = o.browser === m.browser.pagesValue && o.apiVersion >= m.browser.pageApiVersion;
+  }
+  // apiVersion 6: the plugin's own section entry. Below it, unknown and ignored.
+  let section = null;
+  if (o.section !== undefined && o.apiVersion >= m.section.apiVersion) {
+    if (o.section === null || typeof o.section !== "object" || Array.isArray(o.section)) return bad("section", 'El campo "section" debe ser un objeto con "label"');
+    const label = typeof o.section.label === "string" ? o.section.label.trim() : "";
+    if (!label || label.length > m.section.labelMaxChars) return bad("section", 'El campo "section.label" debe tener entre 1 y 20 caracteres');
+    section = { label };
+  }
+  // apiVersion 6: the palette. Format only; the guardrails run where it is used.
+  const theme = {};
+  if (o.theme !== undefined && o.apiVersion >= m.theme.apiVersion) {
+    if (o.theme === null || typeof o.theme !== "object" || Array.isArray(o.theme)) return bad("theme", 'El campo "theme" debe ser un objeto de colores');
+    const unknown = Object.keys(o.theme).filter((k) => !m.theme.tokens.includes(k)).sort()[0];
+    if (unknown !== undefined) return bad("theme", `El campo "theme" tiene un color desconocido: "${unknown.slice(0, 40)}"`);
+    for (const k of m.theme.tokens) {
+      if (!(k in o.theme)) continue;
+      const v = o.theme[k];
+      if (typeof v !== "string" || !re(m.colorPattern).test(v)) return bad("theme", `El color "${k}" de "theme" debe ser del tipo #RRGGBB`);
+      theme[k] = v.toUpperCase();
+    }
+  }
   // Below its apiVersion the field is unknown and ignored like any other (v1/v2/v3 stay as they were).
   let secrets = {};
+  const secretKeyEncodings = {};
   if (o.secrets !== undefined && o.apiVersion >= m.secrets.apiVersion) {
     if (o.secrets === null || typeof o.secrets !== "object" || Array.isArray(o.secrets)) return bad("secrets", 'El campo "secrets" debe ser un objeto');
     const secretNames = Object.keys(o.secrets);
     if (secretNames.length > m.secrets.maxSecrets) return bad("secrets", `El campo "secrets" admite hasta ${m.secrets.maxSecrets} secretos`);
     const NAME = re(m.secrets.namePattern);
+    const T = m.secrets.typed;
+    const maxValueBytes = o.apiVersion >= m.secrets.largeApiVersion ? m.secrets.largeMaxValueBytes : m.secrets.maxValueBytes;
     const parsed = {};
     for (const name of secretNames) {
       if (!NAME.test(name)) return bad("secrets", `El secreto "${name.slice(0, 40)}" tiene un nombre inválido`);
-      if (!isWellFormedSeal(o.secrets[name], m.secrets)) return bad("secrets", `El secreto "${name}" no es un sello de Kino válido`);
-      parsed[name] = o.secrets[name];
+      let value = o.secrets[name];
+      // An object is a typed secret only from its apiVersion; below it, it is "not a seal" exactly as before.
+      if (value !== null && typeof value === "object" && !Array.isArray(value) && o.apiVersion >= T.apiVersion) {
+        // The lexicographically smallest unknown field, exactly as the app names it (deterministic whatever the key order).
+        const unknown = Object.keys(value).filter((k) => !["seal", "use", "encoding"].includes(k)).sort()[0];
+        if (unknown !== undefined) return bad("secrets", `El secreto "${name}" tiene un campo desconocido: "${unknown.slice(0, 40)}"`);
+        if (!T.uses.includes(value.use)) return bad("secrets", `El secreto "${name}" solo admite "use": "${T.uses[0]}"`);
+        if (!T.keyEncodings.includes(value.encoding)) return bad("secrets", `El secreto "${name}" debe tener "encoding": "hex" o "base64"`);
+        secretKeyEncodings[name] = value.encoding;
+        value = value.seal;
+      }
+      if (!isWellFormedSeal(value, maxValueBytes, m.secrets.prefix)) return bad("secrets", `El secreto "${name}" no es un sello de Kino válido`);
+      parsed[name] = value;
     }
     secrets = parsed;
   }
@@ -187,7 +260,7 @@ export function validateManifest(text, { knownPermissions = contract.permissions
   if (hosts.length === 0 && !(o.settings || []).some((x) => x.type === "url" || (x.type === "list" && Array.isArray(x.fields) && x.fields.some((f) => f.type === "url")))) {
     return bad("hosts", 'El campo "hosts" solo puede estar vacío si el plugin tiene un ajuste de tipo "url"');
   }
-  const out = { ...o, hosts: [...new Set(hosts)], capabilities: caps, permissions: o.permissions || [], settings: o.settings || [], insecureHosts, liveStreamHostsAny, streamHostsAny, fetchHostsAny, discoverable, secrets };
+  const out = { ...o, hosts: [...new Set(hosts)], capabilities: caps, permissions: o.permissions || [], settings: o.settings || [], insecureHosts, liveStreamHostsAny, streamHostsAny, fetchHostsAny, discoverable, categories, debug, telemetry, browser, browserPages, section, theme, secrets, secretKeyEncodings };
   // `signature` only where the app reads it (apiVersion 5+): an ignored one is dropped, as the app drops it.
   if (!signed) delete out.signature;
   return { ok: true, manifest: out };
@@ -195,21 +268,26 @@ export function validateManifest(text, { knownPermissions = contract.permissions
 
 /**
  * Shape only, like the app's SealedSecrets.isWellFormed: the kit never opens a seal. The overhead
- * (32-byte ephemeral pubkey + 12-byte nonce + 16-byte GCM tag = 60 bytes) plus 1..maxValueBytes of
+ * (32-byte ephemeral pubkey + 12-byte nonce + 16-byte GCM tag = 60 bytes) plus 1..maxValueBytes (4096, or 8192 from apiVersion 6) of
  * plaintext bounds the decoded length; SealedSecrets.kt is the source of truth for these numbers.
  */
-function isWellFormedSeal(seal, s) {
-  if (typeof seal !== "string" || !seal.startsWith(s.prefix)) return false;
-  const body = seal.slice(s.prefix.length);
+function isWellFormedSeal(seal, maxValueBytes, prefix) {
+  if (typeof seal !== "string" || !seal.startsWith(prefix)) return false;
+  const body = seal.slice(prefix.length);
   if (body.length === 0 || !/^[A-Za-z0-9_-]+$/.test(body)) return false;
   const raw = Buffer.from(body, "base64url");
   const overhead = 60;
-  return raw.length >= overhead + 1 && raw.length <= overhead + s.maxValueBytes;
+  return raw.length >= overhead + 1 && raw.length <= overhead + maxValueBytes;
 }
 
 function validateSettings(list, apiVersion = contract.maxApiVersion) {
   const s = contract.settings;
-  if (list.length > s.max) return `El plugin pide más de ${s.max} ajustes`;
+  const ui = s.ui;
+  if (apiVersion < ui.apiVersion) {
+    if (list.length > s.max) return `El plugin pide más de ${s.max} ajustes`;
+  } else if (list.length > s.max + ui.maxItems) {
+    return `El plugin pide más de ${s.max + ui.maxItems} ajustes`;
+  }
   const keys = new Set();
   for (let i = 0; i < list.length; i++) {
     const o = list[i];
@@ -222,9 +300,16 @@ function validateSettings(list, apiVersion = contract.maxApiVersion) {
     if (!label || label.length > s.labelMaxChars) return `El ajuste "${key}" necesita un nombre de 1 a ${s.labelMaxChars} caracteres`;
     const type = s.types[o.type];
     if (!type || typeof o.type !== "string") return `El ajuste "${key}" tiene un tipo desconocido`;
+    if (type.hasValue === false && apiVersion < type.apiVersion) return `El ajuste "${key}" es de tipo ${o.type}: necesita apiVersion ${type.apiVersion}`;
     if (typeof o.hint === "string" && o.hint.trim().length > s.hintMaxChars) return `La ayuda del ajuste "${key}" pasa de ${s.hintMaxChars} caracteres`;
     if (o.required !== undefined && typeof o.required !== "boolean") return `"required" del ajuste "${key}" debe ser true o false`;
     if (o.required === true && !type.canBeRequired) return `El ajuste "${key}" no puede ser obligatorio`;
+    // Below apiVersion 6 the key is unknown, so ignored like any other unknown key (as in the app).
+    if (o.confirm !== undefined && o.confirm !== null && apiVersion >= ui.apiVersion) {
+      if (o.type !== "action") return `Solo un ajuste de tipo action tiene "confirm" ("${key}")`;
+      const c = typeof o.confirm === "string" ? o.confirm.trim() : "";
+      if (!c || c.length > ui.confirmMaxChars) return `"confirm" del ajuste "${key}" debe ser un texto de 1 a ${ui.confirmMaxChars} caracteres`;
+    }
     if (o.fields !== undefined && o.type !== "list") return `Solo un ajuste de tipo list tiene "fields"`;
     if (o.type === "list") {
       const L = s.list;
@@ -265,6 +350,9 @@ function validateSettings(list, apiVersion = contract.maxApiVersion) {
       if (!fits) return `El valor por defecto del ajuste "${key}" no sirve para su tipo`;
     }
   }
+  const valued = list.filter((o) => s.types[o.type].hasValue !== false).length;
+  if (valued > s.max) return `El plugin pide más de ${s.max} ajustes`;
+  if (list.length - valued > ui.maxItems) return `El plugin tiene más de ${ui.maxItems} secciones, estados o acciones`;
   return null;
 }
 
@@ -319,7 +407,7 @@ function strings(v, max, maxChars) {
   return out;
 }
 
-function items(list, max, { allowSeries, allowLive, servers }, drop) {
+function items(list, max, { allowSeries, allowLive, allowAdult, servers }, drop) {
   const out = [];
   const seen = new Set();
   (Array.isArray(list) ? list : []).forEach((x, i) => {
@@ -334,7 +422,10 @@ function items(list, max, { allowSeries, allowLive, servers }, drop) {
     if (x.kind === "series" && !allowSeries) return drop(`item ${id}: series without the episodes capability`);
     // Silently, like any invalid item: an apiVersion 1 plugin never declared it could go live.
     if (x.kind === "live" && !allowLive) return drop(`item ${id}: live needs apiVersion ${o().liveKindApiVersion}`);
-    if (x.adult === true) return drop(`item ${id}: adult, dropped`);
+    // Below apiVersion 6 (output.adultApiVersion) an adult title never reaches a screen; from 6 it is kept and
+    // marked, and Kino lists it only while the person's 18+ code is unlocked.
+    const adult = x.adult === true;
+    if (adult && !allowAdult) return drop(`item ${id}: adult, dropped`);
     if (seen.has(id)) return;
     seen.add(id);
     const ids = x.ids && typeof x.ids === "object" ? x.ids : {};
@@ -350,6 +441,7 @@ function items(list, max, { allowSeries, allowLive, servers }, drop) {
       tmdb: Number.isInteger(ids.tmdb) && ids.tmdb > 0 ? ids.tmdb : 0,
       imdb: typeof ids.imdb === "string" && re(o().imdbPattern).test(ids.imdb) ? ids.imdb : "",
       badges: strings(x.badges, o().maxBadges, o().maxBadgeChars),
+      ...(adult ? { adult: true } : {}),
     });
   });
   return out;
@@ -378,7 +470,15 @@ function rows(value, ctx, drop) {
     if (!re(o().itemIdPattern).test(id)) return drop(`home: row ${i} has an invalid id`);
     const title = text(r.title, o().maxTitleChars);
     if (!title) return drop(`home: row ${id} has no title`);
-    const list = items(r.items, o().maxRowItems, ctx, drop);
+    let list = items(r.items, o().maxRowItems, ctx, drop);
+    // Below apiVersion 6 (output.homeLiveApiVersion) a channel is not a Home card: it lives in En vivo.
+    if (ctx.homeLive === false) {
+      list = list.filter((x) => {
+        if (x.kind !== "live") return true;
+        drop(`home: row ${id} item ${x.id}: live in a Home row needs apiVersion ${o().homeLiveApiVersion}`);
+        return false;
+      });
+    }
     if (!list.length) return;
     if (seen.has(id)) return drop(`home: duplicate row ${id} dropped`);
     seen.add(id);
@@ -386,6 +486,60 @@ function rows(value, ctx, drop) {
     if (ref && !ctx.allowNext) { drop(`home: row ${id} has a ref but the plugin doesn't declare browse`); ref = null; }
     if (ref && ref.length > o().maxRefChars) { drop(`home: row ${id} ref too long`); ref = null; }
     out.push({ id, title, ref, items: list, genre: genreOf(r.genre) });
+  });
+  return out;
+}
+
+// The app reads these fields as strings only (a number is no label), unlike `text`.
+const strictText = (v, max) => (typeof v === "string" ? text(v, max) : "");
+
+function section(value, ctx, drop) {
+  const empty = { tabs: [], tab: null, hero: null, rows: [] };
+  if (value === null || typeof value !== "object" || Array.isArray(value)) { drop("section: the answer is not a JSON object"); return empty; }
+  const lim = o().section;
+  const tabs = [];
+  const seen = new Set();
+  (Array.isArray(value.tabs) ? value.tabs : []).forEach((t, i) => {
+    if (tabs.length >= lim.maxTabs) { drop(`section: tabs beyond ${lim.maxTabs} dropped`); return; }
+    if (t === null || typeof t !== "object") return;
+    const id = typeof t.id === "string" ? t.id : "";
+    if (!re(o().itemIdPattern).test(id)) return drop(`section: tab ${i} has an invalid id`);
+    const label = strictText(t.label, lim.maxTabLabelChars);
+    if (!label) return drop(`section: tab ${id} has no label`);
+    if (seen.has(id)) return drop(`section: duplicate tab ${id} dropped`);
+    seen.add(id);
+    tabs.push({ id, label });
+  });
+  const tab = typeof value.tab === "string" && tabs.some((t) => t.id === value.tab) ? value.tab : (tabs[0] ? tabs[0].id : null);
+  let hero = null;
+  if (value.hero !== null && typeof value.hero === "object" && !Array.isArray(value.hero)) {
+    const title = strictText(value.hero.title, o().maxTitleChars);
+    if (!title) drop("section: a hero without title dropped");
+    else hero = { title, image: image(value.hero.image, ctx.servers), text: strictText(value.hero.text, lim.maxHeroTextChars) };
+  }
+  return { tabs, tab, hero, rows: rows(Array.isArray(value.rows) ? value.rows : [], ctx, (m) => drop(`section ${m}`)) };
+}
+
+function categories(value, ctx, drop) {
+  const lim = o().categories;
+  if (!ctx.allowNext) { drop("categories: ignored, the plugin doesn't declare browse"); return []; }
+  if (!Array.isArray(value)) { drop("categories: the answer is not a JSON array"); return []; }
+  const out = [];
+  const seen = new Set();
+  value.forEach((c, i) => {
+    if (out.length >= lim.maxCategories) { drop(`categories: beyond ${lim.maxCategories} dropped`); return; }
+    if (c === null || typeof c !== "object") return;
+    const id = typeof c.id === "string" ? c.id : "";
+    if (!re(o().itemIdPattern).test(id)) return drop(`categories: #${i} has an invalid id`);
+    const title = strictText(c.title, lim.maxTitleChars);
+    if (!title) return drop(`categories: ${id} has no title`);
+    const ref = typeof c.ref === "string" ? c.ref : "";
+    if (!ref || ref.length > o().maxRefChars) return drop(`categories: ${id} has no valid ref`);
+    const adult = c.adult === true;
+    if (adult && !ctx.allowAdult) return drop(`categories: ${id} adult, dropped`);
+    if (seen.has(id)) return drop(`categories: duplicate ${id} dropped`);
+    seen.add(id);
+    out.push({ id, title, art: image(c.art, ctx.servers) || null, ref, ...(adult ? { adult: true } : {}) });
   });
   return out;
 }
@@ -475,7 +629,108 @@ function drmOf(value, check, allowDrm) {
   return { type: d.type, licenseUrl: d.licenseUrl, licenseHeaders: headersOf(d.licenseHeaders) };
 }
 
-function stream(value, { manifest, servers, allowDrm, liveChannel = false }) {
+/** PluginOutput.SIGNED_CHANNEL: an inline channel stream that asks for signing. */
+const SIGNED_CHANNEL = "Un canal con firma por petición debe reproducirse con resolve()";
+
+/** `signing: "request"`, `signContext` and `alternateHosts` (apiVersion 6), as the app's PluginOutput.signingOf reads them. */
+function signingOf(value, manifest, drm, inline, alternateOk, drop) {
+  const s = o().signing;
+  if (!(Number.isInteger(manifest.apiVersion) && manifest.apiVersion >= s.apiVersion)) return null;
+  if (value.signing === undefined || value.signing === null) return { signing: false, signContext: "", alternateHosts: [] };
+  if (value.signing !== s.value) throw new Error('El valor de "signing" no es válido');
+  if (inline) throw new Error(SIGNED_CHANNEL);
+  const mime = typeof value.mime === "string" ? value.mime.trim().toLowerCase() : "";
+  let path = "";
+  try { path = new URL(value.url).pathname.toLowerCase(); } catch { /* the URL rule already ran */ }
+  if (!s.hlsMimes.includes(mime) && !path.endsWith(".m3u8")) throw new Error("La firma por petición solo funciona con video HLS (.m3u8)");
+  if (drm || (Array.isArray(value.audioTracks) && value.audioTracks.length > 0)) {
+    throw new Error("Un video firmado por petición no puede llevar drm ni pistas de audio aparte");
+  }
+  const ctx = value.signContext;
+  if (ctx !== undefined && ctx !== null && (typeof ctx !== "string" || ctx.length > s.maxContextChars)) throw new Error('El dato "signContext" no es válido');
+  // A kino.secret() marker means nothing in sign()'s own runtime, as in the app.
+  if (typeof ctx === "string" && ctx.includes("__kinoSecret_")) throw new Error("signContext no puede llevar un kino.secret(): llámalo dentro de sign()");
+  return { signing: true, signContext: typeof ctx === "string" ? ctx : "", alternateHosts: alternateHostsOf(value, alternateOk, drop) };
+}
+
+/** [url] with its authority (`host` or `host:port`, no port = the scheme's default) replaced, or null when it is not one. */
+function withAuthority(url, authority) {
+  if (!re(o().signing.alternateHosts.pattern).test(authority)) return null;
+  const [host, port] = authority.split(":");
+  if (port !== undefined && !(Number(port) >= 1 && Number(port) <= 65535)) return null;
+  let u;
+  try { u = new URL(url); } catch { return null; }
+  u.hostname = host;
+  // The URL setter ignores (or rewrites) a host it can't take: such an entry is not an authority.
+  if (u.hostname !== host.toLowerCase()) return null;
+  u.port = port === undefined ? "" : String(Number(port));
+  return u;
+}
+
+/** `host`, or `host:port` when the port is not the scheme's default (the URL drops a default port itself). */
+const authorityOf = (u) => (u.port ? `${u.hostname}:${u.port}` : u.hostname);
+
+/**
+ * A signed Stream's `alternateHosts`, as PluginOutput.alternateHostsOf: the wrong type refuses the
+ * Stream; an entry that is not an authority, fails the stream URL's own rule once put in its place,
+ * or repeats the stream's host or a kept one is dropped; once `maxEntries` are kept the rest is ignored (one line).
+ */
+function alternateHostsOf(value, alternateOk, drop) {
+  const raw = value.alternateHosts;
+  if (raw === undefined || raw === null) return [];
+  const invalid = 'El dato "alternateHosts" no es válido';
+  if (!Array.isArray(raw) || raw.some((e) => typeof e !== "string")) throw new Error(invalid);
+  const max = o().signing.alternateHosts.maxEntries;
+  let primary;
+  try { primary = new URL(value.url); } catch { return []; }
+  const seen = new Set([authorityOf(primary)]);
+  const kept = [];
+  for (const [i, entry] of raw.entries()) {
+    // Full: the rest is not even looked at, one line says how many (as the app).
+    if (kept.length >= max) { drop(`alternateHosts: ${max} kept, ${raw.length - i} more ignored`); break; }
+    const swapped = withAuthority(value.url, entry);
+    if (!swapped) { drop(`alternateHosts: "${entry.slice(0, 100)}" is not a host or host:port, dropped`); continue; }
+    const authority = authorityOf(swapped);
+    if (seen.has(authority)) { drop(`alternateHosts: ${authority} repeats the stream's host or another entry, dropped`); continue; }
+    seen.add(authority);
+    const refusal = alternateOk(swapped.toString());
+    if (refusal) { drop(`alternateHosts: ${authority} dropped: ${refusal}`); continue; }
+    kept.push(authority);
+  }
+  return kept;
+}
+
+/**
+ * A `subtitles()` answer, as the app's PluginOutput.subtitleTracks reads it: an array of { lang, url, format?, label?, translated? }, each
+ * URL checked like a Stream's side subtitles (any public host with `streamHosts: "any"`), `format` only vtt/srt, `lang` 20
+ * characters ("und" when blank), `label` maxSubtitleLabelChars; maxSubtitles at most, a repeated URL kept once.
+ */
+function subtitleTracks(value, { manifest, servers }, drop) {
+  if (!Array.isArray(value)) { drop("subtitles: the answer is not a list"); return []; }
+  const check = urlChecker(manifest, servers);
+  const anyPublic = liveStreamUrlAllowed(manifest, servers);
+  const out = [];
+  for (const [i, s] of value.entries()) {
+    if (out.length >= o().maxSubtitles) { drop(`subtitles: beyond ${o().maxSubtitles} dropped`); break; }
+    if (s === null || typeof s !== "object" || Array.isArray(s)) continue;
+    if (manifest.streamHostsAny) {
+      if (!anyPublic(s.url)) { drop(`subtitles: #${i} dropped: El subtítulo apunta a una dirección local`); continue; }
+    } else {
+      try { check(s.url, "El subtítulo"); } catch (e) { drop(`subtitles: #${i} dropped: ${e.message}`); continue; }
+    }
+    if (out.some((t) => t.url === s.url)) continue;
+    const text = (v, max) => (typeof v === "string" || typeof v === "number" ? String(v).trim().slice(0, max) : "");
+    const track = { lang: text(s.lang, 20) || "und", url: s.url };
+    if (s.format === "vtt" || s.format === "srt") track.format = s.format;
+    const label = text(s.label, o().maxSubtitleLabelChars);
+    if (label) track.label = label;
+    if (s.translated === true) track.translated = true;
+    out.push(track);
+  }
+  return out;
+}
+
+function stream(value, { manifest, servers, allowDrm, liveChannel = false, inline = false, drop = () => {} }) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("El plugin no devolvió un video");
   const check = urlChecker(manifest, servers);
   const drm = drmOf(value, check, allowDrm);
@@ -485,9 +740,15 @@ function stream(value, { manifest, servers, allowDrm, liveChannel = false }) {
   // side subtitles and audio tracks; never the license. On a live channel it is the live rule.
   const anyVideo = !liveChannel && manifest.streamHostsAny;
   const anyPublic = liveStreamUrlAllowed(manifest, servers);
-  if ((liveChannel && manifest.liveStreamHostsAny) || manifest.streamHostsAny) {
+  const anyHost = (liveChannel && manifest.liveStreamHostsAny) || manifest.streamHostsAny;
+  if (anyHost) {
     if (!anyPublic(value.url)) throw new Error("El video apunta a una dirección local");
   } else check(value.url, "El video");
+  // An alternate host meets the stream URL's own rule: the refusal's sentence, or null.
+  const alternateOk = (url) => {
+    if (anyHost) return anyPublic(url) ? null : `El servidor alternativo apunta a ${new URL(url).hostname}, una dirección local`;
+    try { check(url, "El servidor alternativo"); return null; } catch (e) { return e.message; }
+  };
   const sideOk = (url, what) => {
     if (anyVideo) return anyPublic(url);
     try { check(url, what); return true; } catch { return false; }
@@ -502,7 +763,115 @@ function stream(value, { manifest, servers, allowDrm, liveChannel = false }) {
     audioUrls.add(a.url);
     return true;
   });
-  return { ...value, headers: headersOf(value.headers), subtitles, audioTracks, expiresInSeconds: expires, drm };
+  const sig = signingOf(value, manifest, drm, inline, alternateOk, drop);
+  // Other copies of the video (PluginOutput.alternativesOf): never next to drm or signing; each checked like `url`.
+  // Labels and lazy `{ label, ref }` copies (PluginOutput.STREAM_LABELS_API_VERSION): below it both keys are unknown.
+  const labels = (manifest.apiVersion || 1) >= o().streamLabels.apiVersion;
+  const alternatives = drm || (sig && sig.signing) ? [] : alternativesOf(value.alternatives, value.url, (url) => {
+    if (anyHost) return anyPublic(url);
+    try { check(url, "El video"); return true; } catch { return false; }
+  }, labels, drop);
+  const { signing: _signing, signContext: _signContext, alternateHosts: _alternateHosts, alternatives: _alternatives, label: _label, ...rest } = value;
+  if (labels) {
+    const label = labelOf(value, "resolve: label", drop);
+    if (label) rest.label = label;
+  }
+  const durationMs = Number.isFinite(value.durationMs) && value.durationMs > 0 ? Math.floor(value.durationMs) : 0;
+  const out = { ...rest, headers: headersOf(value.headers), subtitles, audioTracks, expiresInSeconds: expires, drm, ...(alternatives.length ? { alternatives } : {}) };
+  const raw = value[o().skip.field];
+  const skip = liveChannel ? null : skipOf(raw, durationMs);
+  if (raw !== undefined) {
+    if (liveChannel) drop("resolve: skip is ignored for a live channel");
+    else if (!skip) drop("resolve: skip has nothing usable (each value 0..durationMs, the opening needs its end after its start): ignored");
+    else for (const k of o().skip.fields) {
+      if (raw && k in raw && raw[k] !== null && skip[k] === null) drop(`resolve: skip.${k} dropped (out of range or out of order)`);
+    }
+  }
+  if (skip) out.skip = skip; else delete out.skip;
+  return sig ? { ...out, ...sig } : out;
+}
+
+/**
+ * A Stream's `alternatives` as the app keeps them: a bad, repeated or surplus entry is dropped, the rest still count.
+ * With [labels] (PluginOutput.STREAM_LABELS_API_VERSION) each may carry a `label`, and an entry with no `url` but a
+ * `ref` is a lazy copy `{ ref, label? }`, resolved by the app only when needed.
+ */
+function alternativesOf(list, url, ok, labels = false, drop = () => {}) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set([url]);
+  const seenRefs = new Set();
+  const out = [];
+  for (const [i, a] of list.entries()) {
+    if (out.length >= o().maxAlternatives) break;
+    if (a === null || typeof a !== "object" || Array.isArray(a)) continue;
+    const au = typeof a.url === "string" ? a.url : "";
+    if (labels && au === "" && "ref" in a) {
+      const ref = lazyRefOf(a.ref);
+      if (ref === null) { drop(`resolve: alternative #${i} dropped: invalid ref (a non-blank string of at most ${o().streamLabels.maxRefChars} characters, no control characters)`); continue; }
+      if (seenRefs.has(ref)) continue;
+      seenRefs.add(ref);
+      const label = labelOf(a, `resolve: alternative #${i} label`, drop);
+      out.push(label ? { ref, label } : { ref });
+      continue;
+    }
+    if (seen.has(au)) continue;
+    seen.add(au);
+    if (!ok(au)) continue;
+    const mime = typeof a.mime === "string" ? a.mime.trim() : "";
+    const copy = { url: au, mime, headers: headersOf(a.headers) };
+    if (labels) {
+      const label = labelOf(a, `resolve: alternative #${i} label`, drop);
+      if (label) copy.label = label;
+    }
+    out.push(copy);
+  }
+  return out;
+}
+
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+
+/** A lazy copy's `ref` (PluginOutput.lazyRefOf): a non-blank string, at most maxRefChars, no control characters; else null. */
+function lazyRefOf(ref) {
+  if (typeof ref !== "string" || ref.trim() === "" || ref.length > o().streamLabels.maxRefChars || CONTROL.test(ref)) return null;
+  return ref;
+}
+
+/** An optional `label` (PluginOutput.labelOf): trimmed, at most maxChars, no control characters; anything else dropped with a note. */
+function labelOf(obj, what, drop) {
+  if (!("label" in obj) || obj.label === null || obj.label === undefined) return "";
+  const label = typeof obj.label === "string" ? obj.label.trim() : null;
+  if (label === null || label.length > o().streamLabels.maxChars || CONTROL.test(label)) {
+    drop(`${what} dropped (a string of at most ${o().streamLabels.maxChars} characters, no control characters)`);
+    return "";
+  }
+  return label;
+}
+
+/**
+ * The optional `skip` block (the app's PluginOutput.skipOf): `{ openingStartMs?, openingEndMs?, endingStartMs? }` in ms
+ * of the file. Never refuses the stream: a bad part is dropped, null when nothing usable is left. Each value a finite
+ * number in 0..durationMs (0..maxMs without one); the opening needs its end after its start (a missing start is 0); the
+ * ending not before the opening's end.
+ */
+export function skipOf(raw, durationMs = 0) {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const limit = durationMs > 0 ? durationMs : o().skip.maxMs;
+  const ms = (k) => {
+    if (!(k in raw) || raw[k] === null) return null;
+    const n = raw[k];
+    if (typeof n !== "number" || !Number.isFinite(n) || n < 0 || n > limit) return null;
+    return Math.round(n);
+  };
+  const start = ms("openingStartMs");
+  const end = ms("openingEndMs");
+  // Left out or null: the opening starts at 0. Present but invalid: the opening is dropped (never silently 0).
+  const startOk = start !== null || !("openingStartMs" in raw) || raw.openingStartMs === null;
+  const opening = end !== null && startOk && end > (start ?? 0) ? [start ?? 0, end] : null;
+  let ending = ms("endingStartMs");
+  if (ending !== null && opening && ending < opening[1]) ending = null;
+  if (!opening && ending === null) return null;
+  return { openingStartMs: opening ? opening[0] : null, openingEndMs: opening ? opening[1] : null, endingStartMs: ending };
 }
 
 /** The stream URL rule (the app's PluginOutput.checkUrl): a typed server, or the scheme rule and a declared host. */
@@ -606,11 +975,12 @@ function liveCategories(value, ctx, drop) {
     if (!re(o().itemIdPattern).test(id)) return drop(`liveCategories: #${i} has an invalid id`);
     const title = text(c.title, o().maxTitleChars);
     if (!title) return drop(`liveCategories: ${id} has no title`);
-    if (c.adult === true) return drop(`liveCategories: ${id} adult, dropped`);
+    const adult = c.adult === true;
+    if (adult && !ctx.allowAdult) return drop(`liveCategories: ${id} adult, dropped`);
     if (seen.has(id)) return drop(`liveCategories: duplicate ${id} dropped`);
     seen.add(id);
     const cc = typeof c.country === "string" ? c.country.trim().toUpperCase() : "";
-    categories.push({ id, title, country: /^[A-Z]{2}$/.test(cc) ? cc : "", genre: genreOf(c.genre) });
+    categories.push({ id, title, country: /^[A-Z]{2}$/.test(cc) ? cc : "", genre: genreOf(c.genre), ...(adult ? { adult: true } : {}) });
   });
   return { categories, playlists };
 }
@@ -636,21 +1006,59 @@ function liveChannels(value, ctx, drop) {
     if (id.startsWith(live().reservedIdPrefix)) return drop(`liveChannels: ${id} uses a reserved id`);
     const title = text(c.title, o().maxTitleChars);
     if (!title) return drop(`liveChannels: ${id} has no title`);
-    if (c.adult === true) return drop(`liveChannels: ${id} adult, dropped`);
+    const adult = c.adult === true;
+    if (adult && !ctx.allowAdult) return drop(`liveChannels: ${id} adult, dropped`);
     const ref = typeof c.ref === "string" ? c.ref : "";
     if (ref.length > o().maxRefChars) return drop(`liveChannels: ${id} has an invalid ref`);
     let checked = null;
     if (c.stream !== null && typeof c.stream === "object" && !Array.isArray(c.stream)) {
-      try { checked = stream(c.stream, { ...ctx, liveChannel: true }); } catch (e) { return drop(`liveChannels: ${id} stream refused: ${e.message}`); }
+      try { checked = stream(c.stream, { ...ctx, liveChannel: true, inline: true }); } catch (e) {
+        // Signed and with a ref: that ref is how it plays (resolve() may sign), as in the app.
+        if (!(ref && e.message === SIGNED_CHANNEL)) return drop(`liveChannels: ${id} stream refused: ${e.message}`);
+        drop(`liveChannels: ${id} inline stream is signed: it plays through resolve(ref)`);
+      }
     }
     if (!ref && !checked) return drop(`liveChannels: ${id} has neither a ref nor a stream`);
     if (seen.has(id)) return drop(`liveChannels: duplicate ${id} dropped`);
     seen.add(id);
     const number = Number.isInteger(c.number) && c.number >= 1 && c.number <= live().maxChannelNumber ? c.number : 0;
     const categoryId = typeof c.categoryId === "string" && re(o().itemIdPattern).test(c.categoryId) ? c.categoryId : "";
-    out.push({ id, title, ref, logo: image(c.logo, ctx.servers), number, categoryId, stream: checked });
+    // A liveSearch hit's own `adult: false` says it is plain (markSearchHits); a listing never needs it.
+    const plain = ctx.search && c.adult === false;
+    out.push({ id, title, ref, logo: image(c.logo, ctx.servers), number, categoryId, stream: checked, ...(adult ? { adult: true } : plain ? { adult: false } : {}) });
   });
   return { items: out, next };
+}
+
+/**
+ * Whether a checked liveSearch [hit] counts as 18+ in the app (PluginLiveProvider.searchHitAdult), given the plugin's
+ * checked liveCategories [categories] (null = they can't be read). `adult: true` or the categoryId of an 18+ category:
+ * 18+; the categoryId of a plain category or `adult: false`: plain; neither: 18+ when the plugin has any 18+ category;
+ * categories unreadable: 18+ unless `adult: false`. Below apiVersion 6 nothing is.
+ */
+export function searchHitAdult(hit, categories, manifest) {
+  if (hit.adult === true) return true;
+  if (!(Number.isInteger(manifest.apiVersion) && manifest.apiVersion >= live().adultApiVersion)) return false;
+  if (categories == null) return hit.adult !== false;
+  const known = categories.find((c) => c.id === hit.categoryId);
+  if (known) return known.adult === true;
+  return categories.some((c) => c.adult === true) && hit.adult !== false;
+}
+
+/**
+ * A checked liveSearch answer as the app keeps it: each hit that counts as 18+ ([searchHitAdult]) marked `adult: true`.
+ * `unmarked` names the hits that count as 18+ only for carrying neither `adult` nor a known categoryId (worth a warning);
+ * `unreadable` is true when [categories] is null.
+ */
+export function markSearchHits(value, categories, manifest) {
+  const unmarked = [];
+  const items = value.items.map((h) => {
+    const adult = searchHitAdult(h, categories, manifest);
+    if (adult && h.adult !== true && !(categories || []).some((c) => c.id === h.categoryId && c.adult === true)) unmarked.push(h.title);
+    const { adult: _drop, ...rest } = h;
+    return adult ? { ...rest, adult: true } : rest;
+  });
+  return { value: { ...value, items }, unmarked, unreadable: categories == null };
 }
 
 /**
@@ -681,10 +1089,115 @@ function guide(value, drop) {
  * [servers]: the url settings' values (`--config`), which the app allows like declared hosts.
  */
 /**
+ * What the app keeps of a migrate() answer for `input` (PluginMigration.parse): the answer, or null
+ * when the plugin does not claim the value. A wrong shape is not an error in the app, only "not
+ * claimed" plus a log line: here it is a drop, so the author sees why.
+ */
+export function migrateAnswer(value, input) {
+  const drops = [];
+  const no = (m) => { drops.push(`migrate: ${m}`); return { value: null, drops }; };
+  if (value === null || value === undefined) return { value: null, drops };
+  if (typeof value !== "object" || Array.isArray(value)) return no("the answer must be an object or null");
+  const ID = re(o().itemIdPattern);
+  const refOk = (r) => typeof r === "string" && r.length > 0 && r.length <= o().maxRefChars && !r.startsWith("plg1:");
+  const kind = value.kind;
+  if (input.kind === "title") {
+    if (kind !== "movie" && kind !== "series") return no(`a title answered kind "${kind}"`);
+    if (typeof value.id !== "string" || !ID.test(value.id)) return no("invalid id");
+    if (!refOk(value.ref)) return no("invalid ref");
+    return { value: { kind, id: value.id, ref: value.ref }, drops };
+  }
+  if (input.kind === "chapter") {
+    if (kind !== "episode") return no(`a chapter answered kind "${kind}"`);
+    if (!refOk(value.ref)) return no("invalid ref");
+    const number = Number.isInteger(value.number) ? value.number : 0;
+    if (number < 1 || number > o().maxEpisodeNumber) return no("invalid number");
+    const season = Number.isInteger(value.season) && value.season >= 1 && value.season <= o().maxSeasonNumber ? value.season : 1;
+    return { value: { kind, ref: value.ref, season, number }, drops };
+  }
+  if (input.kind === "live") {
+    if (kind !== "live") return no(`a live channel answered kind "${kind}"`);
+    if (typeof value.code !== "string" || !ID.test(value.code)) return no("invalid code");
+    return { value: { kind, code: value.code }, drops };
+  }
+  return no(`unknown input kind "${input.kind}"`);
+}
+
+/**
+ * An action's `clearSettings`, as PluginSettingsUi.parseActionResult: only the plugin's own valued, non-required settings,
+ * once each, read up to `max` entries. Anything else is dropped with one line, never an error (the action succeeded).
+ */
+function clearSettingsOf(raw, settings, max, drop) {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) { drop("action answered clearSettings that is not an array"); return []; }
+  const clearable = new Set(settings.filter((s) => contract.settings.types[s.type]?.hasValue !== false && s.required !== true).map((s) => s.key));
+  const out = [];
+  let dropped = raw.length > max;
+  for (const k of raw.slice(0, max)) {
+    if (typeof k === "string" && clearable.has(k) && !out.includes(k)) out.push(k);
+    else dropped = true;
+  }
+  if (dropped) drop("action answered clearSettings entries that cannot be cleared; they were ignored");
+  return out;
+}
+
+/**
+ * What the app keeps of a settings-form export's answer (apiVersion 6), as PluginSettingsUi reads it:
+ * `settingsStatus` -> { [statusKey]: text }, `action` -> { message, refresh, clearSettings }, `validateSettings` ->
+ * { accepted: true } or { accepted: false, fieldErrors, general }. Garbage is dropped, never thrown,
+ * except where the app refuses to save (validateSettings answering something that is not null, a text
+ * or an object). `scrub` (the app's secret scrubbing) runs on each kept text before it is clipped.
+ */
+export function checkSettingsOutput(fn, value, manifest, scrub = (t) => t, drop = () => {}) {
+  const ui = contract.settings.ui;
+  const clip = (t, max) => (t.length <= max ? t : t.slice(0, max - 1) + "…");
+  const text = (v, max) => {
+    if (typeof v !== "string" || !v.trim()) return null;
+    const t = scrub(v.trim()).trim();
+    return t ? clip(t, max) : null;
+  };
+  const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+  const settings = manifest.settings || [];
+  if (fn === "settingsStatus") {
+    const out = {};
+    for (const s of settings.filter((x) => x.type === "status")) {
+      const t = isObj(value) ? text(value[s.key], ui.statusMaxChars) : null;
+      if (t) out[s.key] = t;
+    }
+    return out;
+  }
+  if (fn === "action") {
+    return {
+      message: isObj(value) ? text(value.message, ui.messageMaxChars) : null,
+      refresh: isObj(value) && value.refresh === true,
+      clearSettings: isObj(value) ? clearSettingsOf(value.clearSettings, settings, ui.clearSettings.maxEntries, drop) : [],
+    };
+  }
+  if (value === null || value === undefined) return { accepted: true };
+  if (typeof value === "string") {
+    const t = text(value, ui.fieldErrorMaxChars);
+    return t ? { accepted: false, fieldErrors: {}, general: t } : { accepted: true };
+  }
+  if (!isObj(value)) throw new Error("validateSettings debe devolver null, un texto o un objeto { clave: mensaje }: Kino no puede leer esta respuesta");
+  const keys = new Set(settings.filter((s) => contract.settings.types[s.type]?.hasValue !== false).map((s) => s.key));
+  const fieldErrors = {};
+  const other = [];
+  let otherChars = 0;
+  for (const [k, v] of Object.entries(value)) {
+    const t = text(v, ui.fieldErrorMaxChars);
+    if (!t) continue;
+    if (keys.has(k)) fieldErrors[k] = t;
+    else if (otherChars < ui.fieldErrorMaxChars) { other.push(t); otherChars += t.length + 1; }
+  }
+  if (!Object.keys(fieldErrors).length && !other.length) return { accepted: true };
+  return { accepted: false, fieldErrors, general: other.length ? clip(other.join(" "), ui.fieldErrorMaxChars) : null };
+}
+
+/**
  * `liveChannel`: the `resolve` answer is for a live channel's ref (the app knows; the kit is told),
  * so `liveStreamHosts: "any"` applies to its stream URL.
  */
-export function checkOutput(fn, value, manifest, servers = [], { liveChannel = false } = {}) {
+export function checkOutput(fn, value, manifest, servers = [], { liveChannel = false, migrateInput = null } = {}) {
   const drops = [];
   const drop = (m) => { drops.push(m); };
   const ctx = {
@@ -692,21 +1205,43 @@ export function checkOutput(fn, value, manifest, servers = [], { liveChannel = f
     allowNext: manifest.capabilities.includes("browse"),
     // Live channels are apiVersion 2: a v1 plugin's live item is dropped like any invalid one.
     allowLive: Number.isInteger(manifest.apiVersion) && manifest.apiVersion >= o().liveKindApiVersion,
+    // 18+ entries are apiVersion 6: kept and marked (shown behind the person's 18+ code); below it, dropped.
+    allowAdult: Number.isInteger(manifest.apiVersion) && manifest.apiVersion >= o().adultApiVersion,
     servers,
   };
+  const liveAdult = Number.isInteger(manifest.apiVersion) && manifest.apiVersion >= live().adultApiVersion;
   const json = JSON.stringify(value === undefined ? null : value);
   if (json.length > o().maxResultChars) throw new Error("respuesta del plugin demasiado grande (más de 2 millones de caracteres)");
   const parsed = JSON.parse(json);
   switch (fn) {
     case "search": return { value: page(parsed, o().maxSearchItems, ctx, drop), drops };
     case "browse": return { value: page(parsed, o().maxBrowseItems, { ...ctx, allowNext: true }, drop), drops };
-    case "home": return { value: rows(parsed, ctx, drop), drops };
+    case "home": return { value: rows(parsed, { ...ctx, homeLive: Number.isInteger(manifest.apiVersion) && manifest.apiVersion >= o().homeLiveApiVersion }, drop), drops };
+    case "section": return { value: section(parsed, ctx, drop), drops };
+    case "categories": return { value: categories(parsed, ctx, drop), drops };
     case "episodes": return { value: episodes(parsed, drop, servers), drops };
     // Widevine is the `drm` capability (apiVersion 2 by the manifest rules): without it every DRM-shaped key refuses the stream.
-    case "resolve": return { value: stream(parsed, { manifest, servers, allowDrm: manifest.capabilities.includes("drm"), liveChannel }), drops };
-    case "liveCategories": return { value: liveCategories(parsed, { manifest, servers }, drop), drops };
-    case "liveChannels": return { value: liveChannels(parsed, { manifest, servers, allowDrm: manifest.capabilities.includes("drm") }, drop), drops };
+    case "resolve": return { value: stream(parsed, { manifest, servers, allowDrm: manifest.capabilities.includes("drm"), liveChannel, drop }), drops };
+    case "sign": {
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed) || parsed.headers === null || typeof parsed.headers !== "object" || Array.isArray(parsed.headers)) {
+        throw new Error("sign no devolvió { headers }");
+      }
+      // Markers are per runtime and never substituted in a stream's headers: refused, names and values.
+      const headers = headersOf(parsed.headers);
+      if (Object.entries(headers).some(([k, v]) => k.includes("__kinoSecret_") || v.includes("__kinoSecret_"))) throw new Error("sign no puede devolver datos sellados");
+      return { value: { headers }, drops };
+    }
+    case "liveCategories": return { value: liveCategories(parsed, { manifest, servers, allowAdult: liveAdult }, drop), drops };
+    case "liveChannels": return { value: liveChannels(parsed, { manifest, servers, allowDrm: manifest.capabilities.includes("drm"), allowAdult: liveAdult }, drop), drops };
+    // A liveChannels page whose `next` Kino ignores, cut to the search's own cap.
+    case "liveSearch": {
+      const found = liveChannels(parsed, { manifest, servers, allowDrm: manifest.capabilities.includes("drm"), allowAdult: liveAdult, search: true }, drop);
+      if (found.items.length > live().maxSearchChannels) drop(`liveSearch: beyond ${live().maxSearchChannels} dropped`);
+      return { value: { items: found.items.slice(0, live().maxSearchChannels) }, drops };
+    }
     case "guide": return { value: guide(parsed, drop), drops };
+    case "migrate": return migrateAnswer(parsed, migrateInput || { kind: "title" });
+    case "subtitles": return { value: subtitleTracks(parsed, { manifest, servers }, drop), drops };
     default: throw new Error(`unknown function ${fn}`);
   }
 }

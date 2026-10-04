@@ -4,7 +4,7 @@
 // app's public key. The kit can never open a seal -- only Kino, with the matching private key, can -- so this is
 // the only place a plugin author needs to run outside the app.
 //
-//   node sdk/seal.mjs --repo owner/repo[/path] --name apiKey
+//   node sdk/seal.mjs --repo owner/repo[/path] --name apiKey [--use cipher-key --encoding hex|base64]
 //
 // Signed plugins (apiVersion 5's `signature`, Kino 0.9.45+): the entry script stays plain, readable
 // JavaScript, signed with the author's own Ed25519 key; the signature goes into the manifest:
@@ -72,8 +72,9 @@ export function seal(value, binding, name, publicKeyHex = process.env.KINO_SEAL_
   if (!NAME.test(String(name))) throw new Error(`invalid secret name: "${String(name).slice(0, 40)}" (expected ${contract.manifest.secrets.namePattern})`);
   const binding0 = normalizeBinding(binding);
   const plain = Buffer.from(String(value), "utf8");
-  if (plain.length < 1 || plain.length > contract.manifest.secrets.maxValueBytes) {
-    throw new Error(`the secret value must be 1..${contract.manifest.secrets.maxValueBytes} bytes (UTF-8), got ${plain.length}`);
+  const max = contract.manifest.secrets.largeMaxValueBytes;
+  if (plain.length < 1 || plain.length > max) {
+    throw new Error(`the secret value must be 1..${max} bytes (UTF-8), got ${plain.length}`);
   }
   const recipientPub = Buffer.from(String(publicKeyHex), "hex");
   if (recipientPub.length !== 32) throw new Error("the public key must be 32 bytes of hex");
@@ -90,6 +91,45 @@ export function seal(value, binding, name, publicKeyHex = process.env.KINO_SEAL_
   const tag = cipher.getAuthTag();
   const raw = Buffer.concat([ephPublicRaw, nonce, ciphertext, tag]);
   return `${contract.manifest.secrets.prefix}${raw.toString("base64url")}`;
+}
+
+/** A 24-byte key whose first two or last two DES keys match (parity bits ignored): single DES. */
+function degenerateTripleDes(k) {
+  if (k.length !== 24) return false;
+  const same = (a, b) => [...Array(8).keys()].every((i) => (k[a + i] & 0xfe) === (k[b + i] & 0xfe));
+  return same(0, 8) || same(8, 16);
+}
+
+/**
+ * [value] read as a cipher key the way the app's SealedSecrets.cipherKeyBytes reads it: hex (even
+ * length, either case) or base64 (standard or URL-safe, padding optional, whitespace ignored). Null
+ * when it doesn't decode, or not to one of contract's typed `keyBytes`, or
+ * to a degenerate triple-DES key.
+ */
+export function decodeCipherKey(value, encoding) {
+  const v = String(value);
+  let bytes = null;
+  if (encoding === "hex") {
+    if (v.length % 2 === 0 && /^[0-9a-fA-F]*$/.test(v)) bytes = Buffer.from(v, "hex");
+  } else if (encoding === "base64") {
+    // As the app: standard or URL-safe, whitespace ignored, padding absent or exactly what's due.
+    const clean = v.replace(/[ \n\r\t]/g, "").replace(/-/g, "+").replace(/_/g, "/");
+    const m = /^([A-Za-z0-9+/]*)(=*)$/.exec(clean);
+    const body = m ? m[1].length : 0, pad = m ? m[2].length : 0;
+    if (m && body % 4 !== 1 && (pad === 0 || (pad <= 2 && (body + pad) % 4 === 0))) bytes = Buffer.from(clean, "base64");
+  }
+  if (!bytes || !contract.manifest.secrets.typed.keyBytes.includes(bytes.length) || degenerateTripleDes(bytes)) return null;
+  return bytes;
+}
+
+/** A typed secret (apiVersion 6): `{ seal, use: "cipher-key", encoding }`, refusing a value that isn't a 16/24/32-byte key under [encoding]. */
+export function sealTyped(value, binding, name, encoding, publicKeyHex = process.env.KINO_SEAL_PUBLIC_KEY || PRODUCTION_PUBLIC_KEY_HEX) {
+  const T = contract.manifest.secrets.typed;
+  if (!T.keyEncodings.includes(encoding)) throw new Error(`invalid --encoding: expected ${T.keyEncodings.join(" or ")}`);
+  const key = decodeCipherKey(value, encoding);
+  if (!key) throw new Error(`a cipher key must decode (${encoding}) to ${T.keyBytes.join(", ").replace(/, (\d+)$/, " or $1")} bytes`);
+  key.fill(0);
+  return { seal: seal(value, binding, name, publicKeyHex), use: T.uses[0], encoding };
 }
 
 // ---------- signed plugins (apiVersion 5's signature; app: SignedEntry.kt) ----------
@@ -229,8 +269,10 @@ async function main(argv) {
   if (argv.includes("--sign")) return mainSign(opt);
   const repo = opt("--repo");
   const name = opt("--name");
-  if (!repo || !name) {
-    console.error("usage: node sdk/seal.mjs --repo owner/repo[/path] --name secretName   (value read from stdin or a hidden prompt, never argv)");
+  const use = opt("--use");
+  const encoding = opt("--encoding");
+  if (!repo || !name || (use === undefined) !== (encoding === undefined) || (use !== undefined && use !== "cipher-key")) {
+    console.error("usage: node sdk/seal.mjs --repo owner/repo[/path] --name secretName [--use cipher-key --encoding hex|base64]   (value read from stdin or a hidden prompt, never argv)");
     return 2;
   }
   if (process.env.KINO_SEAL_PUBLIC_KEY) {
@@ -254,7 +296,14 @@ async function main(argv) {
     return 2;
   }
   try {
-    console.log(seal(value, repo, name));
+    if (use !== undefined) {
+      console.log(JSON.stringify(sealTyped(value, repo, name, encoding)));
+    } else {
+      if (Buffer.byteLength(value, "utf8") > contract.manifest.secrets.maxValueBytes) {
+        console.error(`note: a value over ${contract.manifest.secrets.maxValueBytes} bytes needs "apiVersion": ${contract.manifest.secrets.largeApiVersion} in the manifest`);
+      }
+      console.log(seal(value, repo, name));
+    }
     return 0;
   } catch (e) {
     console.error(e.message);

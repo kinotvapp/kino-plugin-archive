@@ -66,6 +66,7 @@ will reach and asks for approval before anything runs.
 
 This repository is also the starting point for your own plugin:
 
+- The same guide is online, with a page per topic: <https://kinotvapp.github.io/kino-plugins/> ([first plugin](https://kinotvapp.github.io/kino-plugins/first-plugin/), [manifest](https://kinotvapp.github.io/kino-plugins/manifest/), [contract](https://kinotvapp.github.io/kino-plugins/contract/), [example plugins](https://kinotvapp.github.io/kino-plugins/examples/)).
 - [`GUIDE.md`](GUIDE.md) is the authoring guide: file layout, manifest and settings, the five
   functions your code can export, the `kino` API, every limit, the quirks of the JavaScript engine
   and five cookbook recipes.
