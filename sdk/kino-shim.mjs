@@ -15,14 +15,17 @@
 // simulates the app's marker, substitution, declared-host-and-https and redaction rules on top of that.
 import { createCipheriv, createDecipheriv, createHash, createHmac, createPublicKey, diffieHellman, generateKeyPairSync, pbkdf2Sync, randomBytes, randomUUID, sign as nodeSign, verify as nodeVerify } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
-import { contract, hostMatches, isUserServer, kb, schemeAllowed } from "./contract.mjs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { anyFetchRefusal, anyHostBudget, contract, fetchAnyHost, hostMatches, isUserServer, kb, schemeAllowed } from "./contract.mjs";
 import { decodeCipherKey } from "./seal.mjs";
 import { filterRelevant, shortQuery, sortBySimilarity } from "./kino-rank.mjs";
 
 // Captured at load: the runner later replaces console.error to keep stdout clean, and kino.log
 // must not be routed through that replacement (it would print two prefixes).
 const writeErr = console.error.bind(console);
+
+const SDK_DIR = dirname(fileURLToPath(import.meta.url));
 
 export function kinoError(code, message, options) {
   const c = typeof code === "string" && /^[a-z_]{1,32}$/.test(code) ? code : "unknown";
@@ -37,6 +40,14 @@ export function kinoError(code, message, options) {
     if (d && typeof d.value === "string") s = d.value.slice(0, contract.errors.maxUserMessageChars + 1);
   } catch { s = null; }
   if (s !== null) Object.defineProperty(e, "userMessage", { value: s, enumerable: true });
+  return e;
+}
+
+// A kino.fetch `host_not_allowed` naming the refused host in `e.host`, like the app (Kino 0.9.55, contract.json
+// fetch.errorHostField).
+function hostRefused(message, hostname) {
+  const e = kinoError("host_not_allowed", message);
+  Object.defineProperty(e, contract.fetch.errorHostField, { value: String(hostname).slice(0, contract.fetch.maxErrorHostChars), enumerable: true });
   return e;
 }
 
@@ -133,11 +144,13 @@ export function shownSentence(err) {
 /** How run.mjs reports a typed error: `[code] message`, plus what the person reads ("Mensaje de <plugin>: …") when it carries a userMessage. */
 export function errorReport(err, pluginName = "Plugin") {
   const head = `[${err.code}] ${err.message}`;
+  // kino.tmdb's no_tmdb_key (Kino 0.9.53): Kino words it itself, the same sentence it put in userMessage.
+  if (err.code === contract.kinoTmdb.noKeyCode) return `${head}\n  the person reads: "${contract.kinoTmdb.noKeyUserMessage.es}"`;
   if (typeof err.userMessage !== "string") return head;
   const why = safeName(pluginName) ? sentenceRefusal(err) : `the plugin's name "${pluginName}" can't introduce a sentence (a colon, Kino, a digit glued to a letter, or a character outside the alphabet)`;
   return why === null
-    ? `${head}\n  la persona lee: "Mensaje de ${pluginName}: ${shownSentence(err)}"`
-    : `${head}\n  userMessage no se muestra (${why}): la persona lee la línea de Kino para ${err.code}`;
+    ? `${head}\n  the person reads: "Mensaje de ${pluginName}: ${shownSentence(err)}"`
+    : `${head}\n  userMessage is not shown (${why}): the person reads Kino's line for ${err.code}`;
 }
 
 export { hostMatches as hostAllowed };
@@ -147,8 +160,8 @@ export { hostMatches as hostAllowed };
 // the plugin gets a handle that means nothing to another createKino() (another runtime in the app). ---
 
 const KP = contract.crypto.keyPairs;
-const KEY_UNKNOWN = "clave desconocida: una clave privada vive solo mientras este plugin está abierto; genera otra";
-const BAD_PUBLIC_KEY = "clave pública inválida";
+const KEY_UNKNOWN = "unknown key: a private key only lives while this plugin is open; generate another one";
+const BAD_PUBLIC_KEY = "invalid public key";
 const COORD_BYTES = { "P-256": 32, "P-384": 48 };
 const SPKI_PREFIX = {
   "P-256": Buffer.from("3059301306072a8648ce3d020106082a8648ce3d030107034200", "hex"),
@@ -174,11 +187,11 @@ function keyPairApi({ pluginSecrets, buf }) {
   const refuseSealed = (o) => {
     if (pluginSecrets && strings(o).some((t) => pluginSecrets.containsMarker(t) || pluginSecrets.containsCipherKeyMarker(t))) fail(SEALED_CRYPTO_REFUSED);
   };
-  const keyType = (t) => (KP.types.includes(t) ? t : fail(`tipo de clave desconocido: ${cut(t ?? "")} (ec, ed25519 o x25519)`));
-  const curveOf = (c) => (KP.curves.includes(c) ? c : fail(`curva desconocida: ${cut(c ?? "")} (P-256 o P-384)`));
-  const outEnc = (e = "base64") => (e === "base64" || e === "hex" ? e : fail("una firma o un secreto sale en base64 o hex"));
-  const hashOf = (h = "SHA-256") => (KP.signHashes.includes(h) ? h.replace("-", "").toLowerCase() : fail(`hash de firma desconocido: ${cut(h)} (SHA-256 o SHA-384)`));
-  const formatOf = (f = "der") => (KP.signatureFormats.includes(f) ? f : fail(`formato de firma desconocido: ${cut(f)} (der o ieee-p1363)`));
+  const keyType = (t) => (KP.types.includes(t) ? t : fail(`unknown key type: ${cut(t ?? "")} (ec, ed25519 or x25519)`));
+  const curveOf = (c) => (KP.curves.includes(c) ? c : fail(`unknown curve: ${cut(c ?? "")} (P-256 or P-384)`));
+  const outEnc = (e = "base64") => (e === "base64" || e === "hex" ? e : fail("a signature or a secret comes out as base64 or hex"));
+  const hashOf = (h = "SHA-256") => (KP.signHashes.includes(h) ? h.replace("-", "").toLowerCase() : fail(`unknown signature hash: ${cut(h)} (SHA-256 or SHA-384)`));
+  const formatOf = (f = "der") => (KP.signatureFormats.includes(f) ? f : fail(`unknown signature format: ${cut(f)} (der or ieee-p1363)`));
   const b64 = (v, field) => buf(v, "base64", field);
 
   // { type, curve, raw } -> a Node public KeyObject (an EC point checked on its curve by Node).
@@ -203,10 +216,10 @@ function keyPairApi({ pluginSecrets, buf }) {
         return checked({ type: ec ? "ec" : name, curve: ec ? name : undefined, raw: Buffer.from(der.subarray(prefix.length)) });
       }
     }
-    return fail("spki no reconocido: solo P-256, P-384, Ed25519 o X25519 con curva nombrada");
+    return fail("unrecognized spki: only P-256, P-384, Ed25519 or X25519 with a named curve");
   };
   const fromJwk = (j) => {
-    const field = (name) => (typeof j[name] === "string" ? b64(j[name], `jwk.${name}`) : fail(`al JWK le falta "${name}"`));
+    const field = (name) => (typeof j[name] === "string" ? b64(j[name], `jwk.${name}`) : fail(`the JWK is missing "${name}"`));
     if (j.kty === "EC") {
       const curve = curveOf(j.crv);
       const x = field("x"), y = field("y");
@@ -214,10 +227,10 @@ function keyPairApi({ pluginSecrets, buf }) {
       return checked({ type: "ec", curve, raw: Buffer.concat([Buffer.from([4]), x, y]) });
     }
     if (j.kty === "OKP") {
-      const type = j.crv === "Ed25519" ? "ed25519" : j.crv === "X25519" ? "x25519" : fail(`curva de JWK desconocida: ${cut(j.crv ?? "")}`);
+      const type = j.crv === "Ed25519" ? "ed25519" : j.crv === "X25519" ? "x25519" : fail(`unknown JWK curve: ${cut(j.crv ?? "")}`);
       return checked({ type, curve: undefined, raw: field("x") });
     }
-    return fail(`kty de JWK desconocido: ${cut(j.kty ?? "")} (EC u OKP)`);
+    return fail(`unknown JWK kty: ${cut(j.kty ?? "")} (EC or OKP)`);
   };
   const rawOf = (publicKey, type) => {
     const j = publicKey.export({ format: "jwk" });
@@ -233,7 +246,7 @@ function keyPairApi({ pluginSecrets, buf }) {
   };
   const entryOf = (k) => {
     const h = handleOf(k);
-    if (h === undefined) fail('falta "key": la clave privada de generateKeyPair');
+    if (h === undefined) fail('missing "key": the private key from generateKeyPair');
     return ring.get(h) || fail(KEY_UNKNOWN);
   };
   // A public key given as { spki } (what generateKeyPair/importKey answer) or { jwk }; for verify, also a private key.
@@ -241,7 +254,7 @@ function keyPairApi({ pluginSecrets, buf }) {
     if (isObj(k) && typeof k.spki === "string") return fromSpki(b64(k.spki, "publicKey"));
     if (isObj(k) && isObj(k.jwk)) return fromJwk(k.jwk);
     if (allowPrivate && handleOf(k) !== undefined) { const e = entryOf(k); return { type: e.type, curve: e.curve, raw: e.raw }; }
-    return fail('falta "publicKey": usa la de generateKeyPair o importKey');
+    return fail('missing "publicKey": use the one from generateKeyPair or importKey');
   };
 
   return {
@@ -263,7 +276,7 @@ function keyPairApi({ pluginSecrets, buf }) {
       refuseSealed(p);
       const format = optStr(p.format);
       if (format === "jwk") {
-        if (!isObj(p.key)) fail('importKey con format "jwk" necesita key: un objeto JWK');
+        if (!isObj(p.key)) fail('importKey with format "jwk" needs key: a JWK object');
         return publicOut(fromJwk(p.key));
       }
       if (format === "spki") return publicOut(fromSpki(b64(optStr(p.key), "key")));
@@ -272,7 +285,7 @@ function keyPairApi({ pluginSecrets, buf }) {
         const curve = type === "ec" ? curveOf(optStr(p.namedCurve)) : undefined;
         return publicOut(checked({ type, curve, raw: b64(optStr(p.key), "key") }));
       }
-      return fail(`formato de clave desconocido: ${cut(format ?? "")} (jwk, spki o raw)`);
+      return fail(`unknown key format: ${cut(format ?? "")} (jwk, spki or raw)`);
     },
     sign(o) {
       const p = isObj(o) ? o : {};
@@ -284,10 +297,10 @@ function keyPairApi({ pluginSecrets, buf }) {
         const hash = hashOf(optStr(p.hash));
         sig = nodeSign(hash, data, { key: e.privateKey, dsaEncoding: formatOf(optStr(p.format)) });
       } else if (e.type === "ed25519") {
-        if (p.hash !== undefined && p.hash !== null) fail('ed25519 no lleva hash: quita "hash"');
+        if (p.hash !== undefined && p.hash !== null) fail('ed25519 does not take a hash: remove "hash"');
         sig = nodeSign(null, data, e.privateKey);
       } else {
-        fail("una clave x25519 no firma: úsala con deriveSharedSecret");
+        fail("an x25519 key doesn't sign: use it with deriveSharedSecret");
       }
       return sig.toString(outEnc(p.outputEncoding));
     },
@@ -296,7 +309,7 @@ function keyPairApi({ pluginSecrets, buf }) {
       refuseSealed(p);
       const data = buf(p.data === undefined ? undefined : String(p.data), p.encoding || "utf8", "data");
       const sig = buf(optStr(p.signature), p.signatureEncoding || "base64", "signature");
-      if (sig.length > KP.maxSignatureBytes) fail(`la firma pasa de ${KP.maxSignatureBytes} bytes`);
+      if (sig.length > KP.maxSignatureBytes) fail(`the signature is over ${KP.maxSignatureBytes} bytes`);
       const pub = publicOf(p.key, true);
       try {
         if (pub.type === "ec") {
@@ -306,7 +319,7 @@ function keyPairApi({ pluginSecrets, buf }) {
           return nodeVerify(hash, data, { key: nodePublic(pub), dsaEncoding: format }, sig);
         }
         if (pub.type === "ed25519") {
-          if (p.hash !== undefined && p.hash !== null) fail('ed25519 no lleva hash: quita "hash"');
+          if (p.hash !== undefined && p.hash !== null) fail('ed25519 does not take a hash: remove "hash"');
           if (sig.length !== 64) return false;
           return nodeVerify(null, data, nodePublic(pub), sig);
         }
@@ -314,15 +327,15 @@ function keyPairApi({ pluginSecrets, buf }) {
         if (err && String(err.name).startsWith("KinoError")) throw err;
         return false;
       }
-      return fail("una clave x25519 no verifica firmas");
+      return fail("an x25519 key doesn't verify signatures");
     },
     deriveSharedSecret(o) {
       const p = isObj(o) ? o : {};
       refuseSealed(p);
       const e = entryOf(p.privateKey);
       const peer = publicOf(p.publicKey, false);
-      if (peer.type !== e.type || peer.curve !== e.curve) fail("las dos claves deben ser del mismo tipo y curva");
-      if (e.type === "ed25519") fail("una clave ed25519 no deriva secretos: usa x25519 o ec");
+      if (peer.type !== e.type || peer.curve !== e.curve) fail("both keys must have the same type and curve");
+      if (e.type === "ed25519") fail("an ed25519 key doesn't derive secrets: use x25519 or ec");
       let secret;
       try {
         secret = diffieHellman({ privateKey: e.privateKey, publicKey: nodePublic(peer) });
@@ -340,7 +353,7 @@ function keyPairApi({ pluginSecrets, buf }) {
 // value straight from .kino-secrets.json, so it can simulate substitution and redaction without
 // the app's X25519 native bridge. ---
 
-const SEALED_CRYPTO_REFUSED = "no se puede usar un dato sellado aquí";
+const SEALED_CRYPTO_REFUSED = "a sealed value can't be used here";
 
 /** RFC 3986 unreserved bytes percent-encoded (UTF-8, uppercase hex): a URL path segment or query value. */
 function encodeUrlComponent(value) {
@@ -467,7 +480,7 @@ function pluginSecretsFor(manifest, secretsFile) {
   function plainOf(name) {
     if (!(name in opened)) {
       if (!Object.prototype.hasOwnProperty.call(values, name)) {
-        throw new Error(`falta el valor del secreto ${name} en .kino-secrets.json`);
+        throw new Error(`the value of the secret ${name} is missing from .kino-secrets.json`);
       }
       opened[name] = String(values[name]);
     }
@@ -561,14 +574,209 @@ const saveJson = (file, value) => {
   writeFileSync(file, JSON.stringify(value, null, 1));
 };
 
+// ---------- kino.meta and kino.tmdb (Kino 0.9.53, no new apiVersion: feature-detect them) ----------
+
+/**
+ * A per-plugin token bucket, the app's rule for kino.meta (contract.kinoMeta.perMinute per minute) and kino.tmdb
+ * (contract.kinoTmdb.perWindow per windowMs): [capacity] calls at once, refilled evenly over [windowMs]. [now] is the clock
+ * (a test moves it).
+ */
+export function tokenBucket(capacity, windowMs, now = Date.now) {
+  let tokens = capacity;
+  let at = now();
+  return {
+    take() {
+      const t = now();
+      tokens = Math.min(capacity, tokens + ((t - at) * capacity) / windowMs);
+      at = t;
+      if (tokens < 1) return false;
+      tokens -= 1;
+      return true;
+    },
+  };
+}
+
+const plainObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+
+/** Kino 0.9.55's title normalisation (KinoMetaTitleMatch.normalise): lowercase, no accents, punctuation and spaces as one space. */
+export function normaliseMetaTitle(title) {
+  return String(title).toLowerCase().normalize("NFD").replace(/\p{Mn}+/gu, "").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+
+/**
+ * Kino 0.9.55's pick among TMDB search hits (`[{ id, type: "movie"|"tv", title, originalTitle, year }]`) for
+ * kino.meta({ type, title, year? }), as the app's KinoMetaTitleMatch.pick: the hits of [tmdbType] whose es-MX or original
+ * title equals [title] once normalised; with a [year], that exact year wins, else one within yearSlack; a tie or nothing is
+ * null. The kit has no TMDB search of Kino's own: use it to check what Kino would pick from hits you fetched yourself.
+ */
+export function pickMetaTitle(hits, tmdbType, title, year = 0) {
+  const want = normaliseMetaTitle(title);
+  if (!want) return null;
+  const seen = new Set();
+  const same = [];
+  for (const h of hits || []) {
+    if (!h || h.type !== tmdbType || !(h.id > 0) || seen.has(h.id)) continue;
+    if (normaliseMetaTitle(h.title || "") !== want && normaliseMetaTitle(h.originalTitle || "") !== want) continue;
+    seen.add(h.id);
+    same.push(h);
+  }
+  if (!(year > 0)) return same.length === 1 ? same[0].id : null;
+  const dated = same.map((h) => [h, parseInt(String(h.year || "").slice(0, 4), 10) || 0]).filter(([, y]) => y > 0);
+  const exact = dated.filter(([, y]) => y === year);
+  if (exact.length) return exact.length === 1 ? exact[0][0].id : null;
+  const near = dated.filter(([, y]) => Math.abs(y - year) <= contract.kinoMeta.byTitle.yearSlack);
+  return near.length === 1 ? near[0][0].id : null;
+}
+
+/**
+ * kino.meta's query as the app checks it, or a thrown `invalid_request`: `{ type, ids: { imdb?, tmdb?, tvdb?, kitsu?, mal?,
+ * anilist? }, lang? }`, at least one id. Answers the normalized query (numeric ids as numbers). Kino 0.9.55
+ * (contract.kinoMeta.byTitle): `{ type, title, year?, lang? }` instead of ids; with ids too, the ids win (title and year
+ * still checked, then dropped).
+ */
+export function kinoMetaRequest(query, apiVersion = contract.apiVersion) {
+  const M = contract.kinoMeta;
+  const B = M.byTitle;
+  // Below apiVersion 9 the prelude drops title and year (unknown keys): the query then needs ids, as in the app.
+  if (plainObject(query) && apiVersion < B.apiVersion && (query.title !== undefined || query.year !== undefined)) {
+    const { title, year, ...rest } = query;
+    query = rest;
+  }
+  const bad = (why) => kinoError("invalid_request", "kino.meta: " + why);
+  if (!plainObject(query)) throw bad("needs { type, ids } or { type, title }");
+  let text;
+  try { text = JSON.stringify(query); } catch { throw bad("the query can't be turned into JSON"); }
+  if (text === undefined || text.length > M.maxRequestChars) throw bad(`the query is over ${M.maxRequestChars} characters`);
+  if (!M.types.includes(query.type)) throw bad(`type must be ${M.types.map((t) => `"${t}"`).join(" or ")}`);
+  let title = "";
+  if (query.title !== undefined && query.title !== null) {
+    title = typeof query.title === "string" ? query.title.trim() : "";
+    if (!title || title.length > B.titleMaxChars) throw bad(`title must be a text of 1 to ${B.titleMaxChars} characters`);
+  }
+  let year = 0;
+  if (query.year !== undefined && query.year !== null) {
+    year = typeof query.year === "number" ? query.year : typeof query.year === "string" && /^\d{4}$/.test(query.year.trim()) ? Number(query.year.trim()) : NaN;
+    if (!Number.isInteger(year) || year < B.minYear || year > B.maxYear) throw bad(`year must be a whole number from ${B.minYear} to ${B.maxYear}`);
+    if (!title) throw bad("year goes with title");
+  }
+  if ((query.ids === undefined || query.ids === null) && title) return { type: query.type, title, ...(year ? { year } : {}), ...langOf(query, bad) };
+  if (!plainObject(query.ids)) throw bad("ids must be an object");
+  const ids = {};
+  for (const key of M.idKeys) {
+    const v = query.ids[key];
+    if (v === undefined || v === null) continue;
+    if (key === "imdb") {
+      if (typeof v !== "string" || !new RegExp(contract.output.imdbPattern).test(v)) throw bad("ids.imdb must look like tt0133093");
+      ids.imdb = v;
+      continue;
+    }
+    const n = typeof v === "number" ? v : typeof v === "string" && /^\d{1,10}$/.test(v) ? Number(v) : NaN;
+    if (!Number.isInteger(n) || n < 1 || n > M.maxNumericId) throw bad(`ids.${key} must be a whole number from 1 to ${M.maxNumericId}`);
+    ids[key] = n;
+  }
+  if (!Object.keys(ids).length) {
+    if (title) return { type: query.type, title, ...(year ? { year } : {}), ...langOf(query, bad) };
+    throw bad("needs at least one id (" + M.idKeys.join(", ") + ") or a title");
+  }
+  return { type: query.type, ids, ...langOf(query, bad) };
+}
+
+function langOf(query, bad) {
+  if (query.lang === undefined || query.lang === null) return {};
+  if (typeof query.lang !== "string" || !new RegExp(contract.kinoMeta.langPattern).test(query.lang)) throw bad('lang must be a language code like "es" or "es-MX"');
+  return { lang: query.lang };
+}
+
+/**
+ * kino.tmdb's request as the app checks it, or a thrown `invalid_request`: an allowlisted path (no "/3", no query string,
+ * no "..", no "//") and plain params. Answers `{ path, query }`, `query` the params sorted by name and URL-encoded: what
+ * the app's cache is keyed by (with the path).
+ */
+export function kinoTmdbRequest(path, params) {
+  const T = contract.kinoTmdb;
+  const bad = (why) => kinoError("invalid_request", "kino.tmdb: " + why);
+  if (typeof path !== "string" || !new RegExp(T.pathPattern).test(path) || path.includes("..") || path.includes("//")) {
+    throw bad('path must be a TMDB path like "/movie/603", without "/3", "?" or ".."');
+  }
+  if (!T.pathPrefixes.some((p) => path === p || path.startsWith(p + "/"))) throw bad("that path is not allowed (only " + T.pathPrefixes.join(", ") + ")");
+  if (params !== undefined && params !== null && !plainObject(params)) throw bad("params must be an object");
+  const keys = Object.keys(params || {});
+  if (keys.length > T.maxParams) throw bad(`at most ${T.maxParams} parameters`);
+  const pairs = [];
+  for (const k of keys) {
+    if (!new RegExp(T.paramKeyPattern).test(k)) throw bad("invalid parameter name: " + k.slice(0, 40));
+    if (T.forbiddenParams.includes(k.toLowerCase())) throw bad(`parameter ${k} is not allowed: Kino adds the key`);
+    const v = params[k];
+    if (!(typeof v === "string" || typeof v === "boolean" || (typeof v === "number" && Number.isFinite(v)))) throw bad(`parameter ${k} must be a string, number or boolean`);
+    const s = String(v);
+    if (s.length > T.maxParamValueChars) throw bad(`parameter ${k} is over ${T.maxParamValueChars} characters`);
+    pairs.push([k, s]);
+  }
+  pairs.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  return { path, query: pairs.map(([k, v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v)).join("&") };
+}
+
+/** The `no_tmdb_key` error, with the app's sentence for the person in [lang] (Spanish for "es…", else English). */
+export function noTmdbKeyError(lang, message = "no TMDB key: neither Kino's nor the person's") {
+  const words = contract.kinoTmdb.noKeyUserMessage;
+  return kinoError(contract.kinoTmdb.noKeyCode, message, { userMessage: String(lang || "").toLowerCase().startsWith("es") ? words.es : words.en });
+}
+
+const readJsonFile = (file, what) => {
+  try { return JSON.parse(readFileSync(file, "utf8")); } catch (e) { throw new Error(`${what}: ${file} could not be read as JSON (${e.message})`); }
+};
+
+/**
+ * The kit's TMDB key, standing in for Kino's own: [explicit], else KINO_TMDB_KEY, else `tmdbKey` in sdk/config.json (next
+ * to this file, or ./sdk/config.json from where you run). Null when none. Never printed.
+ */
+export function kitTmdbKey(explicit, env = process.env) {
+  if (typeof explicit === "string" && explicit.trim()) return explicit.trim();
+  if (env.KINO_TMDB_KEY && env.KINO_TMDB_KEY.trim()) return env.KINO_TMDB_KEY.trim();
+  for (const file of [join(SDK_DIR, "config.json"), join(process.cwd(), "sdk", "config.json")]) {
+    if (!existsSync(file)) continue;
+    try {
+      const k = JSON.parse(readFileSync(file, "utf8")).tmdbKey;
+      if (typeof k === "string" && k.trim()) return k.trim();
+    } catch { /* a broken config.json is reported by run.mjs itself */ }
+  }
+  return null;
+}
+
+/** kino.device for [createKino]: the [device] option, else env KINO_DEVICE, else contract.kinoDevice.default. */
+function deviceFor(device, env) {
+  const D = contract.kinoDevice;
+  const allowed = D.values.map((v) => `"${v}"`).join(" or ");
+  if (device !== undefined && device !== null) {
+    if (!D.values.includes(device)) throw new Error(`device must be ${allowed} (got ${JSON.stringify(device)})`);
+    return device;
+  }
+  const fromEnv = env && env[D.kitEnv];
+  if (fromEnv === undefined || fromEnv === "") return D.default;
+  if (!D.values.includes(fromEnv)) throw new Error(`${D.kitEnv} must be ${allowed} (got ${JSON.stringify(fromEnv)})`);
+  return fromEnv;
+}
+
 /**
  * [config]: the setting values (`--config key=value` / sdk/config.json); defaults from the
  * manifest are applied here like the app does. [record]/[replay]: a JSON file of kino.fetch
  * exchanges, so a test can run offline and give the same answers every time. [fetchImpl]: the
  * network itself (tests point it at a local server).
+ *
+ * kino.meta / kino.tmdb (Kino 0.9.53): [metaFixture] (an object, or a file path; default env KINO_META_FIXTURE) answers
+ * kino.meta offline -- keys `"<type>:<idKey>:<value>"` or `"<idKey>:<value>"` (`"movie:imdb:tt0133093"`, `"tmdb:603"`), and
+ * for a lookup by title (Kino 0.9.55) `"<type>:title:<normalised title>:<year>"` or without the year (`"movie:title:the matrix:1999"`) --
+ * and without it kino.meta answers null (the kit has no TMDB/AniList of Kino's own and no other plugins). [tmdbKey]
+ * (default [kitTmdbKey]) stands in for Kino's own TMDB key; [tmdbFixture] (an object or a file; default env KINO_TMDB_FIXTURE)
+ * answers kino.tmdb offline, keyed `"<path>?<sorted query>"` or `"<path>"`, standing in for TMDB and a configured key.
+ * [now] is the clock of their rate limits and cache.
+ *
+ * kino.device (Kino 0.9.55, contract.kinoDevice): [device] ("phone" or "tv", run.mjs --device), else env KINO_DEVICE,
+ * else "phone". Anything else throws: a typo must not silently test the other UI.
  */
-export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", storageFile = null, cookiesFile = null, secretsFile = null, config = {}, record = null, replay = null, fetchImpl = globalThis.fetch } = {}) {
+export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", device = undefined, storageFile = null, cookiesFile = null, secretsFile = null, config = {}, record = null, replay = null, fetchImpl = globalThis.fetch, metaFixture = undefined, tmdbKey = undefined, tmdbFixture = undefined, env = process.env, now = Date.now } = {}) {
   const f = contract.fetch;
+  const kinoDevice = deviceFor(device, env);
   const storage = loadJson(storageFile, {});
   // An entry is a bare string (permanent, the format before ttlMs existed) or { v, e } (expires at
   // epoch ms `e`). Dropped lazily, on the next read or write that touches this instance -- never a
@@ -587,6 +795,8 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
   const tape = replay ? loadJson(replay, null) : record ? [] : null;
   if (replay && !tape) throw new Error(`--replay: ${replay} not found`);
   let requests = 0;
+  // fetchHosts "any": the budget of hosts reached only through it (contract.fetch.anyHost), per site and per plugin.
+  const anyBudget = anyHostBudget(now);
 
   // A plugin whose manifest declares secrets: markers, substitution, the declared-host-and-https
   // rule (checkSealedHost below) and redaction, all simulated without opening the seal.
@@ -596,7 +806,28 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
   // manifest says "telemetry": true or "verbose" (always for now; later unless the person turns it off; once an hour per area); here both go to stderr.
   const logLine = (tag, args) => writeErr(tag, ...args.map((a) => (typeof a === "string" ? redact(a) : a)));
   const kinoLog = Object.assign((...args) => logLine("[kino.log]", args), {
-    report: (...args) => logLine(manifest && manifest.telemetry ? "[kino.log.report]" : "[kino.log.report: sin \"telemetry\", solo registro]", args),
+    report: (...args) => logLine(manifest && manifest.telemetry ? "[kino.log.report]" : "[kino.log.report: no \"telemetry\", log only]", args),
+  });
+  // kino.seed(session) (Kino 0.9.55, contract.kinoSeed): the kit sends nothing anywhere. It applies the app's own filter and says
+  // which keys Kino would keep (never the values: they are tokens), and, like kino.log.report, that the app sends only with
+  // "telemetry" on. Synchronous, answers nothing, never throws into the plugin.
+  const kinoSeed = Object.freeze(function seed(session) {
+    try {
+      const S = contract.kinoSeed;
+      if (session === null || typeof session !== "object" || Array.isArray(session)) return;
+      const json = JSON.stringify(session);
+      if (typeof json !== "string" || json.length > S.maxInputChars) return;
+      const kept = {};
+      for (const key of S.allowed) {
+        const v = session[key];
+        if ((typeof v === "string" && v.length > 0 && v.length <= S.maxValueChars) || (typeof v === "number" && Number.isFinite(v))) kept[key] = v;
+      }
+      const missing = S.required.filter((key) => kept[key] === undefined || String(kept[key]).trim() === "");
+      const tag = manifest && manifest.telemetry ? "[kino.seed]" : "[kino.seed: no \"telemetry\", nothing would be sent]";
+      if (missing.length > 0) return logLine(tag, [`dropped: ${missing.join(", ")} missing or blank`]);
+      if (JSON.stringify(kept).length > S.maxTotalChars) return logLine(tag, [`dropped: over ${S.maxTotalChars} characters once cleaned`]);
+      logLine(tag, [`Kino would keep: ${Object.keys(kept).join(", ")}`]);
+    } catch { /* a contribution never fails the plugin */ }
   });
 
   const values = {};
@@ -615,14 +846,26 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
   const port = (u) => u.port || (u.protocol === "https:" ? "443" : "80");
   const serverOf = (u) => servers.find((s) => s.protocol === u.protocol && s.hostname === u.hostname && port(s) === port(u));
 
+  // fetchHosts "any" at apiVersion 9 (Kino 0.9.55): what the app does once the person approved its red line.
+  const anyHost = fetchAnyHost(manifest);
   function gate(u, from) {
     const typed = serverOf(u);
     if (typed) {
-      if (from && serverOf(from) && serverOf(from) !== typed) throw kinoError("host_not_allowed", "host no permitido: " + u.hostname);
+      if (from && serverOf(from) && serverOf(from) !== typed) throw hostRefused("host not allowed: " + u.hostname, u.hostname);
       return;
     }
-    if (!hostMatches(u.hostname, manifest.hosts)) throw kinoError("host_not_allowed", "host no permitido: " + u.hostname);
-    if (!schemeAllowed(u, manifest)) throw kinoError("host_not_allowed", "solo se permite https");
+    // PluginHostGate: http or https to a public name or public IPv4 address; a typed server's name on another port or
+    // scheme keeps the strict rules. (A public name that resolves into the home network is refused by the app's DNS
+    // check, which the kit does not simulate.)
+    // Through the grant (a host neither declared nor typed): https on port 443 to a public IPv4 literal or a DOTTED
+    // public name, like PluginHostGate.anyFetchRefusal. A declared host keeps the rules below (insecureHttp included).
+    if (anyHost && !servers.some((s) => s.hostname === u.hostname) && !hostMatches(u.hostname, manifest.hosts)) {
+      const why = anyFetchRefusal(u);
+      if (why) throw hostRefused(why, u.hostname);
+      return;
+    }
+    if (!hostMatches(u.hostname, manifest.hosts)) throw hostRefused("host not allowed: " + u.hostname, u.hostname);
+    if (!schemeAllowed(u, manifest)) throw hostRefused("only https is allowed", u.hostname);
   }
 
   // --- cookies: enough of RFC 6265 for logins (Domain, Path, Expires, Max-Age, Secure) ---
@@ -677,13 +920,13 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
     if (typeof body !== "object") return String(body);
     if ("json" in body) { setType("application/json; charset=utf-8"); return JSON.stringify(body.json) ?? "null"; }
     if ("form" in body) {
-      if (body.form === null || typeof body.form !== "object") throw kinoError("invalid_request", "body.form debe ser un objeto");
+      if (body.form === null || typeof body.form !== "object") throw kinoError("invalid_request", "body.form must be an object");
       headers["Content-Type"] = "application/x-www-form-urlencoded";
       // OkHttp's FormBody encoding: spaces as %20, not "+".
       return Object.keys(body.form).map((k) => encodeURIComponent(k) + "=" + encodeURIComponent(String(body.form[k]))).join("&");
     }
     if ("base64" in body) return Buffer.from(String(body.base64), "base64");
-    throw kinoError("invalid_request", "body debe ser un texto, { json }, { form } o { base64 }");
+    throw kinoError("invalid_request", "body must be a string, { json }, { form } or { base64 }");
   }
 
   const textual = (type) => !type || /charset=/i.test(type) || /^text\//i.test(type) || /[/+](json|xml)\b/i.test(type) || /javascript|x-www-form-urlencoded/i.test(type);
@@ -735,10 +978,10 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
    */
   function checkSealedHost(u, allowed) {
     if (!hostMatches(u.hostname, allowed)) {
-      throw kinoError("host_not_allowed", "este plugin no puede enviar datos sellados a " + u.hostname.slice(0, 100));
+      throw hostRefused("this plugin can't send sealed data to " + u.hostname.slice(0, 100), u.hostname);
     }
     if (u.protocol !== "https:") {
-      throw kinoError("host_not_allowed", "este plugin no puede enviar datos sellados sin https a " + u.hostname.slice(0, 100));
+      throw hostRefused("this plugin can't send sealed data without https to " + u.hostname.slice(0, 100), u.hostname);
     }
   }
 
@@ -749,9 +992,9 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
   async function fetchGated(url, opts = {}) {
     const o = opts || {};
     let method = String(o.method === undefined ? "GET" : o.method).toUpperCase();
-    if (!f.methods.includes(method)) throw kinoError("invalid_request", "método no permitido: " + method.slice(0, 20));
+    if (!f.methods.includes(method)) throw kinoError("invalid_request", "method not allowed: " + method.slice(0, 20));
     const redirect = o.redirect === undefined ? "follow" : String(o.redirect);
-    if (!f.redirectModes.includes(redirect)) throw kinoError("invalid_request", 'redirect debe ser "follow" o "manual"');
+    if (!f.redirectModes.includes(redirect)) throw kinoError("invalid_request", 'redirect must be "follow" or "manual"');
     const headers = {};
     for (const k of Object.keys(o.headers || {})) headers[k] = String(o.headers[k]);
     let carriesSecret = false;
@@ -760,9 +1003,9 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
     // Kotlin side that substitutes.
     let body = requestBody(o.body, headers);
     const size = String(url).length + JSON.stringify(headers).length + (body ? (typeof body === "string" ? body.length : body.length * 2) : 0);
-    if (size > f.maxRequestChars) throw kinoError("too_large", `solicitud demasiado grande (más de ${kb(f.maxRequestChars)})`);
+    if (size > f.maxRequestChars) throw kinoError("too_large", `request too large (over ${kb(f.maxRequestChars)})`);
     let current;
-    try { current = new URL(String(url)); } catch { throw kinoError("invalid_request", "URL inválida: " + String(url).slice(0, 200)); }
+    try { current = new URL(String(url)); } catch { throw kinoError("invalid_request", "invalid URL: " + String(url).slice(0, 200)); }
     if (pluginSecrets) {
       // A typed cipher key (apiVersion 6) is for kino.crypto only: its marker anywhere in a request
       // (url, header names or values, any body) is refused before any substitution, like the app.
@@ -779,7 +1022,7 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
         carriesSecret = true;
         const substituted = pluginSecrets.substitute(headers[name]);
         if ([...substituted].some(badHeaderChar)) {
-          throw kinoError("invalid_request", `el encabezado ${name.slice(0, 40)} no puede llevar este dato sellado: tiene caracteres no permitidos`);
+          throw kinoError("invalid_request", `header ${name.slice(0, 40)} can't carry this sealed value: it has characters that aren't allowed`);
         }
         headers[name] = substituted;
       }
@@ -812,7 +1055,11 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
     for (let hop = 0; hop <= f.maxRedirects; hop++) {
       if (carriesSecret) checkSealedHost(current, pluginSecrets.sealedHosts);
       gate(current, previous);
-      if (++requests > f.maxRequestsPerCall) throw kinoError("invalid_request", `demasiadas solicitudes en una sola llamada (máximo ${f.maxRequestsPerCall})`);
+      if (++requests > f.maxRequestsPerCall) throw kinoError("invalid_request", `too many requests in one call (at most ${f.maxRequestsPerCall})`);
+      if (anyHost && !serverOf(current) && !hostMatches(current.hostname, manifest.hosts)) {
+        const over = anyBudget.take(current.hostname);
+        if (over) throw kinoError("rate_limited", over);
+      }
       if (!Object.keys(headers).some((k) => k.toLowerCase() === "user-agent")) headers["User-Agent"] = `Kino/${appVersion} (plugin ${manifest.id})`;
       const sendHeaders = { ...headers };
       if (o.cookies !== false) { const c = cookieHeader(current); if (c) sendHeaders.Cookie = c; }
@@ -855,12 +1102,12 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
           r = await fetchImpl(current, { method, headers: sendHeaders, body: ["POST", "PUT", "PATCH"].includes(method) ? body ?? "" : undefined, redirect: "manual", signal: controller.signal });
           bytes = Buffer.from(await r.arrayBuffer());
         } catch (e) {
-          if (controller.signal.aborted) throw kinoError("timeout", "la solicitud tardó demasiado");
+          if (controller.signal.aborted) throw kinoError("timeout", "the request took too long");
           // Not cut to 200 chars for a sealed request: its detail may quote what the server echoed
           // back, and a value straddling the cut would leave a piece redaction can't recognize --
           // redacted whole here, then kinoError's own cap still applies.
           const detail = redact(String(e.message));
-          throw kinoError("network", "error de red: " + (carriesSecret ? detail : detail.slice(0, 200)));
+          throw kinoError("network", "network error: " + (carriesSecret ? detail : detail.slice(0, 200)));
         } finally {
           clearTimeout(timer);
         }
@@ -885,7 +1132,7 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
           tape.push({ key, status, headers: storedHeaders, body: storedBody });
         }
       }
-      if (bytes.length > f.maxBodyBytes) throw kinoError("too_large", `respuesta demasiado grande (más de ${kb(f.maxBodyBytes)})`);
+      if (bytes.length > f.maxBodyBytes) throw kinoError("too_large", `response too large (over ${kb(f.maxBodyBytes)})`);
       const location = headerList.find(([k]) => k === "location");
       if ([301, 302, 303, 307, 308].includes(status) && location && redirect === "follow") {
         if (status === 303 || ((status === 301 || status === 302) && method === "POST")) { method = "GET"; body = undefined; }
@@ -895,22 +1142,22 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
       }
       return response(status, current.toString(), headerList, bytes);
     }
-    throw kinoError("network", "demasiadas redirecciones");
+    throw kinoError("network", "too many redirects");
   }
 
   // --- crypto (node:crypto), same names, encodings and errors as the app ---
   const k = contract.crypto;
   const buf = (v, enc, field) => {
-    if (typeof v !== "string") throw kinoError("crypto_error", `falta "${field}"`);
-    if (!k.encodings.includes(enc)) throw kinoError("crypto_error", "codificación desconocida: " + String(enc).slice(0, 20));
-    if (enc === "hex" && (v.length % 2 !== 0 || /[^0-9a-f]/i.test(v))) throw kinoError("crypto_error", `"${field}" no es hexadecimal válido`);
-    if (enc === "base64" && /[^A-Za-z0-9+/=_\-\s]/.test(v)) throw kinoError("crypto_error", `"${field}" no es base64 válido`);
+    if (typeof v !== "string") throw kinoError("crypto_error", `missing "${field}"`);
+    if (!k.encodings.includes(enc)) throw kinoError("crypto_error", "unknown encoding: " + String(enc).slice(0, 20));
+    if (enc === "hex" && (v.length % 2 !== 0 || /[^0-9a-f]/i.test(v))) throw kinoError("crypto_error", `"${field}" is not valid hex`);
+    if (enc === "base64" && /[^A-Za-z0-9+/=_\-\s]/.test(v)) throw kinoError("crypto_error", `"${field}" is not valid base64`);
     const b = Buffer.from(v, enc === "utf8" ? "utf8" : enc === "hex" ? "hex" : "base64");
-    if (b.length > k.maxDataBytes) throw kinoError("crypto_error", `"${field}" pasa de ${kb(k.maxDataBytes)}`);
+    if (b.length > k.maxDataBytes) throw kinoError("crypto_error", `"${field}" is over ${kb(k.maxDataBytes)}`);
     return b;
   };
   const out = (b, enc) => {
-    if (!k.encodings.includes(enc)) throw kinoError("crypto_error", "codificación desconocida: " + String(enc).slice(0, 20));
+    if (!k.encodings.includes(enc)) throw kinoError("crypto_error", "unknown encoding: " + String(enc).slice(0, 20));
     return b.toString(enc === "utf8" ? "utf8" : enc);
   };
   // A marker in `data`, `iv` or `aad` is refused whatever the key is (spec §5): those are paths
@@ -938,22 +1185,22 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
       // carry little entropy per byte, which puts it in reach of a search.
       if (sealedIn(p.key) && typedEnc === null && !String(alg).startsWith("aes-")) throw kinoError("crypto_error", SEALED_CRYPTO_REFUSED);
     }
-    if (!k.ciphers.includes(alg)) throw kinoError("crypto_error", "cifrado desconocido: " + String(alg).slice(0, 20));
+    if (!k.ciphers.includes(alg)) throw kinoError("crypto_error", "unknown cipher: " + String(alg).slice(0, 20));
     const key = buf(openKeyLike(p.key), typedEnc || p.keyEncoding || "utf8", "key");
     const data = buf(p.data, p.inputEncoding || (decrypt ? "base64" : "utf8"), "data");
     const bits = alg.startsWith("des") ? 192 : Number(alg.split("-")[1]);
-    if (key.length * 8 !== bits) throw kinoError("crypto_error", `la clave de ${alg} debe tener ${bits / 8} bytes, tiene ${key.length}`);
+    if (key.length * 8 !== bits) throw kinoError("crypto_error", `the ${alg} key must be ${bits / 8} bytes, it is ${key.length}`);
     const mode = alg.split("-")[2];
     const iv = mode === "ecb" ? null : buf(p.iv, p.ivEncoding || "utf8", "iv");
     const padding = p.padding === undefined ? "pkcs7" : p.padding;
-    if (padding !== "pkcs7" && padding !== "none") throw kinoError("crypto_error", "relleno desconocido: " + String(padding).slice(0, 20));
+    if (padding !== "pkcs7" && padding !== "none") throw kinoError("crypto_error", "unknown padding: " + String(padding).slice(0, 20));
     try {
       let result;
       if (mode === "gcm") {
         const c = decrypt ? createDecipheriv(alg, key, iv) : createCipheriv(alg, key, iv);
         if (p.aad !== undefined) c.setAAD(buf(p.aad, p.aadEncoding || "utf8", "aad"));
         if (decrypt) {
-          if (data.length < 16) throw kinoError("crypto_error", "al texto cifrado le falta la etiqueta de 16 bytes");
+          if (data.length < 16) throw kinoError("crypto_error", "the ciphertext is missing its 16-byte tag");
           c.setAuthTag(data.subarray(data.length - 16));
           result = out(Buffer.concat([c.update(data.subarray(0, data.length - 16)), c.final()]), p.outputEncoding || "utf8");
         } else {
@@ -968,39 +1215,39 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
     } catch (e) {
       if (e.code && String(e.code).startsWith("KinoError")) throw e;
       if (e.name && e.name.startsWith("KinoError")) throw e;
-      throw kinoError("crypto_error", decrypt ? "no se pudo descifrar: clave o iv equivocados" : "operación criptográfica inválida");
+      throw kinoError("crypto_error", decrypt ? "couldn't decrypt: wrong key or iv" : "invalid crypto operation");
     }
   }
   const crypto = Object.freeze({
     hash(alg, data, p = {}) {
       if (sealedIn(String(data))) throw kinoError("crypto_error", SEALED_CRYPTO_REFUSED);
-      if (!k.hashes.includes(alg)) throw kinoError("crypto_error", "algoritmo de hash desconocido: " + String(alg).slice(0, 20));
+      if (!k.hashes.includes(alg)) throw kinoError("crypto_error", "unknown hash algorithm: " + String(alg).slice(0, 20));
       return redactOut(out(createHash(alg).update(buf(String(data), p.inputEncoding || "utf8", "data")).digest(), p.outputEncoding || "hex"));
     },
     hmac(alg, key, data, p = {}) {
       if (sealedIn(String(data))) throw kinoError("crypto_error", SEALED_CRYPTO_REFUSED);
       if (pluginSecrets && pluginSecrets.containsCipherKeyMarker(String(key))) throw kinoError("crypto_error", SEALED_CRYPTO_REFUSED);
-      if (!k.hashes.includes(alg)) throw kinoError("crypto_error", "algoritmo de hmac desconocido: " + String(alg).slice(0, 20));
+      if (!k.hashes.includes(alg)) throw kinoError("crypto_error", "unknown hmac algorithm: " + String(alg).slice(0, 20));
       // Unlike a cipher key, the hmac key may join a marker with other text (e.g. OAuth 1's
       // `consumerSecret&tokenSecret`): HMAC mixes its whole key through a hash, so a known part
       // never splits the unknown one off.
       const keyBuf = buf(openKeyLike(String(key)), p.keyEncoding || "utf8", "key");
-      if (!keyBuf.length) throw kinoError("crypto_error", "la clave del hmac está vacía");
+      if (!keyBuf.length) throw kinoError("crypto_error", "the hmac key is empty");
       return redactOut(out(createHmac(alg, keyBuf).update(buf(String(data), p.inputEncoding || "utf8", "data")).digest(), p.outputEncoding || "hex"));
     },
     encrypt: (alg, p) => cipher(false, alg, p),
     decrypt: (alg, p) => cipher(true, alg, p),
     pbkdf2(hash, password, salt, iterations, keyLength, p = {}) {
       if (pluginSecrets && (pluginSecrets.containsCipherKeyMarker(String(password)) || pluginSecrets.containsCipherKeyMarker(String(salt)))) throw kinoError("crypto_error", SEALED_CRYPTO_REFUSED);
-      if (!k.pbkdf2Hashes.includes(hash)) throw kinoError("crypto_error", "hash de pbkdf2 desconocido: " + String(hash).slice(0, 20));
-      if (!Number.isInteger(iterations) || iterations < 1 || iterations > k.pbkdf2MaxIterations) throw kinoError("crypto_error", `iteraciones de pbkdf2 entre 1 y ${k.pbkdf2MaxIterations}`);
-      if (!Number.isInteger(keyLength) || keyLength < 1 || keyLength > k.pbkdf2MaxKeyBytes) throw kinoError("crypto_error", `longitud de clave de pbkdf2 entre 1 y ${k.pbkdf2MaxKeyBytes} bytes`);
+      if (!k.pbkdf2Hashes.includes(hash)) throw kinoError("crypto_error", "unknown pbkdf2 hash: " + String(hash).slice(0, 20));
+      if (!Number.isInteger(iterations) || iterations < 1 || iterations > k.pbkdf2MaxIterations) throw kinoError("crypto_error", `pbkdf2 iterations between 1 and ${k.pbkdf2MaxIterations}`);
+      if (!Number.isInteger(keyLength) || keyLength < 1 || keyLength > k.pbkdf2MaxKeyBytes) throw kinoError("crypto_error", `pbkdf2 key length between 1 and ${k.pbkdf2MaxKeyBytes} bytes`);
       // password and salt may both join a marker with other text, same reasoning as the hmac key.
       const password0 = openKeyLike(String(password)), salt0 = openKeyLike(String(salt));
       return redactOut(out(pbkdf2Sync(buf(password0, p.keyEncoding || "utf8", "password"), buf(salt0, p.inputEncoding || "utf8", "salt"), iterations, keyLength, hash), p.outputEncoding || "hex"));
     },
     randomBytes(n, enc = "hex") {
-      if (!Number.isInteger(n) || n < 1 || n > k.randomMaxBytes) throw kinoError("crypto_error", `randomBytes acepta de 1 a ${k.randomMaxBytes} bytes`);
+      if (!Number.isInteger(n) || n < 1 || n > k.randomMaxBytes) throw kinoError("crypto_error", `randomBytes takes 1 to ${k.randomMaxBytes} bytes`);
       return redactOut(out(randomBytes(n), enc));
     },
     uuid: () => redactOut(randomUUID()),
@@ -1008,10 +1255,103 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
     ...(contract.apiVersion >= KP.apiVersion ? keyPairApi({ pluginSecrets, buf }) : {}),
   });
 
+  // --- kino.meta (Kino 0.9.53): the app asks TMDB, AniList and the person's other meta plugins; the kit answers from a
+  // fixture, else null. Same checks, same rate limit, same codes. ---
+  const M = contract.kinoMeta;
+  const metaBucket = tokenBucket(M.perMinute, 60_000, now);
+  const metaFixtureFile = metaFixture === undefined ? env.KINO_META_FIXTURE : metaFixture;
+  const metaAnswers = typeof metaFixtureFile === "string" && metaFixtureFile ? readJsonFile(metaFixtureFile, "KINO_META_FIXTURE") : plainObject(metaFixtureFile) ? metaFixtureFile : null;
+  async function meta(query) {
+    await null;
+    const q = kinoMetaRequest(query, manifest.apiVersion);
+    if (!metaBucket.take()) throw kinoError("rate_limited", `too many kino.meta calls in a minute (at most ${M.perMinute}); wait a moment`);
+    if (!metaAnswers) return null;
+    // Kino 0.9.55's lookup by title: the fixture's "<type>:title:<normalised title>:<year>", then without the year.
+    if (q.title) {
+      const t = normaliseMetaTitle(q.title);
+      const hit = (q.year ? metaAnswers[`${q.type}:title:${t}:${q.year}`] : undefined) ?? metaAnswers[`${q.type}:title:${t}`];
+      return hit === undefined || hit === null ? null : JSON.parse(JSON.stringify(hit));
+    }
+    for (const key of M.idKeys) {
+      if (q.ids[key] === undefined) continue;
+      const hit = metaAnswers[`${q.type}:${key}:${q.ids[key]}`] ?? metaAnswers[`${key}:${q.ids[key]}`];
+      if (hit !== undefined) return hit === null ? null : JSON.parse(JSON.stringify(hit));
+    }
+    return null;
+  }
+
+  // --- kino.tmdb (Kino 0.9.53): the app asks TMDB on Kino's own key first (its limits: kinoKeyPerWindow per plugin,
+  // kinoKeyGlobalPerWindow for all) and on the person's key only when Kino's fails. The kit has neither: your key ([tmdbKey],
+  // KINO_TMDB_KEY or sdk/config.json's tmdbKey) stands in for Kino's, under Kino's stricter limit, with no person's key to
+  // fall back to; a fixture stands in for TMDB (and a key). ---
+  const T = contract.kinoTmdb;
+  const tmdbBucket = tokenBucket(T.perWindow, T.windowMs, now);
+  const kinoKeyBucket = tokenBucket(T.kinoKeyPerWindow, T.windowMs, now);
+  const personKey = tmdbKey === undefined ? kitTmdbKey(undefined, env) : tmdbKey;
+  const tmdbFixtureFile = tmdbFixture === undefined ? env.KINO_TMDB_FIXTURE : tmdbFixture;
+  const tmdbAnswers = typeof tmdbFixtureFile === "string" && tmdbFixtureFile ? readJsonFile(tmdbFixtureFile, "KINO_TMDB_FIXTURE") : plainObject(tmdbFixtureFile) ? tmdbFixtureFile : null;
+  const tmdbCache = new Map();
+  // Every text that could reach the plugin or the console loses the key first.
+  const scrubKey = (text) => (personKey ? String(text).split(personKey).join("***") : String(text));
+  async function tmdb(path, params) {
+    await null;
+    const { path: p, query } = kinoTmdbRequest(path, params);
+    if (!tmdbBucket.take()) throw kinoError("rate_limited", `too many kino.tmdb calls (at most ${T.perWindow} every ${T.windowMs / 1000} s); wait a moment`);
+    const cacheKey = query ? `${p}?${query}` : p;
+    if (tmdbAnswers) {
+      const hit = Object.prototype.hasOwnProperty.call(tmdbAnswers, cacheKey) ? tmdbAnswers[cacheKey] : Object.prototype.hasOwnProperty.call(tmdbAnswers, p) ? tmdbAnswers[p] : undefined;
+      if (hit === undefined) throw kinoError("not_found", "KINO_TMDB_FIXTURE doesn't have " + cacheKey.slice(0, 200));
+      return JSON.parse(JSON.stringify(hit));
+    }
+    const v3 = personKey && new RegExp(T.keyPatterns.v3).test(personKey);
+    const v4 = personKey && !v3 && new RegExp(T.keyPatterns.v4).test(personKey);
+    if (!v3 && !v4) throw noTmdbKeyError(lang);
+    const cached = tmdbCache.get(cacheKey);
+    if (cached && now() - cached.at < T.cacheTtlMs) return JSON.parse(cached.text);
+    if (!kinoKeyBucket.take()) throw kinoError("rate_limited", `too many kino.tmdb calls on Kino's key (at most ${T.kinoKeyPerWindow} every ${T.windowMs / 1000} s); in Kino the person's key, if any, would answer`);
+    const qs = [query, v3 ? "api_key=" + encodeURIComponent(personKey) : ""].filter(Boolean).join("&");
+    const url = T.base + p + (qs ? "?" + qs : "");
+    const headers = { Accept: "application/json", "User-Agent": `Kino/${appVersion}` };
+    if (v4) headers.Authorization = "Bearer " + personKey;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), T.timeoutMs);
+    let r, bytes;
+    try {
+      r = await fetchImpl(url, { method: "GET", headers, redirect: "manual", signal: controller.signal });
+      bytes = Buffer.from(await r.arrayBuffer());
+    } catch (e) {
+      if (controller.signal.aborted) throw kinoError("timeout", "TMDB took too long");
+      throw kinoError("network", "couldn't connect to TMDB: " + scrubKey(e && e.message).slice(0, 150));
+    } finally {
+      clearTimeout(timer);
+    }
+    if (bytes.length > T.maxBodyBytes) throw kinoError("too_large", `the TMDB answer is over ${kb(T.maxBodyBytes)}`);
+    // In Kino a refused or rate-limited Kino key goes again on the person's key; the kit has none to try.
+    if (r.status === 401 || r.status === 403) throw kinoError("unavailable", `TMDB refused the key (${r.status}): check KINO_TMDB_KEY`);
+    if (r.status === 404) throw kinoError("not_found", "TMDB doesn't have " + p.slice(0, 200));
+    if (r.status === 429) throw kinoError("rate_limited", "TMDB asked to wait (429)");
+    if (r.status < 200 || r.status > 299) throw kinoError("unavailable", "TMDB answered " + r.status);
+    const text = bytes.toString("utf8");
+    let body;
+    try { body = JSON.parse(text); } catch { throw kinoError("unavailable", "TMDB answered something that isn't JSON"); }
+    if (text.length <= T.maxCachedBodyChars) {
+      tmdbCache.delete(cacheKey);
+      tmdbCache.set(cacheKey, { at: now(), text });
+      while (tmdbCache.size > T.maxCachedEntries) tmdbCache.delete(tmdbCache.keys().next().value);
+    }
+    return body;
+  }
+
   const kino = Object.freeze({
     apiVersion: contract.apiVersion,
     appVersion,
     lang,
+    // Kino 0.9.55 (contract.additiveFromApp["kino.fetchAnyHost"]): true when this install's kino.fetch reaches any public host.
+    fetchAnyHost: anyHost,
+    // Kino 0.9.55 (contract.additiveFromApp["kino.device"]): the UI Kino shows, "phone" or "tv".
+    device: kinoDevice,
+    // Kino 0.9.55 (contract.additiveFromApp["kino.seed"]): share one anonymous guest session; the kit only reports what Kino would keep.
+    seed: kinoSeed,
     fetch: fetchGated,
     html: Object.freeze({
       select() {
@@ -1030,7 +1370,7 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
         if (options !== null && typeof options === "object" && options.ttlMs !== undefined && options.ttlMs !== null) {
           const ttlMs = options.ttlMs;
           if (!Number.isInteger(ttlMs) || ttlMs <= 0 || ttlMs > contract.storage.maxTtlMs) {
-            throw new Error(`kino.storage.set: ttlMs debe ser un entero mayor que 0 y de hasta ${contract.storage.maxTtlMs} ms (30 días)`);
+            throw kinoError("invalid_request", `kino.storage.set: ttlMs must be a whole number above 0 and up to ${contract.storage.maxTtlMs} ms (30 days)`);
           }
           expiresAt = Date.now() + ttlMs;
         }
@@ -1039,7 +1379,7 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
         storage[k] = expiresAt === undefined ? value : { v: value, e: expiresAt };
         if (Buffer.byteLength(JSON.stringify(storage)) > contract.storage.maxTotalBytes) {
           if (previous === undefined) delete storage[k]; else storage[k] = previous;
-          throw new Error(`almacenamiento del plugin lleno (${kb(contract.storage.maxTotalBytes)})`);
+          throw kinoError("too_large", `plugin storage full (${kb(contract.storage.maxTotalBytes)})`);
         }
         saveJson(storageFile, storage);
       },
@@ -1063,7 +1403,7 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
     rank: Object.freeze({ shortQuery, sortBySimilarity, filterRelevant }),
     async sleep(ms) {
       await null;
-      if (!Number.isInteger(ms) || ms < 0 || ms > contract.sleep.maxMs) throw kinoError("invalid_request", `kino.sleep acepta de 0 a ${contract.sleep.maxMs} ms`);
+      if (!Number.isInteger(ms) || ms < 0 || ms > contract.sleep.maxMs) throw kinoError("invalid_request", `kino.sleep takes 0 to ${contract.sleep.maxMs} ms`);
       await new Promise((resolve) => setTimeout(resolve, ms));
     },
     // apiVersion 4: a marker for a secret the manifest's `secrets` declares (spec §5). A name is at
@@ -1072,24 +1412,50 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
     secret(name) {
       const s = String(name).slice(0, 64);
       const m = pluginSecrets && pluginSecrets.marker(s);
-      if (!m) throw new Error("este plugin no declara el secreto " + s.slice(0, 40));
+      if (!m) throw kinoError("not_allowed", "this plugin doesn't declare the secret " + s.slice(0, 40));
       return m;
     },
     error: (code, message, options) => kinoError(code, message, options),
     log: kinoLog,
+    // Kino 0.9.53 (no new apiVersion): ask Kino about a title, and TMDB with no key in the plugin (Kino's, else the person's).
+    // byTitle: true is Kino 0.9.55's feature flag (contract.additiveFromApp["kino.meta.byTitle"]).
+    meta: manifest.apiVersion >= contract.kinoMeta.byTitle.apiVersion ? Object.assign(meta, { byTitle: true }) : meta,
+    tmdb,
     // apiVersion 6: the app opens a hidden WebView; Node has none, so the kit answers as a device without one would.
     // A plugin's resolve should already fall back (another server, a plain kino.fetch path) on this code.
     // kino.browser.page ("browser": "pages", apiVersion 6) answers the same: a plugin keeps a plain kino.fetch path for it too.
     ...(contract.apiVersion >= contract.browser.apiVersion ? {
       browser: Object.freeze({
-        async capture() {
+        // Kino 0.9.54's capture options are here (contract.additiveFromApp["kino.browser.captureAll"]): feature-detect them.
+        captureAll: true,
+        // The app's order: the request is checked first (invalid_request, as its prelude and PluginBrowser.parseRequest
+        // do), and only then is there no browser.
+        async capture(url, opts) {
           await null;
-          throw kinoError("browser_unavailable", "el kit de Node no tiene navegador: kino.browser.capture solo funciona en la app");
+          browserCaptureOptions(opts);
+          throw kinoError("browser_unavailable", "the Node kit has no browser: kino.browser.capture only works in the app");
         },
         ...(contract.apiVersion >= contract.browser.page.apiVersion ? {
-          async page() {
+          // The app's order: the request is checked first (invalid_request, as its prelude does), then the manifest's
+          // approval (a plugin without "browser": "pages" gets not_allowed, as the app's PluginBrowser answers), and
+          // only then is there no browser.
+          async page(url, opts) {
             await null;
-            throw kinoError("browser_unavailable", "el kit de Node no tiene navegador: kino.browser.page solo funciona en la app");
+            const o = opts === undefined || opts === null ? {} : opts;
+            const P = contract.browser.page;
+            if (o.timeoutMs !== undefined && (!Number.isInteger(o.timeoutMs) || o.timeoutMs < 1 || o.timeoutMs > P.maxTimeoutMs)) {
+              throw kinoError("invalid_request", `timeoutMs takes 1 to ${P.maxTimeoutMs} ms`);
+            }
+            if (o.waitFor !== undefined && o.waitFor !== null) {
+              const isRx = Object.prototype.toString.call(o.waitFor) === "[object RegExp]";
+              const w = isRx ? o.waitFor.source : String(o.waitFor);
+              const flags = isRx ? o.waitFor.flags.replace(/[^ms]/g, "") : "";
+              if (w.length < 1 || w.length > P.maxWaitForChars) throw kinoError("invalid_request", `waitFor must be 1 to ${P.maxWaitForChars} characters`);
+              try { new RegExp(w, "i" + flags); } catch { throw kinoError("invalid_request", "waitFor is not a valid regular expression"); }
+            }
+            const pages = manifest && (manifest.browserPages === true || (manifest.browserPages === undefined && manifest.browser === contract.manifest.browser.pagesValue));
+            if (!pages) throw kinoError("not_allowed", `this plugin lacks permission to read pages ("browser": "${contract.manifest.browser.pagesValue}")`);
+            throw kinoError("browser_unavailable", "the Node kit has no browser: kino.browser.page only works in the app");
           },
         } : {}),
       }),
@@ -1106,19 +1472,64 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", stora
 
 /**
  * The app's signing lane (SigningLaneHost + prelude.js): sign() gets kino.crypto, kino.secret,
- * kino.config, kino.html and kino.log, never the network, storage, cookies or sleep. The refusals
+ * kino.config, kino.html and kino.log, never the network, storage, cookies, sleep, kino.meta or kino.tmdb. The refusals
  * are the app's: fetch rejects with host_not_allowed, the rest with not_allowed.
  */
 export function signingLane(kino) {
-  const why = (api) => kinoError("not_allowed", `sign() no puede usar ${api}: lo que necesites debe venir en signContext`);
+  const why = (api) => kinoError("not_allowed", `sign() can't use ${api}: whatever you need must come in signContext`);
   const refused = (api) => () => { throw why(api); };
   const methods = (names, api) => Object.freeze(Object.fromEntries(names.map((n) => [n, refused(api)])));
   return Object.freeze({
     ...kino,
-    fetch: async () => { throw kinoError("host_not_allowed", "sign no puede usar la red"); },
+    fetch: async () => { throw kinoError("host_not_allowed", "sign can't use the network"); },
     storage: methods(["get", "set", "remove", "keys"], "kino.storage"),
     cookies: methods(["get", "clear"], "kino.cookies"),
     sleep: async () => { throw why("kino.sleep"); },
-    ...(kino.browser ? { browser: Object.freeze({ capture: async () => { throw why("kino.browser"); }, ...(kino.browser.page ? { page: async () => { throw why("kino.browser"); } } : {}) }) } : {}),
+    meta: async () => { throw why("kino.meta"); },
+    tmdb: async () => { throw why("kino.tmdb"); },
+    ...(kino.browser ? { browser: Object.freeze({ captureAll: true, capture: async () => { throw why("kino.browser"); }, ...(kino.browser.page ? { page: async () => { throw why("kino.browser"); } } : {}) }) } : {}),
   });
+}
+
+/**
+ * `kino.browser.capture`'s options, checked as the app checks them (its prelude, then PluginBrowser.parseRequest):
+ * throws invalid_request for what the app refuses. Kino 0.9.54 added captureAll, alsoMatch, waitForCookie and
+ * returnCookiesOnTimeout (contract.browser.captureAll).
+ */
+export function browserCaptureOptions(opts) {
+  const o = opts === undefined || opts === null ? {} : opts;
+  const B = contract.browser;
+  const C = B.captureAll;
+  if (o.timeoutMs !== undefined && (!Number.isInteger(o.timeoutMs) || o.timeoutMs < 1 || o.timeoutMs > B.maxTimeoutMs)) {
+    throw kinoError("invalid_request", `timeoutMs takes 1 to ${B.maxTimeoutMs} ms`);
+  }
+  // Length and type only, like the app's prelude: the app compiles patterns as Java regexes (IGNORE_CASE, `(?-i)`, `(?i)`
+  // and other syntax JavaScript refuses), so a JS RegExp compile here would refuse patterns the app accepts.
+  const pattern = (p, what) => {
+    const t = Object.prototype.toString.call(p) === "[object RegExp]" ? p.source : String(p);
+    if (t.length < 1 || t.length > B.maxMatchChars) throw kinoError("invalid_request", `${what} must be 1 to ${B.maxMatchChars} characters`);
+    return t;
+  };
+  const match = o.match === undefined || o.match === null ? null : pattern(String(o.match), "match");
+  const flag = (name) => {
+    const v = o[name];
+    if (v === undefined || v === null) return false;
+    if (v !== true && v !== false) throw kinoError("invalid_request", `${name} must be true or false`);
+    return v;
+  };
+  const captureAll = flag("captureAll");
+  flag("returnCookiesOnTimeout");
+  if (o.alsoMatch !== undefined && o.alsoMatch !== null) {
+    if (!captureAll) throw kinoError("invalid_request", "alsoMatch only works with captureAll");
+    if (!Array.isArray(o.alsoMatch) || o.alsoMatch.length < 1 || o.alsoMatch.length > C.maxAlsoMatch) {
+      throw kinoError("invalid_request", `alsoMatch takes 1 to ${C.maxAlsoMatch} expressions`);
+    }
+    o.alsoMatch.forEach((p) => pattern(p, "each alsoMatch"));
+  }
+  let cookie = null;
+  if (o.waitForCookie !== undefined && o.waitForCookie !== null) {
+    cookie = String(o.waitForCookie);
+    if (!new RegExp(C.waitForCookiePattern).test(cookie)) throw kinoError("invalid_request", "waitForCookie must be a cookie name");
+  }
+  if (captureAll && match === null && cookie !== null) throw kinoError("invalid_request", "captureAll needs match when waitForCookie is used");
 }

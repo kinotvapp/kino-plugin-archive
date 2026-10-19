@@ -34,11 +34,11 @@ export function deltaE(a, b) {
 /** Floored to one decimal with integer arithmetic only: the same text as the app's formatRatio. */
 export function formatRatio(x) {
   const n = Math.floor(x * 10);
-  return `${Math.floor(n / 10)},${n % 10}`;
+  return `${Math.floor(n / 10)}.${n % 10}`;
 }
 const ratio = formatRatio;
 
-const INVALID = (token, tail) => `theme.${token}: no es un color #RRGGBB válido${tail}`;
+const INVALID = (token, tail) => `theme.${token}: is not a valid #RRGGBB color${tail}`;
 
 /** { accent, onAccent, background, surface, highlight, kept, warnings } — exactly what the app's resolve gives. Never throws. */
 export function resolvePalette(theme) {
@@ -53,17 +53,17 @@ export function resolvePalette(theme) {
   const out = { ...t.defaults };
   const bg = get("background");
   if (bg !== undefined) {
-    if (bg === null) warnings.push(INVALID("background", "; se usa el de Kino"));
-    else if (nearRed(bg)) warnings.push("theme.background: se parece demasiado al rojo de Kino; se usa el de Kino");
-    else if (luminance(bg) > t.maxBackgroundLuminance) warnings.push("theme.background: es demasiado claro (el fondo debe ser oscuro); se usa el de Kino");
+    if (bg === null) warnings.push(INVALID("background", "; Kino's is used"));
+    else if (nearRed(bg)) warnings.push("theme.background: is too close to Kino's red; Kino's is used");
+    else if (luminance(bg) > t.maxBackgroundLuminance) warnings.push("theme.background: is too light (the background must be dark); Kino's is used");
     else { out.background = bg; kept.push("background"); }
   }
   const sf = get("surface");
   if (sf !== undefined) {
-    if (sf === null) warnings.push(INVALID("surface", "; se usa el de Kino"));
-    else if (nearRed(sf)) warnings.push("theme.surface: se parece demasiado al rojo de Kino; se usa el de Kino");
-    else if (luminance(sf) > t.maxSurfaceLuminance) warnings.push("theme.surface: es demasiado claro; se usa el de Kino");
-    else if (contrast(sf, out.background) < t.minSurfaceContrast) warnings.push(`theme.surface: no se distingue del fondo (contraste ${ratio(contrast(sf, out.background))}:1, mínimo 1,05:1); se usa el de Kino`);
+    if (sf === null) warnings.push(INVALID("surface", "; Kino's is used"));
+    else if (nearRed(sf)) warnings.push("theme.surface: is too close to Kino's red; Kino's is used");
+    else if (luminance(sf) > t.maxSurfaceLuminance) warnings.push("theme.surface: is too light; Kino's is used");
+    else if (contrast(sf, out.background) < t.minSurfaceContrast) warnings.push(`theme.surface: doesn't stand out from the background (contrast ${ratio(contrast(sf, out.background))}:1, at least 1.05:1); Kino's is used`);
     else { out.surface = sf; kept.push("surface"); }
   }
   const rawA = get("accent");
@@ -74,11 +74,11 @@ export function resolvePalette(theme) {
     let problem = null;
     if (rawA === null) problem = INVALID("accent", "");
     else if (rawOn === null) problem = INVALID("onAccent", "");
-    else if (rawA !== undefined && nearRed(a)) problem = "theme.accent: se parece demasiado al rojo de Kino";
-    else if (rawOn !== undefined && nearRed(on)) problem = "theme.onAccent: se parece demasiado al rojo de Kino";
-    else if (contrast(a, out.background) < t.minUiContrast) problem = `theme.accent: no se distingue sobre el fondo (contraste ${ratio(contrast(a, out.background))}:1, mínimo 3:1)`;
-    else if (contrast(on, a) < t.minTextContrast) problem = `theme.onAccent: no se lee sobre accent (contraste ${ratio(contrast(on, a))}:1, mínimo 4,5:1)`;
-    if (problem) warnings.push(`${problem}; se usan los colores de Kino para accent y onAccent`);
+    else if (rawA !== undefined && nearRed(a)) problem = "theme.accent: is too close to Kino's red";
+    else if (rawOn !== undefined && nearRed(on)) problem = "theme.onAccent: is too close to Kino's red";
+    else if (contrast(a, out.background) < t.minUiContrast) problem = `theme.accent: doesn't stand out on the background (contrast ${ratio(contrast(a, out.background))}:1, at least 3:1)`;
+    else if (contrast(on, a) < t.minTextContrast) problem = `theme.onAccent: isn't readable on accent (contrast ${ratio(contrast(on, a))}:1, at least 4.5:1)`;
+    if (problem) warnings.push(`${problem}; Kino's colors are used for accent and onAccent`);
     else {
       out.accent = a;
       out.onAccent = on;
@@ -88,9 +88,9 @@ export function resolvePalette(theme) {
   }
   const hl = get("highlight");
   if (hl !== undefined) {
-    if (hl === null) warnings.push(INVALID("highlight", "; se usa el de Kino"));
-    else if (nearRed(hl)) warnings.push("theme.highlight: se parece demasiado al rojo de Kino; se usa el de Kino");
-    else if (contrast(hl, out.background) < t.minTextContrast) warnings.push(`theme.highlight: no se lee sobre el fondo (contraste ${ratio(contrast(hl, out.background))}:1, mínimo 4,5:1); se usa el de Kino`);
+    if (hl === null) warnings.push(INVALID("highlight", "; Kino's is used"));
+    else if (nearRed(hl)) warnings.push("theme.highlight: is too close to Kino's red; Kino's is used");
+    else if (contrast(hl, out.background) < t.minTextContrast) warnings.push(`theme.highlight: isn't readable on the background (contrast ${ratio(contrast(hl, out.background))}:1, at least 4.5:1); Kino's is used`);
     else { out.highlight = hl; kept.push("highlight"); }
   }
   return { ...out, kept, warnings };

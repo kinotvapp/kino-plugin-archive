@@ -610,22 +610,22 @@ export async function download(url, { headers = {}, maxBytes, allow = null, fetc
   let current = String(url);
   for (let hop = 0; hop <= 5; hop++) {
     let u;
-    try { u = new URL(current); } catch { throw new Error(`dirección inválida: ${current.slice(0, 100)}`); }
-    if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error(`solo http(s): ${current.slice(0, 100)}`);
-    if (allow && !allow(current)) throw new Error(`${u.hostname} no es un host declarado ni un servidor escrito`);
+    try { u = new URL(current); } catch { throw new Error(`invalid address: ${current.slice(0, 100)}`); }
+    if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error(`http(s) only: ${current.slice(0, 100)}`);
+    if (allow && !allow(current)) throw new Error(`${u.hostname} is neither a declared host nor a typed server`);
     const r = await fetchImpl(current, { headers, redirect: "manual" });
     if (r.status >= 300 && r.status < 400 && r.headers.get("location")) {
       current = new URL(r.headers.get("location"), current).toString();
       continue;
     }
-    if (!r.ok) throw new Error(`respondió ${r.status}`);
+    if (!r.ok) throw new Error(`answered ${r.status}`);
     const chunks = [];
     let size = 0;
     for await (const chunk of r.body ?? []) {
       size += chunk.length;
       chunks.push(Buffer.from(chunk));
       if (size > maxBytes) {
-        if (!cut) throw new Error(`pasa de ${Math.round(maxBytes / (1024 * 1024))} MB`);
+        if (!cut) throw new Error(`is over ${Math.round(maxBytes / (1024 * 1024))} MB`);
         onCut();
         return keepStart(Buffer.concat(chunks), maxBytes).bytes;
       }
@@ -637,10 +637,10 @@ export async function download(url, { headers = {}, maxBytes, allow = null, fetc
 
 // ---------- what the kit prints ----------
 
-/** "N canales en M categorías; K entradas descartadas; L ocultas (adultos)", plus the cut notices when there are any. */
+/** "N channels in M categories; K entries dropped; L hidden (adult)", plus the cut notices when there are any. */
 export function summaryLines(s) {
-  const lines = [`${s.channels} canales en ${s.categories.length} categorías; ${s.skipped} entradas descartadas; ${s.hidden} ocultas (adultos)`];
-  if (s.cut) lines.push(`Lista de más de ${Math.round(live().maxPlaylistBytes / (1024 * 1024))} MB: Kino lee solo su comienzo`);
+  const lines = [`${s.channels} channels in ${s.categories.length} categories; ${s.skipped} entries dropped; ${s.hidden} hidden (adult)`];
+  if (s.cut) lines.push(`List over ${Math.round(live().maxPlaylistBytes / (1024 * 1024))} MB: Kino reads only its beginning`);
   if (s.total > s.channels) lines.push(`Lista recortada: ${s.channels} de ${s.total} canales`);
   if (s.duplicateTvgIds.length) {
     lines.push(`note: ${s.duplicateTvgIds.length} tvg-id used more than once (${s.duplicateTvgIds.slice(0, 5).join(", ")}${s.duplicateTvgIds.length > 5 ? ", …" : ""}): after the first, those channels get a code from their URL and name, which changes if the URL does; keep tvg-ids unique and stable`);
@@ -658,7 +658,7 @@ export function channelLines(s, { guide = null, now = Date.now(), max = 20 } = {
     if (!guide) continue;
     const list = (e.tvgId && guide.programmes[e.tvgId]) || guide.programmes[nameToId.get(normaliseName(e.name))] || [];
     const onAir = list.find((p) => p.start <= now && now < p.end);
-    lines.push(onAir ? `    ahora: ${onAir.title}` : "    sin guía");
+    lines.push(onAir ? `    now: ${onAir.title}` : "    no guide");
   }
   return lines;
 }

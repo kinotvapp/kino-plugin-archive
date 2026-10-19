@@ -69,29 +69,55 @@ export function requiredExports(caps, settings = [], manifest = {}) {
     ...(settings.some((s) => s && s.type === "status") ? [ui.status] : []),
     ...(settings.some((s) => s && s.type === "action") ? [ui.action] : []),
   ];
-  return [...new Set([...caps.flatMap((c) => contract.capabilities.exports[c] || (contract.capabilities.declarative.includes(c) ? [] : [c])), ...fromSettings, ...(manifest.section ? [contract.manifest.section.export] : [])])];
+  return [...new Set([...caps.flatMap((c) => contract.capabilities.exports[c] || (contract.capabilities.declarative.includes(c) ? [] : [c])), ...fromSettings, ...(manifest.section ? [contract.manifest.section.export] : []), ...(manifest.panel ? [contract.manifest.panel.exports.panel] : [])])];
 }
 
-/** Same checks, same order, same Spanish messages as the app's own manifest validation. Returns { ok, field?, message?, manifest? }. */
+/** Same checks, same order, same English messages as the app's own manifest validation. Returns { ok, field?, message?, manifest? }. */
+const EXTERNAL_RESOLVER_BAD =
+  'The "externalResolver" field must be an object with a "package" (an Android package name) and, optionally, an "apk" with a GitHub release "url" (https://github.com/<owner>/<repo>/releases/download/<tag>/<file>) and a 64-character hex "sha256"; "fdroid" may only be true and "downloader" an object with a "code" of 3 to 10 digits';
+const RESOLVER_APK_PATH = /^\/[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}\/releases\/(?:download\/[A-Za-z0-9._+-]{1,100}|latest\/download)\/[A-Za-z0-9._+-]{1,200}$/;
+
+/** Whether `externalResolver` is well formed, as the app reads it: `{ package, apk?: { url, sha256, label? }, fdroid?: true, downloader?: { code } }`. */
+export function externalResolverOk(r) {
+  if (r === null || typeof r !== "object" || Array.isArray(r)) return false;
+  if (typeof r.package !== "string" || r.package.length > 255 || !ANDROID_PACKAGE.test(r.package)) return false;
+  if (r.apk !== undefined) {
+    const a = r.apk;
+    if (a === null || typeof a !== "object" || Array.isArray(a) || typeof a.url !== "string" || a.url.length > 2048 || /[\u0000-\u001f\u007f]/.test(a.url)) return false;
+    let u;
+    try { u = new URL(a.url); } catch { return false; }
+    // Only a GitHub release asset: that is where Kino downloads a recommended resolver from, nowhere else.
+    if (u.protocol !== "https:" || u.hostname !== "github.com" || u.port !== "" || u.username || u.password || u.search || !RESOLVER_APK_PATH.test(u.pathname)) return false;
+    if (typeof a.sha256 !== "string" || !/^[0-9a-fA-F]{64}$/.test(a.sha256)) return false;
+    if (a.label !== undefined && (typeof a.label !== "string" || a.label.trim().length > 40 || /[\u0000-\u001f\u007f]/.test(a.label.trim()))) return false;
+  }
+  if (r.fdroid !== undefined && r.fdroid !== true) return false;
+  if (r.downloader !== undefined) {
+    const d = r.downloader;
+    if (d === null || typeof d !== "object" || Array.isArray(d) || typeof d.code !== "string" || !/^[0-9]{3,10}$/.test(d.code)) return false;
+  }
+  return true;
+}
+
 export function validateManifest(text, { knownPermissions = contract.permissions } = {}) {
   const m = contract.manifest;
   const bad = (field, message) => ({ ok: false, field, message });
-  if (Buffer.byteLength(text, "utf8") > m.maxBytes) return bad("kino-plugin.json", "El manifiesto pesa más de 16 KB");
+  if (Buffer.byteLength(text, "utf8") > m.maxBytes) return bad("kino-plugin.json", "The manifest is over 16 KB");
   let o;
-  try { o = JSON.parse(text); } catch { return bad("kino-plugin.json", "El manifiesto no es un JSON válido"); }
-  if (o === null || typeof o !== "object" || Array.isArray(o)) return bad("kino-plugin.json", "El manifiesto no es un JSON válido");
+  try { o = JSON.parse(text); } catch { return bad("kino-plugin.json", "The manifest is not valid JSON"); }
+  if (o === null || typeof o !== "object" || Array.isArray(o)) return bad("kino-plugin.json", "The manifest is not valid JSON");
   const id = typeof o.id === "string" ? o.id : "";
-  if (!re(m.idPattern).test(id)) return bad("id", 'El campo "id" debe tener de 2 a 40 letras minúsculas, números o guiones');
-  if (m.reservedIds.includes(id)) return bad("id", `El id "${id}" está reservado por Kino`);
+  if (!re(m.idPattern).test(id)) return bad("id", 'The "id" field must be 2 to 40 lowercase letters, digits or hyphens');
+  if (m.reservedIds.includes(id)) return bad("id", `The id "${id}" is reserved by Kino`);
   const name = typeof o.name === "string" ? o.name.trim() : "";
-  if (!name || name.length > m.nameMaxChars) return bad("name", 'El campo "name" debe tener de 1 a 40 caracteres');
-  if (!SEMVER.test(typeof o.version === "string" ? o.version : "")) return bad("version", 'El campo "version" debe ser del tipo 1.2.3');
-  if (!Number.isInteger(o.apiVersion)) return bad("apiVersion", 'El campo "apiVersion" debe ser un número entero');
-  if (o.apiVersion > contract.maxApiVersion) return bad("apiVersion", "Este plugin necesita una versión más nueva de Kino");
-  if (o.apiVersion < 1) return bad("apiVersion", 'El campo "apiVersion" debe ser 1 o mayor');
+  if (!name || name.length > m.nameMaxChars) return bad("name", 'The "name" field must be 1 to 40 characters');
+  if (!SEMVER.test(typeof o.version === "string" ? o.version : "")) return bad("version", 'The "version" field must look like 1.2.3');
+  if (!Number.isInteger(o.apiVersion)) return bad("apiVersion", 'The "apiVersion" field must be a whole number');
+  if (o.apiVersion > contract.maxApiVersion) return bad("apiVersion", "This plugin needs a newer version of Kino");
+  if (o.apiVersion < 1) return bad("apiVersion", 'The "apiVersion" field must be 1 or more');
   // Kino 0.9.46+ drops a leading "./" itself, but 0.9.45 and older refuse it: tell the author to remove it.
-  if (typeof o.entry === "string" && o.entry.startsWith("./")) return bad("entry", 'Quita el "./" del campo "entry" (por ejemplo "plugin.js"): Kino 0.9.45 y anteriores no instalan el plugin con "./"');
-  if (!isSafeRelativePath(o.entry) || !o.entry.endsWith(".js")) return bad("entry", 'El campo "entry" debe ser una ruta relativa a un archivo .js');
+  if (typeof o.entry === "string" && o.entry.startsWith("./")) return bad("entry", 'Drop the "./" from the "entry" field (for example "plugin.js"): Kino 0.9.45 and older don\'t install the plugin with "./"');
+  if (!isSafeRelativePath(o.entry) || !o.entry.endsWith(".js")) return bad("entry", 'The "entry" field must be a relative path to a .js file');
   // apiVersion 5's signature (the author's Ed25519 key and signature over the entry). Below that
   // apiVersion it is unknown and ignored like any other field.
   const sg = m.signature;
@@ -103,45 +129,57 @@ export function validateManifest(text, { knownPermissions = contract.permissions
       Object.keys(s).sort().join(",") === "authorKey,value" && hex(s.authorKey, sg.authorKeyHexChars) && hex(s.value, sg.valueHexChars);
     if (!wellFormed) return bad("signature", sg.badFieldMessage);
   }
-  if (!Array.isArray(o.hosts)) return bad("hosts", 'Falta el campo "hosts"');
+  if (!Array.isArray(o.hosts)) return bad("hosts", 'The "hosts" field is missing');
   // Empty is judged once the settings are read (below), and only from noHostsApiVersion: an older
   // manifest gets the refusal it always got, at the point it always got it.
   const emptyHostsAllowedLater = o.hosts.length === 0 && o.apiVersion >= m.noHostsApiVersion;
   // No upper bound (Kino 0.9.45+): the 16 KB manifest cap above is the practical one. Older apps
   // refuse more than legacyMaxHosts; validate.mjs warns about that, it is not an error.
-  if (!emptyHostsAllowedLater && o.hosts.length < m.minHosts) return bad("hosts", `El campo "hosts" debe tener al menos ${m.minHosts} dominio`);
+  if (!emptyHostsAllowedLater && o.hosts.length < m.minHosts) return bad("hosts", `The "hosts" field must have at least ${m.minHosts} domain`);
   const hostEntries = [];
   for (const raw of o.hosts) {
     if (typeof raw === "string") { hostEntries.push({ host: raw, insecure: false }); continue; }
     if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
       // The object shape itself -- {host, insecureHttp} -- is apiVersion 2, whatever insecureHttp's
       // value: a v1 manifest gets the same clear refusal either way.
-      if (o.apiVersion < m.insecureHostApiVersion) return bad("hosts", `Un host con "insecureHttp" necesita apiVersion ${m.insecureHostApiVersion}`);
+      if (o.apiVersion < m.insecureHostApiVersion) return bad("hosts", `A host with "insecureHttp" needs apiVersion ${m.insecureHostApiVersion}`);
       hostEntries.push({ host: typeof raw.host === "string" ? raw.host : "", insecure: raw.insecureHttp === true });
       continue;
     }
     hostEntries.push({ host: "", insecure: false });
   }
   const badHost = hostEntries.find((e) => !isValidHostPattern(e.host));
-  if (badHost !== undefined) return bad("hosts", `El dominio "${badHost.host}" no está permitido`);
+  if (badHost !== undefined) return bad("hosts", `The domain "${badHost.host}" is not allowed`);
   // A comodín widens which servers accept plain http far more than one named host: not allowed on
   // an insecureHttp entry even though it is fine on an https-only one.
   const wildcardInsecure = hostEntries.find((e) => e.insecure && e.host.startsWith("*."));
-  if (wildcardInsecure !== undefined) return bad("hosts", 'Un host con "insecureHttp" no puede tener comodín ("*.")');
+  if (wildcardInsecure !== undefined) return bad("hosts", 'A host with "insecureHttp" can\'t have a wildcard ("*.")');
   const hosts = hostEntries.map((e) => e.host);
   const insecureHosts = [...new Set(hostEntries.filter((e) => e.insecure).map((e) => e.host))];
-  if (!Array.isArray(o.capabilities)) return bad("capabilities", 'Falta el campo "capabilities"');
+  if (!Array.isArray(o.capabilities)) return bad("capabilities", 'The "capabilities" field is missing');
   const caps = [...new Set(o.capabilities.map((c) => (typeof c === "string" ? c : "")))];
   const unknownCap = caps.find((c) => !contract.capabilities.names.includes(c));
-  if (unknownCap !== undefined) return bad("capabilities", `Capacidad desconocida: "${unknownCap}"`);
+  if (unknownCap !== undefined) return bad("capabilities", `Unknown capability: "${unknownCap}"`);
   const tooNewCap = caps.find((c) => (contract.capabilities.apiVersions[c] ?? 1) > o.apiVersion);
-  if (tooNewCap !== undefined) return bad("capabilities", `Esta capacidad necesita apiVersion ${contract.capabilities.apiVersions[tooNewCap]}`);
-  // A capability declared on its own (a subtitle provider: `["subtitles"]`) needs neither `required` nor `atLeastOneOf`.
-  const standalone = caps.length === 1 && contract.capabilities.standalone.includes(caps[0]);
-  const missingRequiredCap = contract.capabilities.required.find((c) => !caps.includes(c));
-  if (!standalone && missingRequiredCap !== undefined) return bad("capabilities", `El plugin debe declarar "${missingRequiredCap}"`);
-  if (!standalone && !contract.capabilities.atLeastOneOf.some((c) => caps.includes(c))) {
-    return bad("capabilities", `El plugin debe declarar "${contract.capabilities.atLeastOneOf.join('" o "')}"`);
+  if (tooNewCap !== undefined) return bad("capabilities", `The "${tooNewCap}" capability needs apiVersion ${contract.capabilities.apiVersions[tooNewCap]}`);
+  // "catalogOnly": true (Kino 0.9.54, additive: valid at every apiVersion, ignored by older apps) lists titles and plays none:
+  // `resolve` is not required, one of its own atLeastOneOf is, and nothing that only serves playback may be declared.
+  const co = m.catalogOnly;
+  if (o.catalogOnly !== undefined && typeof o.catalogOnly !== "boolean") return bad("catalogOnly", co.notBooleanMessage);
+  const catalogOnly = o.catalogOnly === true;
+  if (catalogOnly) {
+    const playback = co.forbiddenCapabilities.find((c) => caps.includes(c));
+    if (playback !== undefined) return bad("catalogOnly", co.forbidsMessage.replace("{name}", playback));
+    if (!co.atLeastOneOf.some((c) => caps.includes(c))) return bad("catalogOnly", co.atLeastOneOfMessage);
+  } else {
+    // Capabilities that play nothing, declared without any other (a subtitle provider, a tracker, or both): neither
+    // `required` nor `atLeastOneOf` applies.
+    const standalone = caps.length > 0 && caps.every((c) => contract.capabilities.standalone.includes(c));
+    const missingRequiredCap = contract.capabilities.required.find((c) => !caps.includes(c));
+    if (!standalone && missingRequiredCap !== undefined) return bad("capabilities", `The plugin must declare "${missingRequiredCap}"`);
+    if (!standalone && !contract.capabilities.atLeastOneOf.some((c) => caps.includes(c))) {
+      return bad("capabilities", `The plugin must declare "${contract.capabilities.atLeastOneOf.join('" or "')}"`);
+    }
   }
   // A capability that rides on another (scopedSearch on search): refused without it.
   const lacking = Object.entries(contract.capabilities.requires || {}).find(([c, needs]) => caps.includes(c) && !caps.includes(needs));
@@ -150,24 +188,24 @@ export function validateManifest(text, { knownPermissions = contract.permissions
   // Below its apiVersion the field is unknown and ignored like any other (v1/v2 stay as they were).
   if (o.liveStreamHosts !== undefined && o.apiVersion >= m.liveStreamHosts.apiVersion) {
     const lsh = m.liveStreamHosts;
-    if (o.liveStreamHosts !== lsh.value) return bad("liveStreamHosts", `El campo "liveStreamHosts" solo admite "${lsh.value}"`);
-    if (!caps.includes(lsh.requires)) return bad("liveStreamHosts", `"liveStreamHosts" necesita la capacidad "${lsh.requires}"`);
+    if (o.liveStreamHosts !== lsh.value) return bad("liveStreamHosts", `The "liveStreamHosts" field only takes "${lsh.value}"`);
+    if (!caps.includes(lsh.requires)) return bad("liveStreamHosts", `"liveStreamHosts" needs the "${lsh.requires}" capability`);
     liveStreamHostsAny = true;
   }
   let streamHostsAny = false;
   if (o.streamHosts !== undefined && o.apiVersion >= m.streamHosts.apiVersion) {
-    if (o.streamHosts !== m.streamHosts.value) return bad("streamHosts", `El campo "streamHosts" solo admite "${m.streamHosts.value}"`);
+    if (o.streamHosts !== m.streamHosts.value) return bad("streamHosts", `The "streamHosts" field only takes "${m.streamHosts.value}"`);
     streamHostsAny = true;
   }
   // Below its apiVersion the field is unknown and ignored like any other. Kino honors it only on a
   // plugin it converted from a Nuvio scraper (validate.mjs warns a hand-written one); the parse is the same.
   let fetchHostsAny = false;
   if (o.fetchHosts !== undefined && o.apiVersion >= m.fetchHosts.apiVersion) {
-    if (o.fetchHosts !== m.fetchHosts.value) return bad("fetchHosts", `El campo "fetchHosts" solo admite "${m.fetchHosts.value}"`);
+    if (o.fetchHosts !== m.fetchHosts.value) return bad("fetchHosts", `The "fetchHosts" field only takes "${m.fetchHosts.value}"`);
     fetchHostsAny = true;
   }
   // Only discovery reads it (never the runtime): valid at every apiVersion, exactly true or false.
-  if (o.discoverable !== undefined && typeof o.discoverable !== "boolean") return bad("discoverable", 'El campo "discoverable" debe ser true o false');
+  if (o.discoverable !== undefined && typeof o.discoverable !== "boolean") return bad("discoverable", 'The "discoverable" field must be true or false');
   const discoverable = o.discoverable === undefined ? m.discoverable.default : o.discoverable;
   // Only the plugin marketplace reads it (its category chips): valid at every apiVersion, a list of known ids without repeats.
   if (o.categories !== undefined) {
@@ -175,10 +213,11 @@ export function validateManifest(text, { knownPermissions = contract.permissions
     if (!ok) return bad("categories", m.categories.message);
   }
   const categories = o.categories || [];
-  // apiVersion 6: a development aid the app reads (errors on screen, the Registro page). Below it, unknown and ignored.
+  // apiVersion 6: the default of the person's "Modo debug" switch, which every plugin has (errors on screen, the
+  // Registro page). Below it, unknown and ignored.
   let debug = false;
   if (o.debug !== undefined && o.apiVersion >= m.debug.apiVersion) {
-    if (typeof o.debug !== "boolean") return bad("debug", 'El campo "debug" debe ser true o false');
+    if (typeof o.debug !== "boolean") return bad("debug", 'The "debug" field must be true or false');
     debug = o.debug;
   }
   // apiVersion 6: diagnostic lines to Kino's error tracker (opt-in). Below it, unknown and ignored.
@@ -200,21 +239,44 @@ export function validateManifest(text, { knownPermissions = contract.permissions
   // apiVersion 6: the plugin's own section entry. Below it, unknown and ignored.
   let section = null;
   if (o.section !== undefined && o.apiVersion >= m.section.apiVersion) {
-    if (o.section === null || typeof o.section !== "object" || Array.isArray(o.section)) return bad("section", 'El campo "section" debe ser un objeto con "label"');
+    if (o.section === null || typeof o.section !== "object" || Array.isArray(o.section)) return bad("section", 'The "section" field must be an object with a "label"');
     const label = typeof o.section.label === "string" ? o.section.label.trim() : "";
-    if (!label || label.length > m.section.labelMaxChars) return bad("section", 'El campo "section.label" debe tener entre 1 y 20 caracteres');
-    section = { label };
+    if (!label || label.length > m.section.labelMaxChars) return bad("section", 'The "section.label" field must be 1 to 20 characters');
+    // Kino 0.9.55's English variant (settings.english.sectionKeys), same limit; absent or null = none.
+    const labelEn = o.apiVersion >= contract.settings.english.apiVersion ? englishVariant(o.section, "label", 1, m.section.labelMaxChars) : "";
+    if (labelEn === null) return bad("section", 'The "section.labelEn" field must be 1 to 20 characters');
+    section = labelEn ? { label, labelEn } : { label };
   }
+  // apiVersion 9: the player panel's button. Below it, unknown and ignored. `icon` (a predefined name, any string: an
+  // unknown one draws "tune", validate.mjs warns) or `iconFile` (a .png in the repo, checked by validate.mjs), not both.
+  let panel = null;
+  if (o.panel !== undefined && o.apiVersion >= m.panel.apiVersion) {
+    const max = m.panel.labelMaxChars;
+    if (o.panel === null || typeof o.panel !== "object" || Array.isArray(o.panel)) return bad("panel", 'The "panel" field must be an object with a "label"');
+    const label = typeof o.panel.label === "string" ? o.panel.label.trim() : "";
+    if (!label || label.length > max) return bad("panel", `The "panel.label" field must be 1 to ${max} characters`);
+    const labelEn = englishVariant(o.panel, "label", 1, max);
+    if (labelEn === null) return bad("panel", `The "panel.labelEn" field must be 1 to ${max} characters`);
+    const icon = typeof o.panel.icon === "string" && o.panel.icon.trim() ? o.panel.icon.trim() : null;
+    const rawFile = o.panel.iconFile;
+    if (rawFile !== undefined && rawFile !== null && typeof rawFile !== "string") return bad("panel", 'The "panel.iconFile" field must be a relative path to a .png');
+    const iconFile = typeof rawFile === "string" && rawFile.replace(/^\.\//, "") ? rawFile.replace(/^\.\//, "") : null;
+    if (icon !== null && iconFile !== null) return bad("panel", 'The "panel" field takes "icon" or "iconFile", not both');
+    if (iconFile !== null && (!isSafeRelativePath(iconFile) || !iconFile.endsWith(".png"))) return bad("panel", 'The "panel.iconFile" field must be a relative path to a .png');
+    panel = { label, ...(labelEn ? { labelEn } : {}), ...(icon !== null ? { icon } : {}), ...(iconFile !== null ? { iconFile } : {}) };
+  }
+  // apiVersion 9: where the settings go (rows, columns, cards). A list here; validate.mjs and panel.mjs judge the rest.
+  if (o.settingsLayout !== undefined && o.apiVersion >= m.settingsLayout.apiVersion && !Array.isArray(o.settingsLayout)) return bad("settingsLayout", 'The "settingsLayout" field must be a list');
   // apiVersion 6: the palette. Format only; the guardrails run where it is used.
   const theme = {};
   if (o.theme !== undefined && o.apiVersion >= m.theme.apiVersion) {
-    if (o.theme === null || typeof o.theme !== "object" || Array.isArray(o.theme)) return bad("theme", 'El campo "theme" debe ser un objeto de colores');
+    if (o.theme === null || typeof o.theme !== "object" || Array.isArray(o.theme)) return bad("theme", 'The "theme" field must be an object of colors');
     const unknown = Object.keys(o.theme).filter((k) => !m.theme.tokens.includes(k)).sort()[0];
-    if (unknown !== undefined) return bad("theme", `El campo "theme" tiene un color desconocido: "${unknown.slice(0, 40)}"`);
+    if (unknown !== undefined) return bad("theme", `The "theme" field has an unknown color: "${unknown.slice(0, 40)}"`);
     for (const k of m.theme.tokens) {
       if (!(k in o.theme)) continue;
       const v = o.theme[k];
-      if (typeof v !== "string" || !re(m.colorPattern).test(v)) return bad("theme", `El color "${k}" de "theme" debe ser del tipo #RRGGBB`);
+      if (typeof v !== "string" || !re(m.colorPattern).test(v)) return bad("theme", `The "${k}" color of "theme" must look like #RRGGBB`);
       theme[k] = v.toUpperCase();
     }
   }
@@ -222,45 +284,58 @@ export function validateManifest(text, { knownPermissions = contract.permissions
   let secrets = {};
   const secretKeyEncodings = {};
   if (o.secrets !== undefined && o.apiVersion >= m.secrets.apiVersion) {
-    if (o.secrets === null || typeof o.secrets !== "object" || Array.isArray(o.secrets)) return bad("secrets", 'El campo "secrets" debe ser un objeto');
+    if (o.secrets === null || typeof o.secrets !== "object" || Array.isArray(o.secrets)) return bad("secrets", 'The "secrets" field must be an object');
     const secretNames = Object.keys(o.secrets);
-    if (secretNames.length > m.secrets.maxSecrets) return bad("secrets", `El campo "secrets" admite hasta ${m.secrets.maxSecrets} secretos`);
+    if (secretNames.length > m.secrets.maxSecrets) return bad("secrets", `The "secrets" field takes up to ${m.secrets.maxSecrets} secrets`);
     const NAME = re(m.secrets.namePattern);
     const T = m.secrets.typed;
     const maxValueBytes = o.apiVersion >= m.secrets.largeApiVersion ? m.secrets.largeMaxValueBytes : m.secrets.maxValueBytes;
     const parsed = {};
     for (const name of secretNames) {
-      if (!NAME.test(name)) return bad("secrets", `El secreto "${name.slice(0, 40)}" tiene un nombre inválido`);
+      if (!NAME.test(name)) return bad("secrets", `The secret "${name.slice(0, 40)}" has an invalid name`);
       let value = o.secrets[name];
       // An object is a typed secret only from its apiVersion; below it, it is "not a seal" exactly as before.
       if (value !== null && typeof value === "object" && !Array.isArray(value) && o.apiVersion >= T.apiVersion) {
         // The lexicographically smallest unknown field, exactly as the app names it (deterministic whatever the key order).
         const unknown = Object.keys(value).filter((k) => !["seal", "use", "encoding"].includes(k)).sort()[0];
-        if (unknown !== undefined) return bad("secrets", `El secreto "${name}" tiene un campo desconocido: "${unknown.slice(0, 40)}"`);
-        if (!T.uses.includes(value.use)) return bad("secrets", `El secreto "${name}" solo admite "use": "${T.uses[0]}"`);
-        if (!T.keyEncodings.includes(value.encoding)) return bad("secrets", `El secreto "${name}" debe tener "encoding": "hex" o "base64"`);
+        if (unknown !== undefined) return bad("secrets", `The secret "${name}" has an unknown field: "${unknown.slice(0, 40)}"`);
+        if (!T.uses.includes(value.use)) return bad("secrets", `The secret "${name}" only takes "use": "${T.uses[0]}"`);
+        if (!T.keyEncodings.includes(value.encoding)) return bad("secrets", `The secret "${name}" must have "encoding": "hex" or "base64"`);
         secretKeyEncodings[name] = value.encoding;
         value = value.seal;
       }
-      if (!isWellFormedSeal(value, maxValueBytes, m.secrets.prefix)) return bad("secrets", `El secreto "${name}" no es un sello de Kino válido`);
+      if (!isWellFormedSeal(value, maxValueBytes, m.secrets.prefix)) return bad("secrets", `The secret "${name}" is not a valid Kino seal`);
       parsed[name] = value;
     }
     secrets = parsed;
   }
-  if (o.color !== undefined && o.color !== "" && !re(m.colorPattern).test(o.color)) return bad("color", 'El campo "color" debe ser del tipo #RRGGBB');
-  if (o.icon !== undefined && o.icon !== "" && (!isSafeRelativePath(o.icon) || !o.icon.endsWith(".png"))) return bad("icon", 'El campo "icon" debe ser una ruta relativa a un .png');
-  if (o.permissions !== undefined && !Array.isArray(o.permissions)) return bad("permissions", 'El campo "permissions" debe ser una lista');
+  if (o.color !== undefined && o.color !== "" && !re(m.colorPattern).test(o.color)) return bad("color", 'The "color" field must look like #RRGGBB');
+  if (o.icon !== undefined && o.icon !== "" && (!isSafeRelativePath(o.icon) || !o.icon.endsWith(".png"))) return bad("icon", 'The "icon" field must be a relative path to a .png');
+  if (o.permissions !== undefined && !Array.isArray(o.permissions)) return bad("permissions", 'The "permissions" field must be a list');
   for (const p of o.permissions || []) {
-    if (typeof p !== "string") return bad("permissions", 'El campo "permissions" solo puede tener textos');
-    if (!knownPermissions.includes(p)) return bad("permissions", `permiso desconocido: ${p.slice(0, 40)}`);
+    if (typeof p !== "string") return bad("permissions", 'The "permissions" field can only hold strings');
+    if (!knownPermissions.includes(p)) return bad("permissions", `unknown permission: ${p.slice(0, 40)}`);
   }
-  if (o.settings !== undefined && !Array.isArray(o.settings)) return bad("settings", 'El campo "settings" debe ser una lista');
+  if (o.settings !== undefined && !Array.isArray(o.settings)) return bad("settings", 'The "settings" field must be a list');
   const settingsError = validateSettings(o.settings || [], o.apiVersion);
   if (settingsError) return bad("settings", settingsError);
   if (hosts.length === 0 && !(o.settings || []).some((x) => x.type === "url" || (x.type === "list" && Array.isArray(x.fields) && x.fields.some((f) => f.type === "url")))) {
-    return bad("hosts", 'El campo "hosts" solo puede estar vacío si el plugin tiene un ajuste de tipo "url"');
+    return bad("hosts", 'The "hosts" field can only be empty if the plugin has a setting of type "url"');
   }
-  const out = { ...o, hosts: [...new Set(hosts)], capabilities: caps, permissions: o.permissions || [], settings: o.settings || [], insecureHosts, liveStreamHostsAny, streamHostsAny, fetchHostsAny, discoverable, categories, debug, telemetry, browser, browserPages, section, theme, secrets, secretKeyEncodings };
+  // apiVersion 11, `externalResolver`: the app a plugin hands its `external` answers to and the ways to get it (ManifestParser.parseExternalResolver).
+  if (o.externalResolver !== undefined && o.apiVersion >= 11) {
+    if (!caps.includes("externalResolve")) return bad("externalResolver", 'The "externalResolver" field needs the "externalResolve" capability');
+    if (!externalResolverOk(o.externalResolver)) return bad("externalResolver", EXTERNAL_RESOLVER_BAD);
+  }
+  // Judged on what the app honours: below its apiVersion a field is ignored, so it forbids nothing there.
+  if (catalogOnly) {
+    const playback = { streamHosts: streamHostsAny, browser: browser && !browserPages };
+    const field = co.forbiddenFields.find((f) => playback[f] === true);
+    if (field !== undefined) return bad("catalogOnly", co.forbidsMessage.replace("{name}", field));
+  }
+  // Below apiVersion 9 the English keys are unknown: dropped here, so nothing downstream (the form, englishCoverage) sees them.
+  const settingsOut = o.apiVersion >= contract.settings.english.apiVersion ? o.settings || [] : withoutEnglish(o.settings || []);
+  const out = { ...o, hosts: [...new Set(hosts)], capabilities: caps, permissions: o.permissions || [], settings: settingsOut, insecureHosts, liveStreamHostsAny, streamHostsAny, fetchHostsAny, discoverable, categories, debug, telemetry, browser, browserPages, section, panel, theme, secrets, secretKeyEncodings, catalogOnly };
   // `signature` only where the app reads it (apiVersion 5+): an ignored one is dropped, as the app drops it.
   if (!signed) delete out.signature;
   return { ok: true, manifest: out };
@@ -280,79 +355,169 @@ function isWellFormedSeal(seal, maxValueBytes, prefix) {
   return raw.length >= overhead + 1 && raw.length <= overhead + maxValueBytes;
 }
 
+/**
+ * The optional English variant of [o]'s text [base] (`<base>En`, Kino 0.9.55, contract.settings.english): "" when absent
+ * or null, the trimmed text when it is a string of [min]..[max] characters, null when it is anything else (refused), as
+ * the app's PluginSettings.variant.
+ */
+function englishVariant(o, base, min, max) {
+  const raw = o[base + contract.settings.english.suffix];
+  if (raw === undefined || raw === null) return "";
+  if (typeof raw !== "string") return null;
+  const text = raw.trim();
+  if (!text && min === 0) return "";
+  return text.length >= min && text.length <= max ? text : null;
+}
+
+/**
+ * [settings] (a validated manifest's) as Kino's form shows them in [lang] ("en…" = English, anything else Spanish): in
+ * English each text with an English variant (labelEn, hintEn, confirmEn, an option's or a list field's) takes it, the
+ * rest keep their base text; keys, types, values and defaults never change. The app's PluginSetting.localized.
+ */
+export function localizedSettings(settings, lang = "es") {
+  if (!String(lang || "").toLowerCase().startsWith("en")) return settings;
+  const pick = (o, k) => (typeof o[k + "En"] === "string" && o[k + "En"].trim() ? o[k + "En"].trim() : o[k]);
+  const one = (o) => {
+    const out = { ...o, label: pick(o, "label") };
+    if (o.hint !== undefined || o.hintEn !== undefined) out.hint = pick(o, "hint");
+    if (o.confirm !== undefined) out.confirm = pick(o, "confirm");
+    if (Array.isArray(o.options)) out.options = o.options.map((x) => ({ ...x, label: pick(x, "label") }));
+    if (Array.isArray(o.fields)) out.fields = o.fields.map(one);
+    return out;
+  };
+  return settings.map(one);
+}
+
+/** The section entry's label as Kino shows it in [lang] (section.labelEn in English when there is one), or null. */
+export function sectionLabel(manifest, lang = "es") {
+  const s = manifest && manifest.section;
+  if (!s) return null;
+  return String(lang || "").toLowerCase().startsWith("en") && s.labelEn ? s.labelEn : s.label;
+}
+
+/**
+ * Every text of a validated manifest that could carry an English variant (settings, options, list fields, section),
+ * and how many do: `{ total, english, missing: ["<key>.label", …] }`. validate.mjs's note.
+ */
+export function englishCoverage(manifest) {
+  const missing = [];
+  let total = 0;
+  const count = (o, k, where) => {
+    if (typeof o[k] !== "string" || !o[k].trim()) return;
+    total++;
+    if (!(typeof o[k + "En"] === "string" && o[k + "En"].trim())) missing.push(`${where}.${k}`);
+  };
+  for (const st of manifest.settings || []) {
+    for (const k of ["label", "hint", "confirm"]) count(st, k, st.key);
+    for (const x of st.options || []) count(x, "label", `${st.key}[${x.value}]`);
+    for (const f of st.fields || []) for (const k of ["label", "hint"]) count(f, k, `${st.key}.${f.key}`);
+  }
+  if (manifest.section) count(manifest.section, "label", "section");
+  return { total, english: total - missing.length, missing };
+}
+
+/** [settings] without their English keys (`<text>En`): what an apiVersion below 9 means, as in the app. */
+function withoutEnglish(settings) {
+  const strip = (o) => {
+    if (o === null || typeof o !== "object" || Array.isArray(o)) return o;
+    const out = {};
+    for (const [k, v] of Object.entries(o)) if (!["labelEn", "hintEn", "confirmEn"].includes(k)) out[k] = v;
+    if (Array.isArray(o.options)) out.options = o.options.map(strip);
+    if (Array.isArray(o.fields)) out.fields = o.fields.map(strip);
+    return out;
+  };
+  return settings.map(strip);
+}
+
 function validateSettings(list, apiVersion = contract.maxApiVersion) {
   const s = contract.settings;
   const ui = s.ui;
   if (apiVersion < ui.apiVersion) {
-    if (list.length > s.max) return `El plugin pide más de ${s.max} ajustes`;
+    if (list.length > s.max) return `The plugin asks for more than ${s.max} settings`;
   } else if (list.length > s.max + ui.maxItems) {
-    return `El plugin pide más de ${s.max + ui.maxItems} ajustes`;
+    return `The plugin asks for more than ${s.max + ui.maxItems} settings`;
   }
   const keys = new Set();
   for (let i = 0; i < list.length; i++) {
     const o = list[i];
-    if (o === null || typeof o !== "object" || Array.isArray(o)) return `El ajuste #${i + 1} no es válido`;
+    if (o === null || typeof o !== "object" || Array.isArray(o)) return `Setting #${i + 1} is not valid`;
     const key = typeof o.key === "string" ? o.key : "";
-    if (!re(s.keyPattern).test(key)) return `El ajuste #${i + 1} tiene una clave inválida`;
-    if (keys.has(key)) return `El ajuste "${key}" está repetido`;
+    if (!re(s.keyPattern).test(key)) return `Setting #${i + 1} has an invalid key`;
+    if (keys.has(key)) return `The setting "${key}" is repeated`;
     keys.add(key);
     const label = typeof o.label === "string" ? o.label.trim() : "";
-    if (!label || label.length > s.labelMaxChars) return `El ajuste "${key}" necesita un nombre de 1 a ${s.labelMaxChars} caracteres`;
+    if (!label || label.length > s.labelMaxChars) return `The setting "${key}" needs a label of 1 to ${s.labelMaxChars} characters`;
     const type = s.types[o.type];
-    if (!type || typeof o.type !== "string") return `El ajuste "${key}" tiene un tipo desconocido`;
-    if (type.hasValue === false && apiVersion < type.apiVersion) return `El ajuste "${key}" es de tipo ${o.type}: necesita apiVersion ${type.apiVersion}`;
-    if (typeof o.hint === "string" && o.hint.trim().length > s.hintMaxChars) return `La ayuda del ajuste "${key}" pasa de ${s.hintMaxChars} caracteres`;
-    if (o.required !== undefined && typeof o.required !== "boolean") return `"required" del ajuste "${key}" debe ser true o false`;
-    if (o.required === true && !type.canBeRequired) return `El ajuste "${key}" no puede ser obligatorio`;
+    if (!type || typeof o.type !== "string") return `The setting "${key}" has an unknown type`;
+    if (type.hasValue === false && apiVersion < type.apiVersion) return `The setting "${key}" is of type ${o.type}: it needs apiVersion ${type.apiVersion}`;
+    // A section's explanation may be longer than a field's hint (PluginSettings.MAX_SECTION_HINT_CHARS, Kino 0.9.51).
+    const hintMax = o.type === "section" && s.sectionHintMaxChars ? s.sectionHintMaxChars : s.hintMaxChars;
+    if (typeof o.hint === "string" && o.hint.trim().length > hintMax) return `The hint of the setting "${key}" is over ${hintMax} characters`;
+    // Kino 0.9.55's English variants (apiVersion 9): the base fields' limits; below 9 unknown keys, never checked.
+    const en = apiVersion >= s.english.apiVersion;
+    if (en && englishVariant(o, "label", 1, s.labelMaxChars) === null) return `"labelEn" of the setting "${key}" must be a string of 1 to ${s.labelMaxChars} characters`;
+    if (en && englishVariant(o, "hint", 0, hintMax) === null) return `"hintEn" of the setting "${key}" must be a string of up to ${hintMax} characters`;
+    if (o.required !== undefined && typeof o.required !== "boolean") return `"required" of the setting "${key}" must be true or false`;
+    if (o.required === true && !type.canBeRequired) return `The setting "${key}" can't be required`;
     // Below apiVersion 6 the key is unknown, so ignored like any other unknown key (as in the app).
     if (o.confirm !== undefined && o.confirm !== null && apiVersion >= ui.apiVersion) {
-      if (o.type !== "action") return `Solo un ajuste de tipo action tiene "confirm" ("${key}")`;
+      if (o.type !== "action") return `Only a setting of type action has "confirm" ("${key}")`;
       const c = typeof o.confirm === "string" ? o.confirm.trim() : "";
-      if (!c || c.length > ui.confirmMaxChars) return `"confirm" del ajuste "${key}" debe ser un texto de 1 a ${ui.confirmMaxChars} caracteres`;
+      if (!c || c.length > ui.confirmMaxChars) return `"confirm" of the setting "${key}" must be a string of 1 to ${ui.confirmMaxChars} characters`;
     }
-    if (o.fields !== undefined && o.type !== "list") return `Solo un ajuste de tipo list tiene "fields"`;
+    // confirmEn: ignored wherever "confirm" is (below apiVersion 6); only on an action, and only next to "confirm".
+    if (en && o.confirmEn !== undefined && o.confirmEn !== null) {
+      if (o.type !== "action") return `Only a setting of type action has "confirmEn" ("${key}")`;
+      const c = englishVariant(o, "confirm", 1, ui.confirmMaxChars);
+      if (c === null) return `"confirmEn" of the setting "${key}" must be a string of 1 to ${ui.confirmMaxChars} characters`;
+      if (o.confirm === undefined || o.confirm === null) return `"confirmEn" of the setting "${key}" also needs "confirm"`;
+    }
+    if (o.fields !== undefined && o.type !== "list") return `Only a setting of type list has "fields" ("${key}")`;
     if (o.type === "list") {
       const L = s.list;
-      if (apiVersion < L.apiVersion) return `El ajuste "${key}" es una lista: necesita apiVersion ${L.apiVersion}`;
-      if (o.max !== undefined && !(Number.isInteger(o.max) && o.max >= 1 && o.max <= L.maxEntries)) return `"max" del ajuste "${key}" va de 1 a ${L.maxEntries}`;
-      if (!Array.isArray(o.fields) || o.fields.length === 0 || o.fields.length > L.maxFields) return `El ajuste "${key}" necesita de 1 a ${L.maxFields} campos`;
+      if (apiVersion < L.apiVersion) return `The setting "${key}" is a list: it needs apiVersion ${L.apiVersion}`;
+      if (o.max !== undefined && !(Number.isInteger(o.max) && o.max >= 1 && o.max <= L.maxEntries)) return `"max" of the setting "${key}" goes from 1 to ${L.maxEntries}`;
+      if (!Array.isArray(o.fields) || o.fields.length === 0 || o.fields.length > L.maxFields) return `The setting "${key}" needs 1 to ${L.maxFields} fields`;
       const fkeys = new Set();
       for (const f of o.fields) {
         const fk = f && typeof f.key === "string" ? f.key : "";
-        if (!re(s.keyPattern).test(fk) || fkeys.has(fk)) return `Un campo del ajuste "${key}" tiene una clave inválida o repetida`;
+        if (!re(s.keyPattern).test(fk) || fkeys.has(fk)) return `A field of the setting "${key}" has an invalid or repeated key`;
         fkeys.add(fk);
         const fl = typeof f.label === "string" ? f.label.trim() : "";
-        if (!fl || fl.length > s.labelMaxChars) return `Un campo del ajuste "${key}" necesita un nombre de 1 a ${s.labelMaxChars} caracteres`;
-        if (!L.fieldTypes.includes(f.type)) return `Un campo del ajuste "${key}" debe ser de tipo ${L.fieldTypes.join(" o ")}`;
-        if (typeof f.hint === "string" && f.hint.trim().length > s.hintMaxChars) return `La ayuda de un campo del ajuste "${key}" pasa de ${s.hintMaxChars} caracteres`;
-        if (f.required !== undefined && typeof f.required !== "boolean") return `"required" de un campo del ajuste "${key}" debe ser true o false`;
-        if (f.default !== undefined && f.default !== null) return `Un campo del ajuste "${key}" no puede tener valor por defecto`;
+        if (!fl || fl.length > s.labelMaxChars) return `A field of the setting "${key}" needs a label of 1 to ${s.labelMaxChars} characters`;
+        if (!L.fieldTypes.includes(f.type)) return `A field of the setting "${key}" must be of type ${L.fieldTypes.join(" or ")}`;
+        if (typeof f.hint === "string" && f.hint.trim().length > s.hintMaxChars) return `The hint of a field of the setting "${key}" is over ${s.hintMaxChars} characters`;
+        if (en && englishVariant(f, "label", 1, s.labelMaxChars) === null) return `"labelEn" of the field "${fk}" of "${key}" must be a string of 1 to ${s.labelMaxChars} characters`;
+        if (en && englishVariant(f, "hint", 0, s.hintMaxChars) === null) return `"hintEn" of the field "${fk}" of "${key}" must be a string of up to ${s.hintMaxChars} characters`;
+        if (f.required !== undefined && typeof f.required !== "boolean") return `"required" of a field of the setting "${key}" must be true or false`;
+        if (f.default !== undefined && f.default !== null) return `A field of the setting "${key}" can't have a default value`;
       }
     }
     if (o.type === "select") {
-      if (!Array.isArray(o.options) || o.options.length === 0) return `El ajuste "${key}" necesita opciones`;
-      if (o.options.length > s.maxOptions) return `El ajuste "${key}" tiene más de ${s.maxOptions} opciones`;
+      if (!Array.isArray(o.options) || o.options.length === 0) return `The setting "${key}" needs options`;
+      if (o.options.length > s.maxOptions) return `The setting "${key}" has more than ${s.maxOptions} options`;
       const values = new Set();
       for (const opt of o.options) {
         const v = opt && typeof opt.value === "string" ? opt.value : "";
         const l = opt && typeof opt.label === "string" ? opt.label.trim() : "";
-        if (!v || v.length > s.optionValueMaxChars || !l || l.length > s.optionLabelMaxChars) return `Una opción del ajuste "${key}" no es válida`;
-        if (values.has(v)) return `El ajuste "${key}" repite la opción "${v}"`;
+        if (!v || v.length > s.optionValueMaxChars || !l || l.length > s.optionLabelMaxChars) return `An option of the setting "${key}" is not valid`;
+        if (en && englishVariant(opt, "label", 1, s.optionLabelMaxChars) === null) return `An option of the setting "${key}" is not valid`;
+        if (values.has(v)) return `The setting "${key}" repeats the option "${v}"`;
         values.add(v);
       }
     }
     if (o.default !== undefined && o.default !== null) {
       // A typed server becomes an allowed host; only the person may type one (a `hint` shows an example).
-      if (type.canHaveDefault === false) return `El ajuste "${key}" de tipo ${o.type} no puede tener valor por defecto: usa "hint"`;
+      if (type.canHaveDefault === false) return `The setting "${key}" of type ${o.type} can't have a default value: use "hint"`;
       const fits = o.type === "toggle" ? typeof o.default === "boolean"
         : o.type === "select" ? o.options.some((x) => x.value === o.default)
           : typeof o.default === "string" && o.default.length <= type.maxChars;
-      if (!fits) return `El valor por defecto del ajuste "${key}" no sirve para su tipo`;
+      if (!fits) return `The default value of the setting "${key}" doesn't fit its type`;
     }
   }
   const valued = list.filter((o) => s.types[o.type].hasValue !== false).length;
-  if (valued > s.max) return `El plugin pide más de ${s.max} ajustes`;
-  if (list.length - valued > ui.maxItems) return `El plugin tiene más de ${ui.maxItems} secciones, estados o acciones`;
+  if (valued > s.max) return `The plugin asks for more than ${s.max} settings`;
+  if (list.length - valued > ui.maxItems) return `The plugin has more than ${ui.maxItems} sections, statuses or actions`;
   return null;
 }
 
@@ -379,14 +544,40 @@ const isLocalAddress = (host) => {
   return /^\d+$/.test(h.split(".").pop());
 };
 
-function image(v, servers) {
-  const s = typeof v === "string" ? v.trim() : "";
-  if (s.length > o().maxImageUrlChars) return "";
+/**
+ * The app's PluginOutput.imageUrl, with why: `{ url, why }`, `url` the trimmed URL Kino shows or "" (then `why` says
+ * what refused it), `why` on a kept URL says which rule let it through. http or https, at most maxImageUrlChars,
+ * on a public name or a public IPv4 address; never the home network or a local name, and over http never a name
+ * without a dot. A server the person typed (scheme, host and port exactly) may serve any image.
+ */
+export function imageVerdict(raw, servers = []) {
+  const v = typeof raw === "string" ? raw.trim() : "";
+  if (!v) return { url: "", why: "empty" };
+  if (v.length > o().maxImageUrlChars) return { url: "", why: `longer than ${o().maxImageUrlChars} characters` };
+  // OkHttp's toHttpUrlOrNull: an absolute http(s) URL with a host. Its host is the one written: OkHttp does not read
+  // "010.1.1.1" or "0x7f.1" as IPv4 like WHATWG's URL does, so the rules below look at the host as written.
   let u;
-  try { u = new URL(s); } catch { return ""; }
-  if (servers.some((srv) => sameServer(srv, u))) return s;
-  if (u.protocol !== "https:" || !s.startsWith("https://")) return "";
-  return isLocalAddress(u.hostname) ? "" : s;
+  try { u = new URL(v); } catch { return { url: "", why: "not a URL" }; }
+  if ((u.protocol !== "http:" && u.protocol !== "https:") || !u.hostname) return { url: "", why: `not an http(s) URL (${u.protocol.replace(/:$/, "")})` };
+  if (servers.some((srv) => sameServer(srv, u))) return { url: v, why: "a server the person typed" };
+  if (!v.startsWith("https://") && !v.startsWith("http://")) return { url: "", why: 'does not start with "https://" or "http://" (lowercase, two slashes)' };
+  const written = /^https?:\/\/(?:[^@/?#]*@)?(\[[^\]]*\]|[^:/?#]*)/.exec(v);
+  const host = (written ? written[1] : u.hostname).toLowerCase();
+  if (isPublicIpv4Literal(host)) return { url: v, why: "a public IPv4 address" };
+  if (isLocalAddress(host)) {
+    const h = host.replace(/\.$/, "");
+    const what = h === "localhost" || h.endsWith(".localhost") ? "localhost"
+      : PRIVATE_SUFFIXES.some((s) => h.endsWith(s)) ? `a local name (${PRIVATE_SUFFIXES.find((s) => h.endsWith(s))})`
+      : h.includes(":") || h.includes("[") ? "an IPv6 address"
+      : "a private, local or reserved IP address";
+    return { url: "", why: `${host} is ${what}: never the home network` };
+  }
+  if (u.protocol === "http:" && !host.includes(".")) return { url: "", why: `http to "${host}", a name without a dot: a device on the home network` };
+  return { url: v, why: u.protocol === "http:" ? "a public name (plain http is fine for a picture)" : "a public name" };
+}
+
+function image(v, servers) {
+  return imageVerdict(typeof v === "string" ? v : "", servers).url;
 }
 
 function sameServer(server, u) {
@@ -407,7 +598,7 @@ function strings(v, max, maxChars) {
   return out;
 }
 
-function items(list, max, { allowSeries, allowLive, allowAdult, servers }, drop) {
+function items(list, max, { allowSeries, allowLive, allowAudio, allowAdult, servers }, drop) {
   const out = [];
   const seen = new Set();
   (Array.isArray(list) ? list : []).forEach((x, i) => {
@@ -422,6 +613,9 @@ function items(list, max, { allowSeries, allowLive, allowAdult, servers }, drop)
     if (x.kind === "series" && !allowSeries) return drop(`item ${id}: series without the episodes capability`);
     // Silently, like any invalid item: an apiVersion 1 plugin never declared it could go live.
     if (x.kind === "live" && !allowLive) return drop(`item ${id}: live needs apiVersion ${o().liveKindApiVersion}`);
+    // Like live below 2: music and podcast (audio kinds, output.audioKindApiVersion) need no `episodes` capability,
+    // but an older plugin never declared it could answer them.
+    if (o().audioKinds.includes(x.kind) && !allowAudio) return drop(`item ${id}: ${x.kind} needs apiVersion ${o().audioKindApiVersion}`);
     // Below apiVersion 6 (output.adultApiVersion) an adult title never reaches a screen; from 6 it is kept and
     // marked, and Kino lists it only while the person's 18+ code is unlocked.
     const adult = x.adult === true;
@@ -442,6 +636,8 @@ function items(list, max, { allowSeries, allowLive, allowAdult, servers }, drop)
       imdb: typeof ids.imdb === "string" && re(o().imdbPattern).test(ids.imdb) ? ids.imdb : "",
       badges: strings(x.badges, o().maxBadges, o().maxBadgeChars),
       ...(adult ? { adult: true } : {}),
+      // Only an audio item has one (and audio items only exist from apiVersion 8, dropped above below it).
+      ...(o().audioKinds.includes(x.kind) && text(x.artist, o().maxArtistChars) ? { artist: text(x.artist, o().maxArtistChars) } : {}),
     });
   });
   return out;
@@ -545,8 +741,8 @@ function categories(value, ctx, drop) {
 }
 
 function episodes(value, drop, servers) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("La lista de capítulos no es válida");
-  if (!Array.isArray(value.episodes)) throw new Error("El plugin no devolvió capítulos");
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("the episode list is not valid JSON");
+  if (!Array.isArray(value.episodes)) throw new Error("the plugin returned zero episodes");
   const seen = new Set();
   const eps = [];
   value.episodes.forEach((e, i) => {
@@ -621,35 +817,35 @@ function headersOf(h) {
 function drmOf(value, check, allowDrm) {
   const present = o().drmKeys.filter((k) => k in value);
   if (present.length === 0) return null;
-  if (!allowDrm || present.length !== 1 || present[0] !== o().drm.field) throw new Error("El video tiene DRM y los plugins no lo soportan");
+  if (!allowDrm || present.length !== 1 || present[0] !== o().drm.field) throw new Error("the video has DRM and plugins don't support it");
   const d = value[o().drm.field];
-  if (d === null || typeof d !== "object" || Array.isArray(d)) throw new Error("El DRM del video no es válido");
-  if (!o().drm.types.includes(d.type)) throw new Error("El video usa un DRM que Kino no soporta");
-  check(d.licenseUrl, "La licencia del video");
+  if (d === null || typeof d !== "object" || Array.isArray(d)) throw new Error("the video's DRM is not valid");
+  if (!o().drm.types.includes(d.type)) throw new Error("the video uses a DRM Kino doesn't support");
+  check(d.licenseUrl, "the video's license");
   return { type: d.type, licenseUrl: d.licenseUrl, licenseHeaders: headersOf(d.licenseHeaders) };
 }
 
 /** PluginOutput.SIGNED_CHANNEL: an inline channel stream that asks for signing. */
-const SIGNED_CHANNEL = "Un canal con firma por petición debe reproducirse con resolve()";
+const SIGNED_CHANNEL = "a channel signed per request must play through resolve()";
 
 /** `signing: "request"`, `signContext` and `alternateHosts` (apiVersion 6), as the app's PluginOutput.signingOf reads them. */
 function signingOf(value, manifest, drm, inline, alternateOk, drop) {
   const s = o().signing;
   if (!(Number.isInteger(manifest.apiVersion) && manifest.apiVersion >= s.apiVersion)) return null;
   if (value.signing === undefined || value.signing === null) return { signing: false, signContext: "", alternateHosts: [] };
-  if (value.signing !== s.value) throw new Error('El valor de "signing" no es válido');
+  if (value.signing !== s.value) throw new Error('the "signing" value is not valid');
   if (inline) throw new Error(SIGNED_CHANNEL);
   const mime = typeof value.mime === "string" ? value.mime.trim().toLowerCase() : "";
   let path = "";
   try { path = new URL(value.url).pathname.toLowerCase(); } catch { /* the URL rule already ran */ }
-  if (!s.hlsMimes.includes(mime) && !path.endsWith(".m3u8")) throw new Error("La firma por petición solo funciona con video HLS (.m3u8)");
+  if (!s.hlsMimes.includes(mime) && !path.endsWith(".m3u8")) throw new Error("per-request signing only works with HLS video (.m3u8)");
   if (drm || (Array.isArray(value.audioTracks) && value.audioTracks.length > 0)) {
-    throw new Error("Un video firmado por petición no puede llevar drm ni pistas de audio aparte");
+    throw new Error("a video signed per request can't carry drm or separate audio tracks");
   }
   const ctx = value.signContext;
-  if (ctx !== undefined && ctx !== null && (typeof ctx !== "string" || ctx.length > s.maxContextChars)) throw new Error('El dato "signContext" no es válido');
+  if (ctx !== undefined && ctx !== null && (typeof ctx !== "string" || ctx.length > s.maxContextChars)) throw new Error('the "signContext" value is not valid');
   // A kino.secret() marker means nothing in sign()'s own runtime, as in the app.
-  if (typeof ctx === "string" && ctx.includes("__kinoSecret_")) throw new Error("signContext no puede llevar un kino.secret(): llámalo dentro de sign()");
+  if (typeof ctx === "string" && ctx.includes("__kinoSecret_")) throw new Error("signContext can't carry a kino.secret(): call it inside sign()");
   return { signing: true, signContext: typeof ctx === "string" ? ctx : "", alternateHosts: alternateHostsOf(value, alternateOk, drop) };
 }
 
@@ -678,7 +874,7 @@ const authorityOf = (u) => (u.port ? `${u.hostname}:${u.port}` : u.hostname);
 function alternateHostsOf(value, alternateOk, drop) {
   const raw = value.alternateHosts;
   if (raw === undefined || raw === null) return [];
-  const invalid = 'El dato "alternateHosts" no es válido';
+  const invalid = 'the "alternateHosts" value is not valid';
   if (!Array.isArray(raw) || raw.some((e) => typeof e !== "string")) throw new Error(invalid);
   const max = o().signing.alternateHosts.maxEntries;
   let primary;
@@ -705,6 +901,55 @@ function alternateHostsOf(value, alternateOk, drop) {
  * URL checked like a Stream's side subtitles (any public host with `streamHosts: "any"`), `format` only vtt/srt, `lang` 20
  * characters ("und" when blank), `label` maxSubtitleLabelChars; maxSubtitles at most, a repeated URL kept once.
  */
+/**
+ * A `segments()` answer as the app's Segments.parse keeps it: `{ type, startMs, endMs }` entries, each dropped on its own
+ * (never the whole answer): an unknown type, times that are not whole ms, start below 0, shorter than minLengthMs; with
+ * [durationMs] known, a start at or past it or an end more than endSlackMs past it (an end within is cut to it); one
+ * overlapping an earlier kept one of the same type. maxEntriesRead read, maxSegments kept, earliest first.
+ */
+export function segmentsAnswer(value, durationMs, drop = () => {}) {
+  const c = contract.segments;
+  if (!Array.isArray(value)) { if (value !== null) drop("segments: the answer is not an array"); return []; }
+  if (value.length > c.maxEntriesRead) drop(`segments: only the first ${c.maxEntriesRead} of ${value.length} entries are read`);
+  const known = Number.isInteger(durationMs) && durationMs > 0;
+  const whole = (v) => typeof v === "number" && Number.isInteger(v) && Math.abs(v) <= 1e15;
+  const read = [];
+  for (const [i, e] of value.slice(0, c.maxEntriesRead).entries()) {
+    if (e === null || typeof e !== "object" || Array.isArray(e)) { drop(`segments: entry ${i} is not an object`); continue; }
+    if (!c.types.includes(e.type)) { drop(`segments: entry ${i}: unknown type`); continue; }
+    if (!whole(e.startMs) || !whole(e.endMs)) { drop(`segments: entry ${i}: startMs and endMs must be whole numbers of ms`); continue; }
+    const start = e.startMs;
+    let end = e.endMs;
+    if (start < 0) { drop(`segments: entry ${i}: startMs below 0`); continue; }
+    if (known) {
+      if (start >= durationMs) { drop(`segments: entry ${i}: starts past the file's end`); continue; }
+      if (end > durationMs + c.endSlackMs) { drop(`segments: entry ${i}: ends past the file's end`); continue; }
+      end = Math.min(end, durationMs);
+    }
+    if (end - start < c.minLengthMs) { drop(`segments: entry ${i}: shorter than ${c.minLengthMs} ms or ends before it starts`); continue; }
+    read.push({ type: e.type, startMs: start, endMs: end });
+  }
+  read.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+  const kept = [];
+  for (const seg of read) {
+    if (kept.some((k) => k.type === seg.type && seg.startMs < k.endMs && k.startMs < seg.endMs)) { drop(`segments: a ${seg.type} overlaps another`); continue; }
+    if (kept.length === c.maxSegments) { drop(`segments: more than ${c.maxSegments} segments`); break; }
+    kept.push(seg);
+  }
+  return kept;
+}
+
+/** What the app's skip button takes from [segments] (Segments.skipTimes): the opening and the ending's start, or null. */
+export function segmentSkip(segments) {
+  const c = contract.segments;
+  const first = (types) => segments.filter((s) => types.includes(s.type)).sort((a, b) => a.startMs - b.startMs)[0];
+  const opening = first(c.openingTypes);
+  let ending = first(c.endingTypes);
+  if (ending && opening && ending.startMs < opening.endMs) ending = undefined;
+  if (!opening && !ending) return null;
+  return { openingStartMs: opening ? opening.startMs : null, openingEndMs: opening ? opening.endMs : null, endingStartMs: ending ? ending.startMs : null };
+}
+
 function subtitleTracks(value, { manifest, servers }, drop) {
   if (!Array.isArray(value)) { drop("subtitles: the answer is not a list"); return []; }
   const check = urlChecker(manifest, servers);
@@ -714,9 +959,9 @@ function subtitleTracks(value, { manifest, servers }, drop) {
     if (out.length >= o().maxSubtitles) { drop(`subtitles: beyond ${o().maxSubtitles} dropped`); break; }
     if (s === null || typeof s !== "object" || Array.isArray(s)) continue;
     if (manifest.streamHostsAny) {
-      if (!anyPublic(s.url)) { drop(`subtitles: #${i} dropped: El subtítulo apunta a una dirección local`); continue; }
+      if (!anyPublic(s.url)) { drop(`subtitles: #${i} dropped: the subtitle points to a local address`); continue; }
     } else {
-      try { check(s.url, "El subtítulo"); } catch (e) { drop(`subtitles: #${i} dropped: ${e.message}`); continue; }
+      try { check(s.url, "the subtitle"); } catch (e) { drop(`subtitles: #${i} dropped: ${e.message}`); continue; }
     }
     if (out.some((t) => t.url === s.url)) continue;
     const text = (v, max) => (typeof v === "string" || typeof v === "number" ? String(v).trim().slice(0, max) : "");
@@ -730,8 +975,66 @@ function subtitleTracks(value, { manifest, servers }, drop) {
   return out;
 }
 
+const EXTERNAL_PROTOCOL = /^[a-z0-9._-]{1,64}$/;
+const ANDROID_PACKAGE = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
+
+/** `{ protocol, ref, resolver? }`, or null when the plugin may not hand off or the object is malformed (Kino drops it the same way). */
+function externalOf(raw, manifest) {
+  if ((manifest.apiVersion || 1) < 11 || !(manifest.capabilities || []).includes("externalResolve")) return null;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  if (typeof raw.protocol !== "string" || !EXTERNAL_PROTOCOL.test(raw.protocol)) return null;
+  if (typeof raw.ref !== "string" || raw.ref.length < 1 || raw.ref.length > 2048 || /[\u0000-\u001f\u007f]/.test(raw.ref)) return null;
+  const out = { protocol: raw.protocol, ref: raw.ref };
+  if (raw.resolver !== undefined && raw.resolver !== null) {
+    if (typeof raw.resolver !== "string" || raw.resolver.length > 255 || !ANDROID_PACKAGE.test(raw.resolver)) return null;
+    out.resolver = raw.resolver;
+  }
+  return out;
+}
+
+/** One tidy line: control characters dropped, whitespace collapsed, cut at [max] (as StreamMedia.parse does). */
+function mediaText(v, max) {
+  if (typeof v !== "string") return "";
+  return v.replace(/\s+/g, " ").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, max).trimEnd();
+}
+
+const MEDIA_MAX_TRACKS = 16;
+const MEDIA_MAX_NOTES = 4;
+const mediaInt = (v, lo, hi) => (Number.isFinite(v) ? Math.min(hi, Math.max(lo, Math.trunc(v))) : 0);
+
+/**
+ * A stream's optional `media` (what the source says about the file itself): bounded and cleaned the way the app does, or null when
+ * nothing usable is left. Advisory: the app shows and logs it, never trusts it for a decision (PluginOutput / StreamMedia).
+ */
+export function mediaOf(raw) {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const tracks = (list, make) => (Array.isArray(list) ? list.slice(0, MEDIA_MAX_TRACKS).filter((t) => t && typeof t === "object" && !Array.isArray(t)).map(make) : []);
+  const video = raw.video && typeof raw.video === "object" && !Array.isArray(raw.video) ? {
+    codec: mediaText(raw.video.codec, 40), profile: mediaText(raw.video.profile, 40),
+    width: mediaInt(raw.video.width, 0, 16384), height: mediaInt(raw.video.height, 0, 16384),
+    fps: Number.isFinite(raw.video.fps) ? Math.min(480, Math.max(0, raw.video.fps)) : 0,
+    bitDepth: mediaInt(raw.video.bitDepth, 0, 16), hdr: raw.video.hdr === true,
+  } : null;
+  const out = {
+    title: mediaText(raw.title, 120),
+    sizeBytes: Number.isFinite(raw.sizeBytes) ? Math.min(2 ** 50, Math.max(0, Math.trunc(raw.sizeBytes))) : 0,
+    container: mediaText(raw.container, 40),
+    video: video && (video.codec || video.width || video.height) ? video : null,
+    audio: tracks(raw.audio, (a) => ({ codec: mediaText(a.codec, 40), channels: mediaInt(a.channels, 0, 32), language: mediaText(a.language, 20), title: mediaText(a.title, 120), default: a.default === true })),
+    subtitles: tracks(raw.subtitles, (s) => ({ codec: mediaText(s.codec, 40), language: mediaText(s.language, 20), title: mediaText(s.title, 120), text: s.text === true })),
+    converted: raw.converted === true,
+    notes: (Array.isArray(raw.notes) ? raw.notes : []).map((n) => mediaText(n, 120)).filter(Boolean).slice(0, MEDIA_MAX_NOTES),
+  };
+  const empty = !out.title && !out.sizeBytes && !out.container && !out.video && !out.audio.length && !out.subtitles.length && !out.notes.length;
+  return empty ? null : out;
+}
+
 function stream(value, { manifest, servers, allowDrm, liveChannel = false, inline = false, drop = () => {} }) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("El plugin no devolvió un video");
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("the plugin returned zero videos");
+  // apiVersion 11, `externalResolve`: the answer is a hand-off to a resolver app, not a playable URL (PluginOutput.externalOf).
+  // Read only from a plugin that declares both; anything else has its `external` ignored and fails below like a missing url.
+  const external = !liveChannel && !inline ? externalOf(value.external, manifest) : null;
+  if (external) return { external, headers: {}, subtitles: [], audioTracks: [], expiresInSeconds: 0, drm: null };
   const check = urlChecker(manifest, servers);
   const drm = drmOf(value, check, allowDrm);
   // `liveStreamHosts: "any"` relaxes a live channel's own stream URL only; its subtitles, audio and
@@ -742,23 +1045,23 @@ function stream(value, { manifest, servers, allowDrm, liveChannel = false, inlin
   const anyPublic = liveStreamUrlAllowed(manifest, servers);
   const anyHost = (liveChannel && manifest.liveStreamHostsAny) || manifest.streamHostsAny;
   if (anyHost) {
-    if (!anyPublic(value.url)) throw new Error("El video apunta a una dirección local");
-  } else check(value.url, "El video");
+    if (!anyPublic(value.url)) throw new Error("the video points to a local address");
+  } else check(value.url, "the video");
   // An alternate host meets the stream URL's own rule: the refusal's sentence, or null.
   const alternateOk = (url) => {
-    if (anyHost) return anyPublic(url) ? null : `El servidor alternativo apunta a ${new URL(url).hostname}, una dirección local`;
-    try { check(url, "El servidor alternativo"); return null; } catch (e) { return e.message; }
+    if (anyHost) return anyPublic(url) ? null : `the alternate server points to ${new URL(url).hostname}, a local address`;
+    try { check(url, "the alternate server"); return null; } catch (e) { return e.message; }
   };
   const sideOk = (url, what) => {
     if (anyVideo) return anyPublic(url);
     try { check(url, what); return true; } catch { return false; }
   };
   const expires = Number.isInteger(value.expiresInSeconds) && value.expiresInSeconds >= o().minExpiresInSeconds && value.expiresInSeconds <= o().maxExpiresInSeconds ? value.expiresInSeconds : 0;
-  const subtitles = (Array.isArray(value.subtitles) ? value.subtitles : []).slice(0, o().maxSubtitles).filter((s) => sideOk(s && s.url, "El subtítulo"));
+  const subtitles = (Array.isArray(value.subtitles) ? value.subtitles : []).slice(0, o().maxSubtitles).filter((s) => sideOk(s && s.url, "the subtitle"));
   // One URL is one merged child in the app: a repeated URL is kept once, the first wins.
   const audioUrls = new Set();
   const audioTracks = (Array.isArray(value.audioTracks) ? value.audioTracks : []).slice(0, o().maxAudioTracks).filter((a) => {
-    if (!sideOk(a && a.url, "El audio")) return false;
+    if (!sideOk(a && a.url, "the audio")) return false;
     if (audioUrls.has(a.url)) return false;
     audioUrls.add(a.url);
     return true;
@@ -769,9 +1072,25 @@ function stream(value, { manifest, servers, allowDrm, liveChannel = false, inlin
   const labels = (manifest.apiVersion || 1) >= o().streamLabels.apiVersion;
   const alternatives = drm || (sig && sig.signing) ? [] : alternativesOf(value.alternatives, value.url, (url) => {
     if (anyHost) return anyPublic(url);
-    try { check(url, "El video"); return true; } catch { return false; }
+    try { check(url, "the video"); return true; } catch { return false; }
   }, labels, drop);
-  const { signing: _signing, signContext: _signContext, alternateHosts: _alternateHosts, alternatives: _alternatives, label: _label, ...rest } = value;
+  // A portable copy (PluginOutput.portableOf): a universal HLS of this same video, checked like `url`; never next to drm or signing.
+  // Anything else is dropped, never refused.
+  let portable = null;
+  const rawPortable = value.portable;
+  if (rawPortable !== undefined && !drm && !(sig && sig.signing)) {
+    const u = rawPortable && typeof rawPortable === "object" && !Array.isArray(rawPortable) ? rawPortable.url : undefined;
+    const mime = rawPortable && typeof rawPortable.mime === "string" ? rawPortable.mime.trim() : "";
+    const hls = mime === "" || /^application\/(x-mpegurl|vnd\.apple\.mpegurl)$/i.test(mime);
+    let allowed = false;
+    if (typeof u === "string") {
+      if (anyHost) allowed = anyPublic(u);
+      else { try { check(u, "the video"); allowed = true; } catch { allowed = false; } }
+    }
+    if (allowed && hls) portable = { url: u, mime: "application/x-mpegURL" };
+    else drop("resolve: portable dropped (it needs an HLS url that passes the same host rules as url)");
+  }
+  const { signing: _signing, signContext: _signContext, alternateHosts: _alternateHosts, alternatives: _alternatives, label: _label, portable: _portable, ...rest } = value;
   if (labels) {
     const label = labelOf(value, "resolve: label", drop);
     if (label) rest.label = label;
@@ -788,6 +1107,9 @@ function stream(value, { manifest, servers, allowDrm, liveChannel = false, inlin
     }
   }
   if (skip) out.skip = skip; else delete out.skip;
+  const media = mediaOf(value.media);
+  if (media) out.media = media; else delete out.media;
+  if (portable) out.portable = portable;
   return sig ? { ...out, ...sig } : out;
 }
 
@@ -878,10 +1200,10 @@ export function skipOf(raw, durationMs = 0) {
 function urlChecker(manifest, servers) {
   return (url, what) => {
     let u;
-    try { u = new URL(String(url)); } catch { throw new Error(`${what} tiene una dirección inválida`); }
+    try { u = new URL(String(url)); } catch { throw new Error(`${what} has an invalid address`); }
     if (servers.some((s) => sameServer(s, u))) return;
-    if (!schemeAllowed(u, manifest)) throw new Error(`${what} debe usar https`);
-    if (!hostMatches(u.hostname, manifest.hosts)) throw new Error(`${what} apunta a ${u.hostname}, que el plugin no declaró`);
+    if (!schemeAllowed(u, manifest)) throw new Error(`${what} must use https`);
+    if (!hostMatches(u.hostname, manifest.hosts)) throw new Error(`${what} points to ${u.hostname}, which the plugin didn't declare`);
   };
 }
 
@@ -928,6 +1250,80 @@ export function liveStreamUrlAllowed(manifest, servers = []) {
     if (u.protocol !== "http:" && u.protocol !== "https:") return false;
     if (typedNames.includes(u.hostname)) return false;
     return isPublicIpv4Literal(u.hostname) || !isLocalAddress(u.hostname);
+  };
+}
+
+/**
+ * Whether a hand-written plugin's `kino.fetch` may reach any public host (the app's InstalledRecord.fetchFromAnyHost
+ * once the person approved the red line): `fetchHosts: "any"` at apiVersion manifest.fetchHosts.handWrittenApiVersion
+ * (9, Kino 0.9.55) or later. Takes the raw manifest or validateManifest's (with `fetchHostsAny`).
+ */
+export function fetchAnyHost(manifest) {
+  const asks = manifest.fetchHostsAny === true || (manifest.fetchHostsAny === undefined && manifest.fetchHosts === contract.manifest.fetchHosts.value);
+  return asks && manifest.apiVersion >= contract.manifest.fetchHosts.handWrittenApiVersion;
+}
+
+/**
+ * PluginHostGate.anyFetchRefusal: why a host reached ONLY through fetchHosts "any" (contract.fetch.anyHost) may not be
+ * requested at [u] (a URL), or null when it may: https on port 443, to a public IPv4 literal or a dotted public name,
+ * never the home network. The messages are the app's.
+ */
+export function anyFetchRefusal(u) {
+  const rule = contract.fetch.anyHost;
+  const host = u.hostname;
+  if (!rule.schemes.includes(u.protocol.replace(/:$/, ""))) return `only https is allowed for a host reached through fetchHosts "any": ${host.slice(0, 200)}`;
+  if (Number(u.port || 443) !== rule.port) return `only the default https port (${rule.port}) is allowed for a host reached through fetchHosts "any": ${host.slice(0, 200)}`;
+  if (isPublicIpv4Literal(host)) return null;
+  if (isLocalAddress(host)) return "host not allowed: " + host.slice(0, 200);
+  if (!host.replace(/\.+$/, "").includes(".")) return `a single-label name is never reached through fetchHosts "any": ${host.slice(0, 200)}`;
+  return null;
+}
+
+/**
+ * The site a fetchHosts "any" budget counts [host] under. The app uses the public suffix list (OkHttp's
+ * topPrivateDomain); the kit approximates it with the last two labels, or three under a short second-level label of a
+ * two-letter country code ("example.co.uk", "example.com.br"). An IPv4 literal is its own site.
+ */
+export function budgetSite(host) {
+  const h = String(host).toLowerCase().replace(/\.+$/, "");
+  if (isPublicIpv4Literal(h)) return h;
+  const labels = h.split(".");
+  const n = labels.length >= 3 && labels[labels.length - 1].length === 2 && labels[labels.length - 2].length <= 3 ? 3 : 2;
+  return labels.slice(-n).join(".");
+}
+
+/**
+ * AnyHostFetchBudget: token buckets (capacity = the limit, refilled continuously over its window) per site and for the
+ * whole plugin, read with [now]. take(host) answers null when the request may go out, else the app's rate_limited message.
+ * Known differences from the app: always the hand-written numbers (perSite/perPlugin; a converted Nuvio scraper's larger
+ * nuvioPerSite/nuvioPerPlugin never apply here), and [budgetSite]'s grouping is stricter than the public suffix list.
+ */
+export function anyHostBudget(now = Date.now) {
+  const rule = contract.fetch.anyHost;
+  const bucket = (capacity, windowMs) => {
+    const all = new Map();
+    const level = (key, t) => {
+      const b = all.get(key);
+      return b ? Math.min(capacity, b.tokens + Math.max(0, t - b.at) * capacity / windowMs) : capacity;
+    };
+    return {
+      has: (key, t) => level(key, t) >= 1,
+      take: (key, t) => all.set(key, { tokens: level(key, t) - 1, at: t }),
+    };
+  };
+  const plugin = bucket(rule.perPlugin, rule.perPluginWindowMs);
+  const sites = bucket(rule.perSite, rule.perSiteWindowMs);
+  return {
+    // Both checked before either is spent: a refused request costs nothing.
+    take(host) {
+      const t = now();
+      const site = budgetSite(host);
+      if (!plugin.has("plugin", t)) return `too many requests to hosts reached through fetchHosts "any" (at most ${rule.perPlugin} every ${rule.perPluginWindowMs / 60000} minutes); wait a moment`;
+      if (!sites.has(site, t)) return `too many requests to ${site.slice(0, 100)} through fetchHosts "any" (at most ${rule.perSite} a minute to one site); wait a moment`;
+      plugin.take("plugin", t);
+      sites.take(site, t);
+      return null;
+    },
   };
 }
 
@@ -1083,6 +1479,268 @@ function guide(value, drop) {
   return [...per.values()].flatMap((l) => l.sort((a, b) => a.start - b.start));
 }
 
+// ---------- meta (apiVersion 6): the app's TitleMetaOutput.parse ----------
+// The answer crosses from the engine as JSON and Kotlin reads it with org.json, so a number is an Integer/Long when its
+// JSON has no ".", "e" or "E" and fits a long, a Double otherwise; the helpers below read values that way.
+
+const MAX_LONG = 9223372036854775807n;
+
+/** Java's Double.toString of [d] (finite): "8.5", "1.0E21", "1.0E-5", "100.0". */
+export function javaDouble(d) {
+  if (d === 0) return Object.is(d, -0) ? "-0.0" : "0.0";
+  const a = Math.abs(d);
+  if (a >= 1e-3 && a < 1e7) {
+    const s = String(d);
+    return s.includes(".") ? s : `${s}.0`;
+  }
+  const [m, e] = d.toExponential().split("e");
+  return `${m.includes(".") ? m : `${m}.0`}E${Number(e)}`;
+}
+
+/** A JSON number as org.json holds it: `{ integer: true, text }` (Integer/Long) or `{ integer: false, text }` (Double). */
+function jsonNumber(n) {
+  const json = JSON.stringify(n);
+  if (!/[.eE]/.test(json) && BigInt(json) <= MAX_LONG && BigInt(json) >= -MAX_LONG - 1n) return { integer: true, text: json };
+  return { integer: false, text: javaDouble(n) };
+}
+
+/** TitleMetaOutput.parse's `text()`: a string, or a number as Kotlin prints it, trimmed and cut at [max]. */
+function metaText(v, max) {
+  const raw = typeof v === "string" ? v : typeof v === "number" && Number.isFinite(v) ? jsonNumber(v).text : "";
+  const t = raw.trim();
+  return { value: t.slice(0, max), cut: t.length > max, kind: typeof v === "string" ? "string" : typeof v === "number" ? "number" : v === null ? "null" : Array.isArray(v) ? "array" : typeof v };
+}
+
+/** Java's Double.parseDouble on [s], or NaN when it throws (hex floats aside). */
+function javaParseDouble(s) {
+  const t = s.replace(/^[\u0000- ]+|[\u0000- ]+$/g, "");
+  if (!/^[+-]?(NaN|Infinity|(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?[fFdD]?)$/.test(t)) return NaN;
+  return Number(t.replace(/[fFdD]$/, ""));
+}
+
+/** Java's `(int)` of a double: truncated, NaN is 0, saturated at the int range. */
+const javaInt = (d) => (Number.isNaN(d) ? 0 : d >= 2147483647 ? 2147483647 : d <= -2147483648 ? -2147483648 : Math.trunc(d));
+
+/**
+ * Android org.json's `optInt(key, fallback)` on [v]: an integer number as an int (a long one wraps, as Long.intValue
+ * does), a decimal one truncated, a numeric string parsed (`"90"`, `" 1.9 "`); anything else is [fallback].
+ */
+export function optInt(v, fallback) {
+  if (typeof v === "number" && Number.isFinite(v)) {
+    const n = jsonNumber(v);
+    return n.integer ? Number(BigInt.asIntN(32, BigInt(n.text))) : javaInt(v);
+  }
+  if (typeof v === "string") {
+    const d = javaParseDouble(v);
+    return Number.isNaN(d) && !/^\s*[+-]?NaN\s*$/.test(v) ? fallback : javaInt(d);
+  }
+  return fallback;
+}
+
+/** A rating's value as Kotlin reads it: a number as written without trailing zeros, or a string trimmed; else null. */
+function ratingValue(v) {
+  if (typeof v === "string") return v.trim();
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) return null;
+  // v.toDouble().toString(), then BigDecimal(that).stripTrailingZeros().toPlainString().
+  const [mant, exp = "0"] = javaDouble(v).split("E");
+  const [int, frac = ""] = mant.split(".");
+  let digits = (int + frac).replace(/^0+/, "");
+  let scale = frac.length - Number(exp);
+  if (!digits) return "0";
+  while (digits.length > 1 && digits.endsWith("0")) { digits = digits.slice(0, -1); scale--; }
+  if (scale <= 0) return digits + "0".repeat(-scale);
+  if (digits.length > scale) return `${digits.slice(0, digits.length - scale)}.${digits.slice(digits.length - scale)}`;
+  return `0.${"0".repeat(scale - digits.length)}${digits}`;
+}
+
+const metaRules = () => o().meta;
+/** "a string", "an object", "null": what a value is, for a verdict. */
+const aKind = (kind) => (kind === "null" ? "null" : /^[aeiou]/.test(kind) ? `an ${kind}` : `a ${kind}`);
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+const META_KNOWN = ["title", "overview", "poster", "backdrop", "year", "genres", "runtimeMinutes", "episodes", "logo", "ratings", "cast"];
+const short = (v, max = 60) => { const s = JSON.stringify(v) ?? String(v); return s.length > max ? `${s.slice(0, max - 1)}…` : s; };
+
+/**
+ * What the app keeps of a `meta` answer (TitleMetaOutput.parse) and why, field by field:
+ * `{ value, drops, fields, noAnswer }`. `value` is the TitleMeta Kino builds (blanks are "not known"), or null when
+ * the app treats the answer as none (`noAnswer` says why). `fields`: one `{ field, status, detail, items? }` per known
+ * field and per unknown one, `status` one of kept, cut, partly kept, dropped, absent, ignored. `drops` are the
+ * one-line reasons, for the kit's `[dropped by Kino]` lines.
+ */
+export function metaAnswer(value, servers = []) {
+  const m = metaRules();
+  const fields = [];
+  const drops = [];
+  const note = (field, status, detail, items) => {
+    fields.push(items ? { field, status, detail, items } : { field, status, detail });
+    if (items) items.forEach((i) => drops.push(`meta: ${field} ${i}`));
+    else if (status === "dropped" || status === "cut") drops.push(`meta: ${field} ${status}: ${detail}`);
+  };
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    const noAnswer = value === null ? "the plugin answered null: not a title it knows" : `the answer is ${Array.isArray(value) ? "an array" : aKind(typeof value)}, not an object: Kino reads it as no answer`;
+    return { value: null, drops, fields, noAnswer };
+  }
+  const absent = (k) => !(k in value) || value[k] === undefined;
+  const textField = (k, max, extra = "") => {
+    if (absent(k)) { note(k, "absent", "not given"); return ""; }
+    const t = metaText(value[k], max);
+    if (t.kind !== "string" && t.kind !== "number") { note(k, "dropped", `${aKind(t.kind)}, not text: Kino reads ""`); return ""; }
+    if (!t.value) { note(k, "dropped", "empty"); return ""; }
+    if (t.cut) note(k, "cut", `cut to ${max} characters${extra}`);
+    else note(k, "kept", `${plural(t.value.length, "character", "characters")}${t.kind === "number" ? " (a number, read as text)" : ""}${extra}`);
+    return t.value;
+  };
+  /** TitleMetaOutput's image(): the value read whole as text, then PluginOutput.imageUrl (which drops one past maxImageUrlChars). */
+  const imageOf = (obj, k) => {
+    const t = metaText(obj[k], Number.MAX_SAFE_INTEGER);
+    const r = imageVerdict(t.value, servers);
+    return { ...r, kind: t.kind };
+  };
+  const imageField = (k, extra = "") => {
+    if (absent(k)) { note(k, "absent", "not given"); return ""; }
+    const r = imageOf(value, k);
+    if (r.kind !== "string" && r.kind !== "number") { note(k, "dropped", `${aKind(r.kind)}, not a URL`); return ""; }
+    if (!r.url) { note(k, "dropped", r.why); return ""; }
+    note(k, "kept", `${r.url} (${r.why})${extra}`);
+    return r.url;
+  };
+
+  const title = textField("title", o().maxTitleChars, "; the page keeps the source's own title, this one is not shown");
+  const overview = textField("overview", o().maxTextChars, "; shown as the synopsis when TMDB and AniList have none (HTML tags stripped)");
+  const poster = imageField("poster", "; used when the page has no poster");
+  const backdrop = imageField("backdrop", "; used when the page has no background");
+
+  let year = "";
+  if (absent("year")) note("year", "absent", "not given");
+  else {
+    const t = metaText(value.year, m.yearReadChars);
+    const found = t.value.match(new RegExp(m.yearPattern));
+    year = found ? found[0] : "";
+    if (t.kind !== "string" && t.kind !== "number") note("year", "dropped", `${aKind(t.kind)}, not a year`);
+    else if (!year) note("year", "dropped", `no four digits in its first ${m.yearReadChars} characters (${short(t.value)})`);
+    else note("year", "kept", `${year}${String(value.year).trim() !== year ? ` (read from ${short(value.year)})` : ""}`);
+  }
+
+  let genres = [];
+  if (absent("genres")) note("genres", "absent", "not given");
+  else if (!Array.isArray(value.genres)) note("genres", "dropped", `${aKind(metaText(value.genres, 1).kind)}, not a list`);
+  else {
+    const items = [];
+    for (const [i, g] of value.genres.entries()) {
+      // Strings only (a number is not a genre), trimmed and cut, empty ones skipped; NOT de-duplicated (the app keeps repeats).
+      if (typeof g !== "string") { items.push(`#${i} ${short(g)}: not a string`); continue; }
+      const s = g.trim().slice(0, o().maxGenreChars);
+      if (!s) { items.push(`#${i}: empty`); continue; }
+      if (genres.length >= o().maxGenres) { items.push(`#${i} ${short(s)}: beyond ${o().maxGenres}`); continue; }
+      if (g.trim().length > o().maxGenreChars) items.push(`#${i}: cut to ${o().maxGenreChars} characters`);
+      genres.push(s);
+    }
+    const lost = value.genres.length - genres.length;
+    note("genres", !genres.length ? "dropped" : lost || items.length ? "partly kept" : "kept", `${genres.length} of ${value.genres.length}${genres.length ? `: ${genres.join(", ")}` : ""}`, items.length ? items : undefined);
+  }
+
+  let runtimeMinutes = 0;
+  if (absent("runtimeMinutes")) note("runtimeMinutes", "absent", "not given");
+  else {
+    const n = optInt(value.runtimeMinutes, 0);
+    runtimeMinutes = n >= o().minRuntimeMinutes && n <= o().maxRuntimeMinutes ? n : 0;
+    if (!runtimeMinutes) note("runtimeMinutes", "dropped", `${short(value.runtimeMinutes)} is not ${o().minRuntimeMinutes}..${o().maxRuntimeMinutes} minutes`);
+    else note("runtimeMinutes", "kept", `${n}${n !== value.runtimeMinutes ? ` (read from ${short(value.runtimeMinutes)})` : ""}; shown only for a movie (a series' runtime is per episode)`);
+  }
+
+  let episodes = [];
+  if (absent("episodes")) note("episodes", "absent", "not given");
+  else if (!Array.isArray(value.episodes)) note("episodes", "dropped", `${aKind(metaText(value.episodes, 1).kind)}, not a list`);
+  else {
+    const items = [];
+    const read = Math.min(value.episodes.length, m.maxEpisodes);
+    if (value.episodes.length > m.maxEpisodes) items.push(`only the first ${m.maxEpisodes} entries are read (invalid ones count), ${value.episodes.length - m.maxEpisodes} ignored`);
+    const seen = new Set();
+    for (let i = 0; i < read; i++) {
+      const e = value.episodes[i];
+      if (e === null || typeof e !== "object" || Array.isArray(e)) { items.push(`#${i}: not an object`); continue; }
+      const s = optInt(e.season, -1), n = optInt(e.number, -1);
+      if (s < m.minEpisodeSeason || s > o().maxSeasonNumber) { items.push(`#${i}: season ${short(e.season)} is not ${m.minEpisodeSeason}..${o().maxSeasonNumber}`); continue; }
+      if (n < 1 || n > o().maxEpisodeNumber) { items.push(`#${i}: number ${short(e.number)} is not 1..${o().maxEpisodeNumber}`); continue; }
+      if (seen.has(`${s}x${n}`)) { items.push(`#${i}: S${s}E${n} repeated, the first one stays`); continue; }
+      seen.add(`${s}x${n}`);
+      const still = e.still === undefined ? { url: "" } : imageOf(e, "still");
+      if (e.still !== undefined && !still.url) items.push(`#${i} S${s}E${n}: still dropped (${still.why})`);
+      const airText = metaText(e.airDate, 10).value;
+      const airDate = re(o().airDatePattern).test(airText) ? airText : "";
+      if (e.airDate !== undefined && !airDate) items.push(`#${i} S${s}E${n}: airDate ${short(e.airDate)} is not YYYY-MM-DD`);
+      for (const [k, max] of [["title", o().maxTitleChars], ["overview", o().maxTextChars], ["id", o().maxRefChars]]) {
+        if (metaText(e[k], max).cut) items.push(`#${i} S${s}E${n}: ${k} cut to ${max} characters`);
+      }
+      episodes.push({
+        season: s, number: n, title: metaText(e.title, o().maxTitleChars).value, overview: metaText(e.overview, o().maxTextChars).value,
+        still: still.url, airDate, id: metaText(e.id, o().maxRefChars).value,
+      });
+    }
+    episodes.sort((a, b) => a.season - b.season || a.number - b.number);
+    const bad = items.length;
+    note("episodes", !episodes.length ? "dropped" : bad ? "partly kept" : "kept", `${episodes.length} of ${value.episodes.length}${episodes.some((e) => e.season === 0) ? " (season 0 kept here, but the page never lists it)" : ""}`, bad ? items : undefined);
+  }
+
+  const logo = imageField("logo", "; drawn instead of the title's name at the top of the page (Kino 0.9.51+)");
+
+  let ratings = [];
+  if (absent("ratings")) note("ratings", "absent", "not given");
+  else if (!Array.isArray(value.ratings)) note("ratings", "dropped", `${aKind(metaText(value.ratings, 1).kind)}, not a list`);
+  else {
+    const items = [];
+    const valid = [];
+    value.ratings.forEach((r, i) => {
+      if (r === null || typeof r !== "object" || Array.isArray(r)) return items.push(`#${i}: not an object`);
+      const source = metaText(r.source, m.maxRatingSourceChars).value.toLowerCase();
+      if (!m.ratingSources.includes(source)) return items.push(`#${i}: source ${short(r.source)} is not one of ${m.ratingSources.join(", ")}`);
+      const v = ratingValue(r.value);
+      if (v === null) return items.push(`#${i} ${source}: value ${short(r.value)} is not a string or a number >= 0`);
+      if (!re(m.ratingValuePattern).test(v)) return items.push(`#${i} ${source}: value ${short(v)} is not like "8.8", "94%", "4.1/5" (up to 3 digits, 2 decimals)`);
+      if (valid.some((x) => x.source === source)) return items.push(`#${i} ${source}: a second ${source} rating, the first one stays`);
+      valid.push({ source, value: v });
+    });
+    ratings = valid.slice(0, m.maxRatings);
+    valid.slice(m.maxRatings).forEach((x) => items.push(`${x.source} ${x.value}: beyond ${m.maxRatings} ratings`));
+    note("ratings", !ratings.length ? "dropped" : items.length ? "partly kept" : "kept",
+      `${ratings.length} of ${value.ratings.length}${ratings.length ? `: ${ratings.map((x) => `${x.source} ${x.value}`).join(", ")}` : ""}`, items.length ? items : undefined);
+  }
+
+  let cast = [];
+  if (absent("cast")) note("cast", "absent", "not given");
+  else if (!Array.isArray(value.cast)) note("cast", "dropped", `${aKind(metaText(value.cast, 1).kind)}, not a list`);
+  else {
+    const items = [];
+    const valid = [];
+    value.cast.forEach((c, i) => {
+      if (c === null || typeof c !== "object" || Array.isArray(c)) return items.push(`#${i}: not an object`);
+      const name = metaText(c.name, m.maxCastNameChars);
+      if (!name.value) return items.push(`#${i}: no name`);
+      if (name.cut) items.push(`#${i}: name cut to ${m.maxCastNameChars} characters`);
+      const character = metaText(c.character, m.maxCastNameChars);
+      if (character.cut) items.push(`#${i} ${name.value}: character cut to ${m.maxCastNameChars} characters`);
+      const photo = c.photo === undefined ? { url: "" } : imageOf(c, "photo");
+      if (c.photo !== undefined && !photo.url) items.push(`#${i} ${name.value}: photo dropped (${photo.why})`);
+      // distinctBy the name as cut: the first one stays.
+      if (valid.some((x) => x.name === name.value)) return items.push(`#${i} ${name.value}: repeated name, the first one stays`);
+      valid.push({ name: name.value, character: character.value, photo: photo.url });
+    });
+    cast = valid.slice(0, m.maxCast);
+    if (valid.length > m.maxCast) items.push(`${valid.length - m.maxCast} beyond ${m.maxCast} dropped`);
+    note("cast", !cast.length ? "dropped" : items.length ? "partly kept" : "kept", `${cast.length} of ${value.cast.length}`, items.length ? items : undefined);
+  }
+
+  for (const k of Object.keys(value)) if (!META_KNOWN.includes(k) && value[k] !== undefined) note(k, "ignored", "not a meta field: Kino never reads it");
+
+  const kept = { title, overview, poster, backdrop, year, genres, runtimeMinutes, episodes, logo, ratings, cast };
+  const any = m.answerFields.some((k) => (Array.isArray(kept[k]) ? kept[k].length : kept[k]));
+  if (!any) {
+    const alone = [year && "year", runtimeMinutes && "runtimeMinutes"].filter(Boolean);
+    return { value: null, drops, fields, noAnswer: alone.length ? `only ${alone.join(" and ")} survived, and alone they are no answer (Kino needs one of ${m.answerFields.join(", ")})` : "nothing Kino can use survived: no answer" };
+  }
+  return { value: kept, drops, fields, noAnswer: null };
+}
+
 /**
  * What the app would keep of [value], the answer of [fn]: `{ value, drops }` (drops are the log
  * lines the app writes). Throws, with the app's message, when the app would refuse it outright.
@@ -1091,9 +1749,10 @@ function guide(value, drop) {
 /**
  * What the app keeps of a migrate() answer for `input` (PluginMigration.parse): the answer, or null
  * when the plugin does not claim the value. A wrong shape is not an error in the app, only "not
- * claimed" plus a log line: here it is a drop, so the author sees why.
+ * claimed" plus a log line: here it is a drop, so the author sees why. `allowAudio`: the plugin's apiVersion
+ * reaches `audioKindApiVersion`, so a title may be claimed as `music` or `podcast`.
  */
-export function migrateAnswer(value, input) {
+export function migrateAnswer(value, input, allowAudio = false) {
   const drops = [];
   const no = (m) => { drops.push(`migrate: ${m}`); return { value: null, drops }; };
   if (value === null || value === undefined) return { value: null, drops };
@@ -1102,7 +1761,9 @@ export function migrateAnswer(value, input) {
   const refOk = (r) => typeof r === "string" && r.length > 0 && r.length <= o().maxRefChars && !r.startsWith("plg1:");
   const kind = value.kind;
   if (input.kind === "title") {
-    if (kind !== "movie" && kind !== "series") return no(`a title answered kind "${kind}"`);
+    const audio = o().audioKinds.includes(kind);
+    if (audio && !allowAudio) return no(`a title answered kind "${kind}", which needs apiVersion ${o().audioKindApiVersion}`);
+    if (kind !== "movie" && kind !== "series" && !audio) return no(`a title answered kind "${kind}"`);
     if (typeof value.id !== "string" || !ID.test(value.id)) return no("invalid id");
     if (!refOk(value.ref)) return no("invalid ref");
     return { value: { kind, id: value.id, ref: value.ref }, drops };
@@ -1178,7 +1839,7 @@ export function checkSettingsOutput(fn, value, manifest, scrub = (t) => t, drop 
     const t = text(value, ui.fieldErrorMaxChars);
     return t ? { accepted: false, fieldErrors: {}, general: t } : { accepted: true };
   }
-  if (!isObj(value)) throw new Error("validateSettings debe devolver null, un texto o un objeto { clave: mensaje }: Kino no puede leer esta respuesta");
+  if (!isObj(value)) throw new Error("validateSettings must return null, a string or an object { key: message }: Kino can't read this answer");
   const keys = new Set(settings.filter((s) => contract.settings.types[s.type]?.hasValue !== false).map((s) => s.key));
   const fieldErrors = {};
   const other = [];
@@ -1197,7 +1858,7 @@ export function checkSettingsOutput(fn, value, manifest, scrub = (t) => t, drop 
  * `liveChannel`: the `resolve` answer is for a live channel's ref (the app knows; the kit is told),
  * so `liveStreamHosts: "any"` applies to its stream URL.
  */
-export function checkOutput(fn, value, manifest, servers = [], { liveChannel = false, migrateInput = null } = {}) {
+export function checkOutput(fn, value, manifest, servers = [], { liveChannel = false, migrateInput = null, segmentsQuery = null } = {}) {
   const drops = [];
   const drop = (m) => { drops.push(m); };
   const ctx = {
@@ -1205,13 +1866,15 @@ export function checkOutput(fn, value, manifest, servers = [], { liveChannel = f
     allowNext: manifest.capabilities.includes("browse"),
     // Live channels are apiVersion 2: a v1 plugin's live item is dropped like any invalid one.
     allowLive: Number.isInteger(manifest.apiVersion) && manifest.apiVersion >= o().liveKindApiVersion,
+    // Music and podcast items are apiVersion 8: an older plugin's are dropped, the rest of its answer stays.
+    allowAudio: Number.isInteger(manifest.apiVersion) && manifest.apiVersion >= o().audioKindApiVersion,
     // 18+ entries are apiVersion 6: kept and marked (shown behind the person's 18+ code); below it, dropped.
     allowAdult: Number.isInteger(manifest.apiVersion) && manifest.apiVersion >= o().adultApiVersion,
     servers,
   };
   const liveAdult = Number.isInteger(manifest.apiVersion) && manifest.apiVersion >= live().adultApiVersion;
   const json = JSON.stringify(value === undefined ? null : value);
-  if (json.length > o().maxResultChars) throw new Error("respuesta del plugin demasiado grande (más de 2 millones de caracteres)");
+  if (json.length > o().maxResultChars) throw new Error("plugin answer too large (over 2 million characters)");
   const parsed = JSON.parse(json);
   switch (fn) {
     case "search": return { value: page(parsed, o().maxSearchItems, ctx, drop), drops };
@@ -1224,11 +1887,11 @@ export function checkOutput(fn, value, manifest, servers = [], { liveChannel = f
     case "resolve": return { value: stream(parsed, { manifest, servers, allowDrm: manifest.capabilities.includes("drm"), liveChannel, drop }), drops };
     case "sign": {
       if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed) || parsed.headers === null || typeof parsed.headers !== "object" || Array.isArray(parsed.headers)) {
-        throw new Error("sign no devolvió { headers }");
+        throw new Error("sign didn't return { headers }");
       }
       // Markers are per runtime and never substituted in a stream's headers: refused, names and values.
       const headers = headersOf(parsed.headers);
-      if (Object.entries(headers).some(([k, v]) => k.includes("__kinoSecret_") || v.includes("__kinoSecret_"))) throw new Error("sign no puede devolver datos sellados");
+      if (Object.entries(headers).some(([k, v]) => k.includes("__kinoSecret_") || v.includes("__kinoSecret_"))) throw new Error("sign can't return sealed data");
       return { value: { headers }, drops };
     }
     case "liveCategories": return { value: liveCategories(parsed, { manifest, servers, allowAdult: liveAdult }, drop), drops };
@@ -1240,8 +1903,45 @@ export function checkOutput(fn, value, manifest, servers = [], { liveChannel = f
       return { value: { items: found.items.slice(0, live().maxSearchChannels) }, drops };
     }
     case "guide": return { value: guide(parsed, drop), drops };
-    case "migrate": return migrateAnswer(parsed, migrateInput || { kind: "title" });
+    case "migrate": return migrateAnswer(parsed, migrateInput || { kind: "title" }, ctx.allowAudio);
     case "subtitles": return { value: subtitleTracks(parsed, { manifest, servers }, drop), drops };
+    // Kino only needs track() to return (anything, `{ ok: true }` by convention) or throw: a kino.error code says whether to retry.
+    case "track": return { value: parsed, drops };
+    // apiVersion 7's segments: what the app's Segments.parse keeps, judged against the query's durationMs.
+    case "segments": return { value: segmentsAnswer(parsed, segmentsQuery?.durationMs, drop), drops };
+    // apiVersion 6's meta: what the app's TitleMetaOutput.parse keeps (null = no answer), with a verdict per field.
+    case "meta": {
+      const r = metaAnswer(parsed, servers);
+      return { value: r.value, drops: r.drops, fields: r.fields, noAnswer: r.noAnswer };
+    }
+    // apiVersion 10's playlists: a loose shape check, like liveCategories's own array-of-objects check.
+    case "playlists": {
+      if (!Array.isArray(parsed)) { drop("playlists: the answer is not a JSON array"); return { value: [], drops }; }
+      const out = [];
+      parsed.forEach((p, i) => {
+        if (p === null || typeof p !== "object" || Array.isArray(p)) return drop(`playlists: #${i} is not an object`);
+        const id = typeof p.id === "string" ? p.id : "";
+        if (!id) return drop(`playlists: #${i} has no id`);
+        const title = text(p.title, o().maxTitleChars);
+        if (!title) return drop(`playlists: ${id} has no title`);
+        const itemCount = Number.isInteger(p.itemCount) && p.itemCount >= 0 ? p.itemCount : 0;
+        out.push({ id, title, itemCount });
+      });
+      return { value: out, drops };
+    }
+    // playlistItems: the same page shape as browse.
+    case "playlistItems": return { value: page(parsed, o().maxBrowseItems, { ...ctx, allowNext: true }, drop), drops };
+    case "playlistCreate": {
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed) || typeof parsed.id !== "string" || !parsed.id) {
+        throw new Error("playlistCreate didn't return { id }");
+      }
+      return { value: { id: parsed.id }, drops };
+    }
+    // playlistAddItem/playlistRemoveItem/playlistReorder return void: like track, anything or throw.
+    case "playlistAddItem":
+    case "playlistRemoveItem":
+    case "playlistReorder":
+      return { value: parsed, drops };
     default: throw new Error(`unknown function ${fn}`);
   }
 }

@@ -23,7 +23,7 @@ export function scaffold(folder, { id, name, host = "example.com" } = {}) {
       capabilities: ["search", "home", "browse", "resolve"],
     }, null, 2) + "\n",
     "plugin.js": `// ${name || pluginId}: a Kino plugin. Read GUIDE.md: every function is async, returns plain JSON,
-// and must never throw before its first await (the engine can't catch that).
+// and must not throw before its first await (Kino 0.9.49 and older cannot catch that).
 const BASE = "https://${host}";
 
 export async function search(query) {

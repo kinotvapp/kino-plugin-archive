@@ -1,0 +1,20 @@
+{
+  "id": "panel-demo",
+  "name": "Panel demo",
+  "version": "1.0.0",
+  "apiVersion": 9,
+  "entry": "plugin.js",
+  "hosts": ["example.com"],
+  "capabilities": ["search", "resolve"],
+  "settings": [
+    { "key": "quality", "label": "Quality", "type": "select", "options": [{ "value": "auto", "label": "Auto" }, { "value": "hd", "label": "HD" }], "default": "auto" },
+    { "key": "nickname", "label": "Nickname", "type": "text" },
+    { "key": "skipIntro", "label": "Skip intros", "type": "toggle" }
+  ],
+  "panel": { "label": "Demo", "labelEn": "Demo", "iconFile": "panel-icon.png" },
+  "settingsLayout": [
+    { "type": "card", "title": "Playback", "children": [{ "setting": "quality" }, { "setting": "skipIntro" }] },
+    { "type": "text", "text": "Everything else goes below." },
+    { "setting": "nickname" }
+  ]
+}

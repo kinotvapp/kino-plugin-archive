@@ -1,0 +1,15 @@
+{
+  "RegExp v flag": "The app's engine has no `v` (unicodeSets) flag: `new RegExp(\"a\", \"v\")` and a /x/v literal are a SyntaxError there. The kit runs V8, which accepts it. Do not use it.",
+  "array sort inconsistent comparator": "A comparator that contradicts itself (`() => -1`, `() => 1`) orders differently: the app's engine and V8 sort with different algorithms. Consistent comparators, and the sort being stable, behave the same.",
+  "stack overflow error name": "Runaway recursion throws `InternalError` in the app and `RangeError` in the kit. Catch it by `e instanceof Error`, not by name.",
+  "Error.stackTraceLimit": "V8 only builds `Error.stack` while `Error.stackTraceLimit` exists, so the kit keeps it; the app has none. Do not read it.",
+  "URL internationalized host": "The app's URL has no punycode: `new URL(\"http://münchen.de\")` is a TypeError there. The kit turns the host into `xn--mnchen-3ya.de`. Write such hosts in their `xn--` form.",
+  "global object prototype": "In the app `Object.getPrototypeOf(globalThis) === Object.prototype`; in the kit's vm context it is not. Nothing a plugin should depend on.",
+  "large: array fill 1e7": "A plugin has 64 MB of memory in the app (PluginEnv.memoryLimitBytes); a 1e7-element array is 80 MB and throws InternalError. The kit has no such limit.",
+  "large: regex replace to 2 MB": "Memory limit of 64 MB in the app (PluginEnv.memoryLimitBytes); this replace builds a 2 MB string many times over and throws InternalError there. The kit has no such limit.",
+  "large: nested array depth 5000 JSON": "The app's JSON.parse/stringify handle 5000 nested arrays; V8 inside the kit's vm context overflows its stack (RangeError).",
+  "large: recursion depth 5000": "The app's stack is 1 MB (PluginEnv.maxStackBytes): 5000 nested calls already throw InternalError. The kit gives V8's ~10000 frames.",
+  "large: recursion depth 50000": "Both engines throw, with a different name: InternalError in the app, RangeError in the kit.",
+  "large: object with 1e6 keys": "Memory limit of 64 MB in the app (PluginEnv.memoryLimitBytes); an object with 1e6 keys throws InternalError there. The kit has no such limit.",
+  "large: Map with 1e6 entries": "Memory limit of 64 MB in the app (PluginEnv.memoryLimitBytes); a Map with 1e6 entries fails there (the error has no name). The kit has no such limit."
+}
