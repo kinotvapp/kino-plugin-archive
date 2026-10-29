@@ -24,6 +24,7 @@ import { decodeCipherKey } from "./seal.mjs";
 import { keepsAddresses } from "./screen.mjs";
 import { filterRelevant, shortQuery, sortBySimilarity } from "./kino-rank.mjs";
 import { createSharedStore, kitSharedApi } from "./shared.mjs";
+import { kitNotificationsApi } from "./notices.mjs";
 
 // Captured at load: the runner later replaces console.error to keep stdout clean, and kino.log
 // must not be routed through that replacement (it would print two prefixes).
@@ -848,7 +849,7 @@ function deviceFor(device, env) {
  * kino.device (Kino 0.9.55, contract.kinoDevice): [device] ("phone" or "tv", run.mjs --device), else env KINO_DEVICE,
  * else "phone". Anything else throws: a typo must not silently test the other UI.
  */
-export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", device = undefined, storageFile = null, cookiesFile = null, secretsFile = null, config = {}, record = null, replay = null, fetchImpl = globalThis.fetch, metaFixture = undefined, tmdbKey = undefined, tmdbFixture = undefined, nuvioFixture = undefined, libraryFixture = undefined, libraryRevoked = false, callFunction = null, env = process.env, now = Date.now, syncCall = false, qrScan = undefined, room = undefined, roomRevoked = false, ai = undefined, aiRevoked = false, shared = undefined } = {}) {
+export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", device = undefined, storageFile = null, cookiesFile = null, secretsFile = null, config = {}, record = null, replay = null, fetchImpl = globalThis.fetch, metaFixture = undefined, tmdbKey = undefined, tmdbFixture = undefined, nuvioFixture = undefined, libraryFixture = undefined, libraryRevoked = false, callFunction = null, env = process.env, now = Date.now, syncCall = false, qrScan = undefined, room = undefined, roomRevoked = false, ai = undefined, aiRevoked = false, identityRevoked = false, entryFile = null, noticesFile = null, notificationsRevoked = false, shared = undefined } = {}) {
   const f = contract.fetch;
   // [syncCall]: this kino runs a syncProvider's syncPull/syncPush (contract.fetch.syncCall): its requests and responses may
   // carry the declared blob, ceil(sync.maxBlobBytes * 4/3) + envelopeChars, like the app; every other call keeps the defaults.
@@ -1779,6 +1780,9 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", devic
       const p = Math.min(1, Math.max(0, typeof e.progress === "number" && Number.isFinite(e.progress) ? e.progress : 0));
       out.progress = Math.round(p / LB.progressStep) / Math.round(1 / LB.progressStep);
       out.watchedAtMs = dayOf(e.watchedAtMs);
+      // A series' latest chapter played (PluginLibrary.watchedFrom), each only when the fixture numbers it; never a movie's.
+      if (e.kind === "series" && Number.isInteger(e.season) && e.season >= 0) out.season = e.season;
+      if (e.kind === "series" && Number.isInteger(e.episode) && e.episode >= 1) out.episode = e.episode;
     }
     return out;
   };
@@ -1825,6 +1829,25 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", devic
       const o = currentQrOrigin();
       const fn = o.fn ?? callFunction ?? undefined;
       return { ...o, fn, job: fn === contract.kinoAi.fromJob, takeRequest: kitJobRequest.getStore() };
+    },
+  });
+
+  // --- kino.notifications (apiVersion 15, capability "notifications"): the bell, kept in [noticesFile] (notices.mjs). ---
+  const notificationsApi = kitNotificationsApi(manifest, {
+    file: noticesFile, revoked: notificationsRevoked, syncCall, env, now,
+    origin: () => {
+      const fn = currentQrOrigin().fn ?? callFunction ?? undefined;
+      return { fn, job: fn === contract.kinoJobs.export };
+    },
+  });
+
+  // --- kino.identity (apiVersion 15, capability "identity"): a fake Telegram identity with the app's gates (kitIdentityApi). ---
+  const identityApi = kitIdentityApi(manifest, {
+    revoked: identityRevoked, syncCall, env, now, entryFile,
+    origin: () => {
+      const o = currentQrOrigin();
+      const fn = o.fn ?? callFunction ?? undefined;
+      return { ...o, fn, job: fn === contract.kinoAi.fromJob || kitJobRequest.getStore() !== undefined };
     },
   });
 
@@ -2099,6 +2122,10 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", devic
     // apiVersion 14 (contract.kinoAi): present on every apiVersion 14 kino, like the app's (typeof kino.ai === "object"); an ask
     // never throws: { ok: true, text, model } or { ok: false, error, message }.
     ...(featureApiVersion(manifest) >= contract.kinoAi.apiVersion ? { ai: aiApi } : {}),
+    // apiVersion 15 (contract.kinoIdentity): present on every apiVersion 15 kino, like the app's (typeof kino.identity === "object").
+    ...(featureApiVersion(manifest) >= contract.kinoIdentity.apiVersion ? { identity: identityApi } : {}),
+    // apiVersion 15 (contract.kinoNotifications): present on every apiVersion 15 kino (typeof kino.notifications === "object").
+    ...(featureApiVersion(manifest) >= contract.kinoNotifications.apiVersion ? { notifications: Object.freeze({ post: notificationsApi.post, clear: notificationsApi.clear }) } : {}),
     // apiVersion 14 (contract.kinoShared, Task 8q-2): one simulated device's store ([shared], createSharedDevices().phone or
     // .tv; a fresh one when none is given). Present on every apiVersion 14 kino, like the app's (typeof kino.shared === "object").
     ...(featureApiVersion(manifest) >= contract.kinoShared.apiVersion ? { shared: kitSharedApi(manifest, shared ?? createSharedStore({ now }), { now }) } : {}),
@@ -2193,6 +2220,8 @@ export function signingLane(kino) {
     ...(kino.room ? { room: Object.freeze(Object.fromEntries(contract.kinoRoom.functions.map((n) => [n, async () => { throw why("kino.room"); }]))) } : {}),
     // kino.ai.ask never throws: the lane answers its refusal as data (prelude.js).
     ...(kino.ai ? { ai: Object.freeze({ ask: async () => Object.freeze({ ok: false, error: "refused", message: "sign() can't use kino.ai: whatever you need must come in signContext" }) }) } : {}),
+    ...(kino.identity ? { identity: Object.freeze({ telegram: async () => { throw why("kino.identity"); } }) } : {}),
+    ...(kino.notifications ? { notifications: Object.freeze({ post: async () => { throw why("kino.notifications"); }, clear: async () => { throw why("kino.notifications"); } }) } : {}),
     ...(kino.shared ? { shared: Object.freeze({ get: refused("kino.shared"), set: refused("kino.shared") }) } : {}),
     ...(kino.browser ? { browser: Object.freeze({ captureAll: true, capture: async () => { throw why("kino.browser"); }, ...(kino.browser.page ? { page: async () => { throw why("kino.browser"); } } : {}) }) } : {}),
   });
@@ -2860,6 +2889,81 @@ export function aiCut(text, maxChars) {
   if (text.length <= maxChars) return text;
   const c = text.charCodeAt(maxChars - 1);
   return text.slice(0, c >= 0xD800 && c <= 0xDBFF ? maxChars - 1 : maxChars);
+}
+
+/**
+ * The per-plugin pseudonym kino.identity.telegram answers as `id` (contract.kinoIdentity.pseudonymPrefix, PluginIdentity.pseudonym):
+ * the first 32 lowercase hex characters of SHA-256 over UTF-8 `"kino-identity-v1\n" + pluginId + "\n" + telegramId` (decimal).
+ * Stable for one plugin on every install, different between plugins; never the Telegram id itself.
+ */
+export function identityPseudonym(pluginId, telegramId) {
+  const I = contract.kinoIdentity;
+  return createHash("sha256").update(I.pseudonymPrefix + pluginId + "\n" + String(telegramId), "utf8").digest("hex").slice(0, I.pseudonymHexChars);
+}
+
+/**
+ * The exact bytes a challenge's signature covers (PluginIdentity.signedBytes), UTF-8: contract.kinoIdentity.signaturePrefix
+ * (`"kino-identity-v2\n"`) + pluginId + "\n" + challenge + "\n" + author + "\n" + codeHash.
+ */
+export function identitySignedBytes(pluginId, challenge, author, codeHash) {
+  return Buffer.from(contract.kinoIdentity.signaturePrefix + pluginId + "\n" + challenge + "\n" + author + "\n" + codeHash, "utf8");
+}
+
+/** The kit's per-plugin device keys (the app keeps one non-exportable P-256 pair per install and plugin in the Android Keystore). */
+const kitIdentityKeys = new Map();
+function kitIdentityKey(pluginId) {
+  let k = kitIdentityKeys.get(pluginId);
+  if (!k) { k = generateKeyPairSync("ec", { namedCurve: "P-256" }); kitIdentityKeys.set(pluginId, k); }
+  return k;
+}
+
+/**
+ * kino.identity for [manifest] (apiVersion 15, capability "identity", contract.kinoIdentity), with the app's gates
+ * (PluginIdentityBridge): the capability and [revoked] (KINO_IDENTITY_REVOKED=1) give permission_denied, so does a call that is
+ * not the person's (only contract.kinoIdentity.fromFunctions, never a timer tick, a job or a sync call); a bad options object or
+ * challenge bad_request; past perMinute rate_limited. The fake account: env KINO_IDENTITY_TG (a whole number; "0" or "none":
+ * no account, not_available) else 1000001, and KINO_IDENTITY_TOKEN else a fake token. The answer: `{ id, token }` (id the
+ * per-plugin pseudonym, [identityPseudonym]) and, with a challenge, `deviceKey` (SPKI DER, base64url), `author` (env
+ * KINO_IDENTITY_AUTHOR, else "": the kit verifies no author signature), `codeHash` (lowercase hex SHA-256 of [entryFile], the
+ * entry the kit loaded; "" when none was given) and `signature` (SHA256withECDSA DER over [identitySignedBytes], base64url)
+ * from an in-memory P-256 key per plugin id.
+ */
+export function kitIdentityApi(manifest, { revoked = false, origin = () => ({}), syncCall = false, env = process.env, now = Date.now, entryFile = null } = {}) {
+  const I = contract.kinoIdentity;
+  const bucket = tokenBucket(I.perMinute, 60_000, now);
+  const challengeRe = new RegExp(I.challengePattern);
+  async function telegram(options) {
+    await null;
+    if (!(manifest.capabilities || []).includes(I.capability) || revoked || env.KINO_IDENTITY_REVOKED === "1") {
+      throw kinoError("permission_denied", 'kino.identity needs the "identity" capability, approved and switched on by the person');
+    }
+    const o = origin();
+    if (syncCall || o.job || o.tick || !I.fromFunctions.includes(o.fn)) {
+      throw kinoError("permission_denied", `kino.identity only answers inside a call the person started (${I.fromFunctions.join(", ")})`);
+    }
+    if (options !== undefined && options !== null && !plainObject(options)) throw kinoError("bad_request", I.badRequestMessage);
+    if (options && Object.keys(options).some((k) => k !== "challenge")) throw kinoError("bad_request", I.badRequestMessage);
+    const challenge = options?.challenge;
+    if (challenge !== undefined && challenge !== null && (typeof challenge !== "string" || !challengeRe.test(challenge))) {
+      throw kinoError("bad_request", I.badRequestMessage);
+    }
+    if (!bucket.take()) throw kinoError("rate_limited", `too many kino.identity calls (at most ${I.perMinute} a minute)`);
+    const rawTg = env.KINO_IDENTITY_TG;
+    const tg = rawTg === undefined ? 1000001 : /^[1-9]\d{0,17}$/.test(rawTg) ? rawTg : null;
+    if (tg === null) throw kinoError("not_available", "kino.identity: this device was never validated with a Telegram account");
+    const out = { id: identityPseudonym(manifest.id, tg), token: env.KINO_IDENTITY_TOKEN || "kit-gate-token." + tg };
+    if (typeof challenge === "string") {
+      const k = kitIdentityKey(manifest.id);
+      const author = env.KINO_IDENTITY_AUTHOR || "";
+      const codeHash = entryFile ? createHash("sha256").update(readFileSync(entryFile)).digest("hex") : "";
+      out.deviceKey = k.publicKey.export({ type: "spki", format: "der" }).toString("base64url");
+      out.signature = nodeSign("sha256", identitySignedBytes(manifest.id, challenge, author, codeHash), k.privateKey).toString("base64url");
+      out.author = author;
+      out.codeHash = codeHash;
+    }
+    return Object.freeze(out);
+  }
+  return Object.freeze({ telegram });
 }
 
 /**

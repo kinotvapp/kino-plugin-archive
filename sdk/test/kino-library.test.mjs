@@ -145,3 +145,21 @@ test("the kit refuses reads from exports outside fromFunctions, as the app does"
     assert.equal((await kino.library.watched()).length, 2, fn);
   }
 });
+
+test("watched series carry the latest season and episode, movies never (contract additiveFromApp kino.library.episode)", async () => {
+  assert.equal(contract.additiveFromApp["kino.library.episode"], "TBD");
+  assert.ok(L.answerFields.includes("season") && L.answerFields.includes("episode"));
+  const fixture = {
+    watched: [
+      { title: "Show", kind: "series", ids: { tmdb: 1399 }, progress: 0.5, watchedAtMs: 20 * DAY, season: 1, episode: 3 },
+      { title: "Film", kind: "movie", progress: 1, watchedAtMs: 10 * DAY, season: 4, episode: 5 },
+      { title: "Unnumbered", kind: "series", progress: 0.1, watchedAtMs: 5 * DAY },
+    ],
+  };
+  const { kino } = createKino(manifest(), { libraryFixture: fixture, env: {} });
+  const [show, film, bare] = await kino.library.watched();
+  assert.equal(show.season, 1);
+  assert.equal(show.episode, 3);
+  assert.ok(!("season" in film) && !("episode" in film));
+  assert.ok(!("season" in bare) && !("episode" in bare));
+});

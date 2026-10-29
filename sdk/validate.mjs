@@ -77,6 +77,10 @@ export function consentLines(m, { authorFingerprint = null } = {}) {
   if (m.capabilities.includes(contract.kinoJobs.capability)) line(contract.kinoJobs.consentLine.es, true);
   // apiVersion 14 "ai" (PluginConsent.extraLines, Task 8r): what it sends leaves the device for a third-party AI service: red.
   if (m.capabilities.includes(contract.kinoAi.capability)) line(contract.kinoAi.consentLine.es, true);
+  // apiVersion 15 "identity" (PluginConsent.extraLines): who the person is on Telegram may leave the device: red.
+  if (m.capabilities.includes(contract.kinoIdentity.capability)) line(contract.kinoIdentity.consentLine.es, true);
+  // apiVersion 15 "notifications" (PluginConsent.extraLines): notices in the Home bell: a plain line, not red.
+  if (m.capabilities.includes(contract.kinoNotifications.capability)) line(contract.kinoNotifications.consentLine.es);
   // apiVersion 14 "shared" (PluginConsent.extraLines, Task 8q-2): the person's own data between their own devices: a plain line.
   if (m.capabilities.includes(contract.kinoShared.capability)) line(contract.kinoShared.consentLine.es);
   // apiVersion 7 "segments": a plain line, not red (it only learns which title plays): PluginConsent / Segments.CONSENT_LINE.
@@ -309,6 +313,17 @@ export function undeclaredAiProblem(m, source) {
 }
 
 /**
+ * apiVersion 15's kino.identity (contract.kinoIdentity): like [undeclaredLibraryProblem], for a plugin whose code calls
+ * kino.identity.telegram without declaring the "identity" capability. The message, or null.
+ */
+export function undeclaredIdentityProblem(m, source) {
+  const I = contract.kinoIdentity;
+  if ((m.capabilities || []).includes(I.capability)) return null;
+  if (!/\bkino\s*\.\s*identity\s*\.\s*telegram\s*\(/.test(source)) return null;
+  return `The code calls kino.identity.telegram but the manifest does not declare the "${I.capability}" capability (apiVersion ${I.apiVersion}): Kino would refuse every call with permission_denied`;
+}
+
+/**
  * apiVersion 14's kino.shared (contract.kinoShared, Task 8q-2): a plugin whose code calls it without declaring the "shared"
  * capability (every call would be not_allowed). The message, or null.
  */
@@ -441,6 +456,8 @@ export async function validate(dirArg, { run = null, args = [], config = {}, rep
   if (roomProblem) problems.push(roomProblem);
   const aiProblem = undeclaredAiProblem(m, readFileSync(entry, "utf8"));
   if (aiProblem) problems.push(aiProblem);
+  const identityProblem = undeclaredIdentityProblem(m, readFileSync(entry, "utf8"));
+  if (identityProblem) problems.push(identityProblem);
   const sharedProblem = undeclaredSharedProblem(m, readFileSync(entry, "utf8"));
   if (sharedProblem) problems.push(sharedProblem);
   warnings.push(...sharedSecretKeyWarnings(readFileSync(entry, "utf8")));
@@ -499,6 +516,11 @@ export async function validate(dirArg, { run = null, args = [], config = {}, rep
     // Task 8r: what the AI is and is not, so the author treats the reply as untrusted data and keeps a fallback.
     const A = contract.kinoAi;
     notes.push(`ai: kino.ai.ask sends your prompt to a third-party AI (Kilo) and answers { ok, text, model } or { ok: false, error } (never throws); only after the person's own press (${A.fromFunctions.join(", ")}) or from your scheduled job; ${A.limits.perMinute} a minute, ${A.limits.perDay} a day, one at a time, ${A.limits.timeoutMs / 1000} s. The reply is untrusted: a prompt can be injected through what you send, so validate every field and never execute or follow it; json: true only asks for JSON. Tell the person in your own UI what you send. The person may refuse it or switch it off: keep a fallback. The kit answers canned text: KINO_AI_REPLY=..., KINO_AI_ERROR=<code>, KINO_AI_REVOKED=1`);
+  }
+  if ((m.capabilities || []).includes(contract.kinoIdentity.capability)) {
+    // apiVersion 15: what the identity is and is not, so the author's server verifies the token and never trusts the id alone.
+    const I = contract.kinoIdentity;
+    notes.push(`identity: kino.identity.telegram({ challenge? }) answers { id, token } (id: a pseudonym of the person for THIS plugin, the same on every install, never their Telegram id or username) and, with a challenge, deviceKey and signature (a per-plugin device key); only inside ${I.fromFunctions.join(", ")} the person started, ${I.perMinute} a minute. Your server must verify the token (it is signed by Kino's bot and names the Telegram account) and the signature; the person may refuse it or switch it off: keep a way in without it. The kit answers a fake account: KINO_IDENTITY_TG=<id or none>, KINO_IDENTITY_TOKEN=..., KINO_IDENTITY_REVOKED=1`);
   }
   if (m.panel?.contributes && (m.panel.kinds ?? []).includes(contract.kinoLivePanel.kind)) {
     // Task 11: the tab also joins En vivo channels, after Kino's General tab, with the live context.

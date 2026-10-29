@@ -1,24 +1,25 @@
 {
   "$comment": "Kino plugin contract, apiVersion 1 to 14. The single source of truth for every number and rule a plugin meets. The app checks each value against its own code, and a test in the app pins this file to it; sdk/validate.mjs, sdk/run.mjs and the guide's tables read this file. apiVersion 12 (sync providers), 13 and 14 (plugin screens: screen, library, playerPanelTab, playerControl, room, schedule, ai, shared, enhancements) all arrive in Kino 0.9.74, the next release (not published yet); a Kino before 0.9.74 refuses all three.",
-  "apiVersion": 14,
-  "maxApiVersion": 14,
-  "apiVersionFromApp": { "6": "0.9.50", "7": "0.9.51", "8": "0.9.54", "9": "0.9.55", "10": "0.9.65", "11": "0.9.66", "12": "0.9.74", "13": "0.9.74", "14": "0.9.74" },
+  "apiVersion": 15,
+  "maxApiVersion": 15,
+  "apiVersionFromApp": { "6": "0.9.50", "7": "0.9.51", "8": "0.9.54", "9": "0.9.55", "10": "0.9.65", "11": "0.9.66", "12": "0.9.74", "13": "0.9.74", "14": "0.9.74", "15": "TBD" },
   "additiveFromApp": { "kino.meta": "0.9.53", "kino.tmdb": "0.9.53", "catalogOnly": "0.9.54", "kino.browser.captureAll": "0.9.54", "fetch.errorHost": "0.9.55", "kino.fetchAnyHost": "0.9.55",
-    "kino.meta.byTitle": "0.9.55", "kino.device": "0.9.55", "kino.seed": "0.9.55", "panel.loading": "0.9.64", "kino.nuvio": "0.9.71", "kino.sync.remoteChanged": "0.9.74", "action.link": "0.9.74", "action.setSettings": "0.9.74" },
+    "kino.meta.byTitle": "0.9.55", "kino.device": "0.9.55", "kino.seed": "0.9.55", "panel.loading": "0.9.64", "kino.nuvio": "0.9.71", "kino.sync.remoteChanged": "0.9.74", "action.link": "0.9.74", "action.setSettings": "0.9.74",
+    "kino.library.episode": "TBD" },
   "capabilities": {
     "$comment": "standaloneSupplements (apiVersion 13; room, schedule, ai and shared from apiVersion 14): a capabilities set with at least one standalone capability and nothing else but these runtime capabilities (all declarative but schedule, which exports job) is still standalone (needs neither required nor atLeastOneOf). Alone, with no standalone capability, they get the usual rule. playerControl (Task 8t) is a supplement only beside a panel object (its own player panel, or panel.contributes with playerPanelTab): a standalone set with playerControl and no panel is refused with playerControlNeedsPanelMessage.",
-    "names": ["search", "home", "browse", "episodes", "resolve", "download", "drm", "channels", "migrate", "scopedSearch", "meta", "subtitles", "tracking", "segments", "playlists", "externalResolve", "nuvio", "syncProvider", "socket", "byteSource", "storageLarge", "catalog", "qrScan", "imageSource", "screen", "library", "playerPanelTab", "playerControl", "room", "schedule", "ai", "shared"],
+    "names": ["search", "home", "browse", "episodes", "resolve", "download", "drm", "channels", "migrate", "scopedSearch", "meta", "subtitles", "tracking", "segments", "playlists", "externalResolve", "nuvio", "syncProvider", "socket", "byteSource", "storageLarge", "catalog", "qrScan", "imageSource", "screen", "library", "playerPanelTab", "playerControl", "room", "schedule", "ai", "shared", "identity", "notifications"],
     "required": ["resolve"],
     "atLeastOneOf": ["search", "home"],
     "standalone": ["subtitles", "tracking", "segments", "syncProvider", "screen", "library", "playerPanelTab"],
-    "standaloneSupplements": ["socket", "storageLarge", "catalog", "qrScan", "room", "schedule", "ai", "shared", "playerControl"],
+    "standaloneSupplements": ["socket", "storageLarge", "catalog", "qrScan", "room", "schedule", "ai", "shared", "playerControl", "identity", "notifications"],
     "playerControlNeedsPanelMessage": "The \"playerControl\" capability needs a \"panel\" (its own player panel, or \"panel\": { \"contributes\": true }) in a plugin that plays nothing",
     "anyPluginExports": ["subtitles"],
-    "declarative": ["download", "drm", "scopedSearch", "externalResolve", "nuvio", "socket", "storageLarge", "catalog", "qrScan", "library", "playerControl", "room", "ai", "shared"],
-    "apiVersions": { "download": 2, "drm": 2, "channels": 3, "migrate": 6, "scopedSearch": 6, "meta": 6, "tracking": 7, "segments": 7, "playlists": 10, "externalResolve": 11, "nuvio": 11, "syncProvider": 12, "socket": 13, "byteSource": 13, "storageLarge": 13, "catalog": 13, "qrScan": 13, "imageSource": 13, "screen": 14, "library": 14, "playerPanelTab": 14, "playerControl": 14, "room": 14, "schedule": 14, "ai": 14, "shared": 14 },
+    "declarative": ["download", "drm", "scopedSearch", "externalResolve", "nuvio", "socket", "storageLarge", "catalog", "qrScan", "library", "playerControl", "room", "ai", "shared", "identity", "notifications"],
+    "apiVersions": { "download": 2, "drm": 2, "channels": 3, "migrate": 6, "scopedSearch": 6, "meta": 6, "tracking": 7, "segments": 7, "playlists": 10, "externalResolve": 11, "nuvio": 11, "syncProvider": 12, "socket": 13, "byteSource": 13, "storageLarge": 13, "catalog": 13, "qrScan": 13, "imageSource": 13, "screen": 14, "library": 14, "playerPanelTab": 14, "playerControl": 14, "room": 14, "schedule": 14, "ai": 14, "shared": 14, "identity": 15, "notifications": 15 },
     "requires": { "scopedSearch": "search" },
     "requiresMessage": "The \"{capability}\" capability also needs \"{requires}\"",
-    "needsApproval": ["download", "drm", "channels", "migrate", "tracking", "nuvio", "syncProvider", "library", "playerPanelTab", "playerControl", "room", "schedule", "ai"],
+    "needsApproval": ["download", "drm", "channels", "migrate", "tracking", "nuvio", "syncProvider", "library", "playerPanelTab", "playerControl", "room", "schedule", "ai", "identity", "notifications"],
     "exports": { "channels": ["liveCategories", "liveChannels"], "tracking": ["track"], "playlists": [], "syncProvider": ["syncPull", "syncPush"], "byteSource": ["read"], "imageSource": ["image"], "screen": ["screen", "screenEvent"], "playerPanelTab": ["panel"], "schedule": ["job"] },
     "optionalExports": { "channels": ["guide", "liveSearch"], "resolve": ["sign"], "playlists": ["playlists", "playlistItems", "playlistCreate", "playlistAddItem", "playlistRemoveItem", "playlistReorder"], "syncProvider": ["syncStatus"] }
   },
@@ -627,7 +628,7 @@
     "functions": ["watched", "saved"],
     "kinds": ["movie", "series"],
     "idKeys": ["tmdb", "imdb"],
-    "answerFields": ["title", "year", "kind", "ids", "progress", "watchedAtMs"],
+    "answerFields": ["title", "year", "kind", "ids", "progress", "watchedAtMs", "season", "episode"],
     "defaultLimit": 50,
     "maxLimit": 100,
     "perMinute": 30,
@@ -764,9 +765,9 @@
     "contextFields": ["id", "reason", "lastRunMs", "attempt"],
     "reasons": ["scheduled", "manual"],
     "outputIgnored": true,
-    "availableApis": ["kino.fetch", "kino.storage", "kino.log", "kino.library", "kino.config", "kino.cookies", "kino.crypto", "kino.sleep", "kino.html", "kino.secret", "kino.error", "kino.rank", "kino.ai", "kino.shared", "kino.seed"],
+    "availableApis": ["kino.fetch", "kino.storage", "kino.log", "kino.library", "kino.config", "kino.cookies", "kino.crypto", "kino.sleep", "kino.html", "kino.secret", "kino.error", "kino.rank", "kino.ai", "kino.shared", "kino.seed", "kino.notifications"],
     "readOnly": ["kino.apiVersion", "kino.appVersion", "kino.lang", "kino.device", "kino.fetchAnyHost", "kino.screen"],
-    "forbiddenApis": ["kino.room", "kino.qr", "kino.browser", "kino.ws", "kino.meta", "kino.tmdb", "kino.nuvio", "kino.catalog", "kino.sync", "kino.cloudstream"],
+    "forbiddenApis": ["kino.room", "kino.qr", "kino.browser", "kino.ws", "kino.meta", "kino.tmdb", "kino.nuvio", "kino.catalog", "kino.sync", "kino.cloudstream", "kino.identity"],
     "limits": {
       "runTimeoutMs": 20000, "maxFetches": 10, "maxResponseBytes": 2097152, "maxStorageWriteBytes": 262144,
       "maxRunsPerDay": 96, "failuresToPause": 3, "backoffBaseMin": 15, "backoffMaxMin": 360, "foregroundWaitMs": 30000
@@ -805,6 +806,56 @@
     "switchLabel": {
       "es": "Dejar que use la IA de texto",
       "en": "Let it use the text AI"
+    }
+  },
+  "kinoIdentity": {
+    "$comment": "apiVersion 15, capability \"identity\" (Kino Social), declarative (no export), never on its own, not enhanceable (the plugin declares apiVersion 15 itself). kino.identity.telegram({ challenge? }) answers { id, token } and, with a challenge, also { deviceKey, signature, author, codeHash }; it rejects with errorCodes. id is a pseudonym of the person for THIS plugin: the first pseudonymHexChars lowercase hex characters of SHA-256 over UTF-8 pseudonymPrefix + pluginId + \"\\n\" + the Telegram account id (decimal); stable for the plugin on every install of every device of the person, different between plugins; never the Telegram id nor the username, which never reach the plugin. token is the gate token Kino's bot signed for this device (base64url(payload).base64url(Ed25519 signature)): it still names the Telegram account, so the plugin's server can verify it with the bot's public key (a per-audience token from the bot is the future fix); treat it as a credential, never log or show it. challenge (challengePattern) is the plugin server's nonce: Kino then signs, with a P-256 key of its own for this plugin on this install (non-exportable, Android Keystore, created on first use, never synced nor backed up; a reinstall makes a new one), the UTF-8 bytes signaturePrefix + pluginId + \"\\n\" + challenge + \"\\n\" + author + \"\\n\" + codeHash (SHA256withECDSA, DER): deviceKey is the public key (X.509 SubjectPublicKeyInfo DER) and signature the signature, both base64url without padding. author is the fingerprint of the author key Kino verified and pinned at install for a signed plugin (manifest.signature: the first 8 bytes of SHA-256 of the Ed25519 public key, upper-case hex in four groups of four joined by \"-\", e.g. 07DA-B67F-2ACF-B4D3), \"\" for an unsigned plugin; codeHash the lowercase hex SHA-256 of the installed entry file Kino runs (the runtime refuses a script whose bytes differ). Both come from Kino's own record of the installed plugin, never from the plugin: a server can require its own author fingerprint, so a modified copy cannot log in. Keys are per plugin, so two plugins cannot correlate the person by key. Calls: only inside a call the person started from fromFunctions (a screen's open and events, a panel's action), never a screen timer's tick, a job (forbidden there), Home, search, play or sync; perMinute per plugin (rate_limited). permission_denied: not approved, switched off, the plugin disabled, the owner's switch, the wrong origin. not_available: this device holds no token, or one issued before the bot signed the account (it must validate again), or the key could not sign. bad_request: options not an object, an unknown key, a challenge that is not challengePattern. Approval: consentLine in red at install and on the update that adds it, never auto-approved, unticked in a kit import; revocable from the plugin's tab in Ajustes (switchLabel, device-wide and synced).",
+    "capability": "identity",
+    "apiVersion": 15,
+    "featureDetect": "typeof kino.identity === \"object\"",
+    "functions": ["telegram"],
+    "answerFields": ["id", "token"],
+    "challengeFields": ["deviceKey", "signature", "author", "codeHash"],
+    "fromFunctions": ["screen", "screenEvent", "panelAction"],
+    "perMinute": 10,
+    "maxRequestChars": 512,
+    "challengePattern": "^[A-Za-z0-9_-]{16,128}$",
+    "pseudonymPrefix": "kino-identity-v1\n",
+    "pseudonymHexChars": 32,
+    "signaturePrefix": "kino-identity-v2\n",
+    "signatureAlgorithm": "SHA256withECDSA",
+    "keyCurve": "P-256",
+    "authorPattern": "^([0-9A-F]{4}(-[0-9A-F]{4}){3})?$",
+    "badRequestMessage": "kino.identity.telegram takes { challenge?: 16 to 128 letters, digits, _ or - }",
+    "errorCodes": ["permission_denied", "not_available", "rate_limited", "bad_request"],
+    "consentLine": {
+      "es": "Podrá saber tu usuario de Telegram y enviarlo a sus servicios",
+      "en": "Can know your Telegram user and send it to its services"
+    },
+    "switchLabel": {
+      "es": "Dejar que sepa mi usuario de Telegram",
+      "en": "Let it know my Telegram user"
+    }
+  },
+  "kinoNotifications": {
+    "$comment": "apiVersion 15, capability \"notifications\" (Kino Social), declarative (no export), never on its own, not enhanceable. kino.notifications.post({ id, title, titleEn?, text?, textEn?, go? }) leaves a short notice in the Home bell and kino.notifications.clear(id?) removes one (or every notice of the plugin); both resolve undefined or reject with errorCodes. id (idPattern) replaces an earlier notice with the same id, unread again. title (1 to maxTitleChars) and text (at most maxTextChars) are plain: one line, control and direction characters removed (go.copy's scrub); titleEn/textEn are shown in English. go is only { screen: { route?, args? } } (this plugin's own screen, read like a screen's go.screen), { title: { ref, kind, id?, title? } } or { titleByIds: {...} } (the screen's rules); anything else drops go (never the notice, logged) and a tap opens the plugin's screen root; a title or titleByIds go also opens the root today (the bell has no screen of the plugin's to follow it from). Calls: from fromFunctions (the screen, its events, the plugin's scheduled job, where it is on the job allow-list and counts against nothing else). Limits per plugin: perHour posts in any hour (rate_limited), maxKept notices kept (the oldest dropped), keepDays days. The bell's badge counts the unread notices plus the plugin updates waiting for approval; the bell lists them newest first with the plugin's icon and name, the title, the text and how long ago; a tap follows go and marks it read; opening the list marks all read. An 18+ plugin's notices show only while 18+ is unlocked. Not synced: each device keeps its own notices (each device's job fetches its own; the plugin's server holds what was read). Approval: consentLine as a plain line (not red) at install and on the update that adds it; revocable from the plugin's tab in Ajustes (switchLabel, device-wide and synced): its notices leave the bell and every call rejects with permission_denied. The kit keeps what was posted in <folder>/.kino-notices.json: node sdk/run.mjs <folder> notifications.",
+    "capability": "notifications",
+    "apiVersion": 15,
+    "featureDetect": "typeof kino.notifications === \"object\"",
+    "functions": ["post", "clear"],
+    "fields": ["id", "title", "titleEn", "text", "textEn", "go"],
+    "goKeys": ["screen", "title", "titleByIds"],
+    "fromFunctions": ["screen", "screenEvent", "job"],
+    "idPattern": "^[A-Za-z0-9._-]{1,64}$",
+    "limits": { "maxTitleChars": 80, "maxTextChars": 160, "perHour": 20, "maxKept": 30, "keepDays": 30, "maxRequestChars": 8192 },
+    "errorCodes": ["permission_denied", "rate_limited", "bad_request"],
+    "consentLine": {
+      "es": "Podrá mostrarte avisos en la campanita",
+      "en": "Can show you notices in the bell"
+    },
+    "switchLabel": {
+      "es": "Mostrar sus avisos en la campanita",
+      "en": "Show its notices in the bell"
     }
   },
   "kinoShared": {

@@ -88,6 +88,16 @@
 //   KINO_AI_REPLY=<text>            the reply every ask gets (else a canned sentence, or "{}" when json: true is asked)
 //   KINO_AI_ERROR=<code>            every ask fails with that code (unavailable, rate_limited, too_large, timeout, refused)
 //   KINO_AI_REVOKED=1               the person switched it off: every ask is refused
+// kino.identity.telegram (apiVersion 15, capability "identity", contract.kinoIdentity) answers a fake Telegram account with the
+//   app's gates (only inside screen / screenEvent / panelAction, never a tick or a job): { id (a per-plugin pseudonym), token },
+//   and with { challenge } also deviceKey, author, codeHash (SHA-256 of the entry the kit runs) and signature (a per-plugin P-256 key):
+//   KINO_IDENTITY_TG=<id>|none      the account (default 1000001); none: not_available
+//   KINO_IDENTITY_TOKEN=<token>     the gate token handed over (default a fake one)
+//   KINO_IDENTITY_AUTHOR=<XXXX-...> the author fingerprint attested (default "": unsigned)
+//   KINO_IDENTITY_REVOKED=1         the person switched it off: permission_denied
+// kino.notifications.post / clear (apiVersion 15, capability "notifications", contract.kinoNotifications) keep what the plugin
+//   posts (from screen, screenEvent or its job) in <folder>/.kino-notices.json with the app's limits; print it with
+//   node sdk/run.mjs <folder> notifications       KINO_NOTIFICATIONS_REVOKED=1: the person switched them off
 // kino.shared (apiVersion 14, capability "shared", contract.kinoShared) is simulated on two devices, "phone" and "tv", kept in
 //   .kino-shared.json next to kino-plugin.json: a run uses the --device one (default phone) and, when it ends, the two sync (what
 //   is due: a key travels at most once a minute). So `job --device phone` then `screen --device tv` shows what the TV reads.
@@ -318,6 +328,7 @@ async function main() {
   if (fn === "read" || fn === "image") return bytesCommand(fn, targetArg, rest, opts);
   if (fn === contract.kinoJobs.export) return jobCommand(targetArg, rest, opts);
   if (fn === "shared") return sharedCommand(targetArg);
+  if (fn === "notifications") return notificationsCommand(targetArg);
   if (!targetArg || !(FUNCTIONS.includes(fn) || SETTINGS_FUNCTIONS.includes(fn) || PANEL_FUNCTIONS.includes(fn) || SCREEN_FUNCTIONS.includes(fn) || fn === "sign" || fn === "theme" || Object.values(LIVE).includes(fn))) return fail(USAGE);
   if (opts.record && opts.replay) return fail("--record and --replay can't be used together");
   const target = resolve(targetArg);
@@ -369,6 +380,10 @@ async function main() {
     replay: opts.replay && resolve(opts.replay),
     device: opts.device,
     callFunction: fn,
+    // kino.identity (apiVersion 15): the codeHash it attests is the SHA-256 of the entry the kit runs.
+    entryFile: join(dir, manifest.entry),
+    // kino.notifications (apiVersion 15): what the plugin posts is kept next to it; `run.mjs <folder> notifications` prints it.
+    noticesFile: join(dir, ".kino-notices.json"),
   });
   const missing = (manifest.settings || []).filter((s) => s.required && (kino.config.get(s.key) === undefined || kino.config.get(s.key) === ""));
   if (missing.length && !SETTINGS_FUNCTIONS.includes(fn)) {
@@ -1119,7 +1134,7 @@ async function jobCommand(targetArg, rest, opts) {
   const sharedDevices = kitSharedDevices(dir);
   const { kino, saveTape } = createKino(manifest, {
     storageFile: join(dir, ".kino-storage.json"), cookiesFile: join(dir, ".kino-cookies.json"), secretsFile: join(dir, ".kino-secrets.json"),
-    config, record: opts.record && resolve(opts.record), replay: opts.replay && resolve(opts.replay), device: opts.device, callFunction: J.export,
+    config, record: opts.record && resolve(opts.record), replay: opts.replay && resolve(opts.replay), device: opts.device, callFunction: J.export, entryFile: join(dir, manifest.entry), noticesFile: join(dir, ".kino-notices.json"),
     shared: sharedDevices.of(kitDevice(opts)),
   });
   const budget = jobBudget();
@@ -1150,6 +1165,21 @@ function kitSharedDevices(dir) {
   const devices = createSharedDevices({ file: join(dir, ".kino-shared.json") });
   process.once("exit", () => { try { devices.sync(); devices.save(); } catch { /* the kit's own file: never fail the run */ } });
   return devices;
+}
+
+/** `notifications`: the notices this plugin left in the kit's bell, newest first (`.kino-notices.json`, apiVersion 15). */
+function notificationsCommand(targetArg) {
+  if (!targetArg) return fail(USAGE);
+  const target = resolve(targetArg);
+  let stat;
+  try { stat = statSync(target); } catch { return fail(`not found: ${targetArg}`); }
+  const dir = stat.isDirectory() ? target : dirname(target);
+  const file = join(dir, ".kino-notices.json");
+  let list = [];
+  try { list = JSON.parse(readFileSync(file, "utf8")); } catch { list = []; }
+  process.stdout.write(JSON.stringify(list, null, 2) + "\n");
+  if (!list.length) stderr("· no notices yet: run the screen or the job that posts them first");
+  return 0;
 }
 
 /** `shared`: what each simulated device holds for this plugin (values are JSON text, as Kino keeps them). */

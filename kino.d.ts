@@ -2473,6 +2473,60 @@ type KinoAiAnswer =
   | { ok: true; text: string; model: string }
   | { ok: false; error: "unavailable" | "rate_limited" | "too_large" | "timeout" | "refused"; message: string };
 
+/** A notice for the Home bell (`kino.notifications.post`, apiVersion 15). */
+interface KinoNotice {
+  /** 1 to 64 of `A-Z a-z 0-9 . _ -`; the same id replaces an earlier notice of yours, unread again. */
+  id: string;
+  /** 1 to 80 characters, plain text, one line. */
+  title: string;
+  titleEn?: string;
+  /** At most 160 characters, plain text, one line. */
+  text?: string;
+  textEn?: string;
+  /**
+   * Where a tap goes: your own screen at a route (`{ screen: { route?, args? } }`), or a title (`{ title: {...} }`,
+   * `{ titleByIds: {...} }`, which open your screen's root for now). Anything else is dropped: the tap opens your screen.
+   */
+  go?: { screen: { route?: string; args?: Record<string, unknown> } } | { title: { ref: string; kind: string; id?: string; title?: string } } | { titleByIds: KinoScreenTitleByIds };
+}
+
+/** `kino.identity.telegram(options?)` (apiVersion 15). */
+interface KinoIdentityOptions {
+  /** A nonce your server issued: 16 to 128 of `A-Z a-z 0-9 _ -`. With it, Kino signs and attests (see [KinoIdentity]). */
+  challenge?: string;
+}
+
+/** What `kino.identity.telegram` answers (apiVersion 15). */
+interface KinoIdentity {
+  /**
+   * A pseudonym of the person for YOUR plugin: the first 32 lowercase hex characters of SHA-256 over UTF-8
+   * `"kino-identity-v1\n" + pluginId + "\n" + telegramAccountId`. Stable for your plugin on every install and device of the
+   * person (install-independent), different for every plugin. Never the Telegram id nor the username.
+   */
+  id: string;
+  /**
+   * The gate token Kino's bot signed for this device (`base64url(payload).base64url(Ed25519 signature)`). It still carries the
+   * Telegram account, so your server can verify it with the bot's public key; a per-audience token from the bot is the
+   * planned fix. A credential: never log or show it.
+   */
+  token: string;
+  /** With a challenge: the public key (X.509 SubjectPublicKeyInfo DER, base64url without padding) of Kino's key for your plugin on this install. */
+  deviceKey?: string;
+  /**
+   * With a challenge: SHA256withECDSA (DER, base64url without padding) over UTF-8
+   * `"kino-identity-v2\n" + pluginId + "\n" + challenge + "\n" + author + "\n" + codeHash`.
+   */
+  signature?: string;
+  /**
+   * With a challenge: the fingerprint of the author key Kino verified and pinned at install (`XXXX-XXXX-XXXX-XXXX`, upper-case
+   * hex), `""` for an unsigned plugin. From Kino's record, never your code: your server can require its own fingerprint so a
+   * modified copy cannot log in.
+   */
+  author?: string;
+  /** With a challenge: lowercase hex SHA-256 of the installed entry file Kino runs. */
+  codeHash?: string;
+}
+
 /**
  * apiVersion 14, capability `"library"`: one title the person watched or saved, as `kino.library` gives it (contract.json
  * `kinoLibrary`). Nothing else ever comes: no stream, no plugin ref, no Kino id, no profile.
@@ -2489,6 +2543,13 @@ interface KinoLibraryEntry {
   progress?: number;
   /** `watched` only: when it was last played, rounded down to the day (UTC midnight, ms since the epoch). */
   watchedAtMs?: number;
+  /**
+   * `watched` series only (contract.json `additiveFromApp["kino.library.episode"]`): the season of the latest chapter played,
+   * only when its source numbered it. Absent on a movie and on an older Kino: feature-detect by its presence.
+   */
+  season?: number;
+  /** `watched` series only: the number of the latest chapter played (with [season]), only when its source numbered it. */
+  episode?: number;
 }
 
 /** `kino.library.watched`'s options: `limit` 1..100 (default 50; above 100 gives 100), `kind` filters, `sinceMs` keeps titles played on that day (UTC) or later: it is rounded down to the day, like `watchedAtMs`. A number that is not finite is `bad_request`. */
@@ -2874,6 +2935,31 @@ declare namespace kino {
    */
   namespace ai {
     function ask(options: KinoAiAskOptions): Promise<KinoAiAnswer>;
+  }
+
+  /**
+   * apiVersion 15, capability "identity" (a red consent line, approved by the person, revocable in Ajustes): who the person is,
+   * for your server, without a login. Only inside a call the person started from `screen`, `screenEvent` or `panelAction`
+   * (never a timer tick, a job, Home or search), 10 a minute. Rejects with a KinoError whose `code` is `permission_denied`,
+   * `not_available` (this device has no validation with the Telegram account), `rate_limited` or `bad_request`. Present on every
+   * apiVersion 15 runtime: feature-detect with `typeof kino.identity === "object"` (the Node kit answers a fake account:
+   * `KINO_IDENTITY_TG`, `KINO_IDENTITY_TOKEN`, `KINO_IDENTITY_AUTHOR`, `KINO_IDENTITY_REVOKED=1`).
+   */
+  namespace identity {
+    function telegram(options?: KinoIdentityOptions): Promise<KinoIdentity>;
+  }
+
+  /**
+   * apiVersion 15, capability "notifications" (a plain consent line, approved by the person, revocable in Ajustes): short notices
+   * in the Home bell, from your `screen`, `screenEvent` or scheduled `job`. 20 posts an hour, 30 kept, 30 days; the same `id`
+   * replaces a notice (unread again). Rejects with a KinoError whose `code` is `permission_denied`, `rate_limited` or
+   * `bad_request`. Not synced: each device keeps its own. Feature-detect with `typeof kino.notifications === "object"`; the kit
+   * keeps them in `<folder>/.kino-notices.json` (`node sdk/run.mjs <folder> notifications`).
+   */
+  namespace notifications {
+    function post(notice: KinoNotice): Promise<void>;
+    /** One notice of yours by id, or all of them. */
+    function clear(id?: string): Promise<void>;
   }
 
   /**
