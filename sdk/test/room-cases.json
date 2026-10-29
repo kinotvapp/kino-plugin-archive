@@ -1,0 +1,53 @@
+{
+  "$comment": "Task 8l: kino.room's shared cases, run by the app (PluginRoomTest.kitParityWithTheSharedCases) and the kit (test/kino-room.test.mjs). payloads: the plugin's JSON text, {x} replaced by repeat x times; ok is whether Kino accepts it as a payload. names: a display name as Kino keeps it. codes: a typed room code as Kino reads it (null: refused).",
+  "payloads": [
+    { "name": "exactly 8192 bytes", "text": "{\"t\":\"{x}\"}", "repeat": "x", "times": 8184, "ok": true },
+    { "name": "8193 bytes", "text": "{\"t\":\"{x}\"}", "repeat": "x", "times": 8185, "ok": false },
+    { "name": "8192 bytes of two-byte letters", "text": "{\"t\":\"{x}\"}", "repeat": "ñ", "times": 4092, "ok": true },
+    { "name": "8194 bytes, fewer characters", "text": "{\"t\":\"{x}\"}", "repeat": "ñ", "times": 4093, "ok": false },
+    { "name": "empty object", "text": "{}", "ok": true },
+    { "name": "four levels", "text": "{\"a\":{\"b\":{\"c\":[1]}}}", "ok": true },
+    { "name": "five levels", "text": "{\"a\":{\"b\":{\"c\":[[1]]}}}", "ok": false },
+    { "name": "an array", "text": "[1,2]", "ok": false },
+    { "name": "a string", "text": "\"x\"", "ok": false },
+    { "name": "a number", "text": "5", "ok": false },
+    { "name": "null", "text": "null", "ok": false },
+    { "name": "two objects", "text": "{\"a\":1} {\"b\":2}", "ok": false },
+    { "name": "trailing spaces", "text": "{\"a\":1}  ", "ok": true },
+    { "name": "not JSON", "text": "not json", "ok": false },
+    { "name": "a depth bomb, refused before any parse", "text": "{\"a\":{x}{y}}", "repeat": "[", "times": 4000, "repeat2": "]", "times2": 4000, "ok": false },
+    { "name": "brackets inside a string are not depth", "text": "{\"a\":\"{x}\"}", "repeat": "[", "times": 100, "ok": true },
+    { "name": "an escaped quote does not end the string", "text": "{\"a\":\"\\\"[[[[[\"}", "ok": true },
+    { "name": "lenient: a quote in a single-quoted string hides 300 brackets (review N1 bypass)", "text": "{k:'\"',d:{x}{y}}", "repeat": "[", "times": 300, "repeat2": "]", "times2": 300, "ok": false },
+    { "name": "lenient: a quote in a comment", "text": "{\"a\":1/*\"*/,\"d\":{x}{y}}", "repeat": "[", "times": 300, "repeat2": "]", "times2": 300, "ok": false },
+    { "name": "lenient: a quote after a hash comment", "text": "{\"a\":1#\"\n,\"d\":{x}{y}}", "repeat": "[", "times": 300, "repeat2": "]", "times2": 300, "ok": false },
+    { "name": "lenient but shallow: single quotes alone", "text": "{'a':1}", "ok": false },
+    { "name": "strict with every literal and number form", "text": "{\"a\":[true,false,null,-1.5e+3,0,2E-2]}", "ok": true }
+  ],
+  "names": [
+    { "in": "  Ana  ", "max": 24, "out": "Ana" },
+    { "in": "\u202Eevil\u0007 x", "max": 24, "out": "evil x" },
+    { "in": "a\u200Bb", "max": 24, "out": "ab" },
+    { "in": "a   b\n\tc", "max": 24, "out": "a b c" },
+    { "in": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "max": 24, "out": "xxxxxxxxxxxxxxxxxxxxxxxx" },
+    { "in": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀", "max": 24, "out": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀" },
+    { "in": "the very long display name indeed", "max": 24, "out": "the very long display na" },
+    { "in": "ends with a space here x", "max": 19, "out": "ends with a space h" },
+    { "in": "word word", "max": 5, "out": "word" },
+    { "in": "\u0000", "max": 24, "out": "" }
+  ],
+  "codes": [
+    { "in": "123456789012", "out": "123456789012" },
+    { "in": "1234 5678 9012", "out": "123456789012" },
+    { "in": "1234-5678-9012", "out": "123456789012" },
+    { "in": "12345678901", "out": "12345678901" },
+    { "in": "1234", "out": "1234" },
+    { "in": "12 34", "out": "1234" },
+    { "in": "123456", "out": "123456" },
+    { "in": "123", "out": null },
+    { "in": "1234567890123", "out": null },
+    { "in": "12345678901a", "out": null },
+    { "in": "１２３４５６７８９０１２", "out": null },
+    { "in": "", "out": null }
+  ]
+}

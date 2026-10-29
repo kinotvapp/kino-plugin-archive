@@ -42,15 +42,11 @@ async function code(promise) {
   return "no error";
 }
 
-// These tests read files of the Kino repo itself (docs/plugins/, plugins/archive-org, its .gitignore). A template does
-// not carry them, so they are skipped here and run in the Kino repo.
-const NEEDS_KINO_REPO = "needs files of the Kino repo that this template does not have";
-
-test("contract: kino.meta and kino.tmdb are additive (no new apiVersion) and pinned", { skip: NEEDS_KINO_REPO }, () => {
+test("contract: kino.meta and kino.tmdb are additive (no new apiVersion) and pinned", () => {
   // apiVersion 9 (Kino 0.9.55) brought kino.meta by title among others; kino.meta and kino.tmdb themselves add none.
-  assert.equal(contract.apiVersion, 11);
-  assert.deepEqual(contract.apiVersionFromApp, { "6": "0.9.50", "7": "0.9.51", "8": "0.9.54", "9": "0.9.55", "10": "0.9.65", "11": "0.9.66" });
-  assert.deepEqual(contract.additiveFromApp, { "kino.meta": "0.9.53", "kino.tmdb": "0.9.53", catalogOnly: "0.9.54", "kino.browser.captureAll": "0.9.54", "fetch.errorHost": "0.9.55", "kino.fetchAnyHost": "0.9.55", "kino.meta.byTitle": "0.9.55", "kino.device": "0.9.55", "kino.seed": "0.9.55" });
+  assert.equal(contract.apiVersion, 14);
+  assert.deepEqual(contract.apiVersionFromApp, { "6": "0.9.50", "7": "0.9.51", "8": "0.9.54", "9": "0.9.55", "10": "0.9.65", "11": "0.9.66", "12": "0.9.74", "13": "0.9.74", "14": "0.9.74" });
+  assert.deepEqual(contract.additiveFromApp, { "kino.meta": "0.9.53", "kino.tmdb": "0.9.53", catalogOnly: "0.9.54", "kino.browser.captureAll": "0.9.54", "fetch.errorHost": "0.9.55", "kino.fetchAnyHost": "0.9.55", "kino.meta.byTitle": "0.9.55", "kino.device": "0.9.55", "kino.seed": "0.9.55", "panel.loading": "0.9.64", "kino.nuvio": "0.9.71", "kino.sync.remoteChanged": "0.9.74", "action.link": "0.9.74", "action.setSettings": "0.9.74" });
   assert.deepEqual(contract.kinoMeta.idKeys, ["imdb", "tmdb", "tvdb", "kitsu", "mal", "anilist"]);
   assert.equal(contract.kinoMeta.perMinute, 30);
   assert.equal(contract.kinoTmdb.perWindow, 40);
@@ -60,8 +56,8 @@ test("contract: kino.meta and kino.tmdb are additive (no new apiVersion) and pin
   assert.deepEqual(contract.kinoTmdb.personKeyOn, [401, 403, 429, "kinoKeyLimit"]);
   assert.equal(contract.kinoTmdb.windowMs, 10000);
   assert.ok(contract.kinoTmdb.errorCodes.includes("no_tmdb_key"));
-  assert.equal(contract.kinoTmdb.noKeyUserMessage.es, "Agrega tu llave de TMDB en Ajustes ▸ Tu llave de TMDB");
-  assert.equal(contract.kinoTmdb.noKeyUserMessage.en, "Add your TMDB key in Settings ▸ Your TMDB key");
+  assert.equal(contract.kinoTmdb.noKeyUserMessage.es, "Agrega tu llave de TMDB en Ajustes de todos los perfiles ▸ Llaves");
+  assert.equal(contract.kinoTmdb.noKeyUserMessage.en, "Add your TMDB key in Settings for all profiles ▸ Keys");
 });
 
 test("kino.meta: the query is checked like the app does", () => {
@@ -83,6 +79,10 @@ test("kino.meta: the query is checked like the app does", () => {
   // Unknown id keys are ignored, never an error; null/undefined ids are "not known".
   assert.deepEqual(kinoMetaRequest({ type: "movie", ids: { imdb: "tt0133093", trakt: 4, mal: null } }), { type: "movie", ids: { imdb: "tt0133093" } });
 });
+
+// These tests read files of the Kino repo itself (docs/plugins/, plugins/archive-org, its .gitignore). A template does
+// not carry them, so they are skipped here and run in the Kino repo.
+const NEEDS_KINO_REPO = "needs files of the Kino repo that this template does not have";
 
 test("kino.meta: null by default, a fixture's answer when one is given", { skip: NEEDS_KINO_REPO }, async () => {
   assert.equal(await kinoWith().meta({ type: "movie", ids: { imdb: "tt0133093" } }), null);

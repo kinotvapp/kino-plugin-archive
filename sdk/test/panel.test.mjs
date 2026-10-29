@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { requiredExports, validateManifest } from "../contract.mjs";
-import { answerOutput, checkPanelOutput, fakeContext, panelIconProblem, panelOutput, settingsLayout } from "../panel.mjs";
+import { answerOutput, checkPanelOutput, fakeContext, PANEL_EXTRA_ICONS, PANEL_ICONS, panelIconKnown, panelIconProblem, panelOutput, settingsLayout } from "../panel.mjs";
 import { validate } from "../validate.mjs";
 import { callPanel } from "../run.mjs";
 
@@ -202,6 +202,21 @@ test("manifest panel: label, labelEn, icon XOR iconFile, a safe .png, apiVersion
   assert.deepEqual(requiredExports(["search"], [], { panel: { label: "x" } }), ["search", "panel"]);
 });
 
+test("Task 8v: the larger icon set (refresh first) is known from apiVersion 14; below it a name of it draws tune", async () => {
+  assert.equal(PANEL_EXTRA_ICONS.apiVersion, 14);
+  assert.equal(PANEL_EXTRA_ICONS.names[0], "refresh");
+  assert.ok(PANEL_EXTRA_ICONS.names.every((n) => PANEL_ICONS.includes(n)));
+  assert.ok(PANEL_ICONS.length <= 50 && new Set(PANEL_ICONS).size === PANEL_ICONS.length);
+  assert.ok(PANEL_ICONS.every((n) => /^[a-z]+(_[a-z]+)*$/.test(n)), "names are lowercase snake_case");
+  for (const n of PANEL_EXTRA_ICONS.names) assert.deepEqual([panelIconKnown(n, 13), panelIconKnown(n, 14)], [false, true], n);
+  assert.deepEqual([panelIconKnown("star", 9), panelIconKnown("rocket", 14)], [true, false]);
+  const old = plugin("export async function panel(){ return {} }", { panel: { label: "Demo", icon: "refresh" } });
+  try {
+    const r = await validate(old);
+    assert.ok(r.notes.includes('panel.icon "refresh" needs apiVersion 14: at apiVersion 9 Kino draws "tune"'), r.notes.join("\n"));
+  } finally { rmSync(old, { recursive: true, force: true }); }
+});
+
 test("panelAction gets (event, context): the event's key, trigger, values and value, the context after it", () => {
   const dir = plugin(`export async function panelAction(...args){ const [e, c] = args; return { values: { n: args.length, key: e.key, trigger: e.trigger, hasValue: "value" in e, value: e.value === undefined ? null : e.value, vals: JSON.stringify(e.values), ref: c.ref, tab: c.tab || "" } } }`);
   try {
@@ -389,7 +404,7 @@ test("answer fields: patch, values, save, focus, message", () => {
     'panel: values "a" longer than 500, dropped', 'panel: values "e" is not a string, boolean, number or null, dropped', "panel: values key is not a valid key, dropped",
     "panel: save #2 is not a valid key, dropped", "panel: save #3 is not a valid key, dropped",
   ]);
-  assert.deepEqual(answer(null).a, { panel: null, patch: {}, values: {}, save: [], focus: null, message: null, player: null });
+  assert.deepEqual(answer(null).a, { panel: null, patch: {}, values: {}, save: [], focus: null, message: null, player: null, go: null, pause: false });
   assert.deepEqual(answer("x").drops, ["panel: the action answer is not a JSON object"]);
   assert.deepEqual(answer({ panel: 3, patch: 1, values: [], save: "s", focus: "no good", message: 9 }).drops, [
     "panel: answer.panel is not an object, dropped", "panel: patch is not an object, dropped", "panel: values is not an object, dropped",
@@ -443,4 +458,70 @@ test("playerEvent answers relabel the gate's lines as playerEvent:, and a patch 
   } finally { rmSync(dir, { recursive: true, force: true }); }
   const t = (k) => ({ type: "text", text: k });
   assert.deepEqual(Object.keys(answer({ patch: { zeta: t("z"), alpha: t("a"), mid: t("m") } }).a.patch), ["zeta", "alpha", "mid"]);
+});
+
+test("panel go.screen (Task 7g): an answer and a button open this plugin's own screen, nothing else", () => {
+  const ok = answer({ go: { screen: { route: "news", args: { id: "7" } } }, pause: true });
+  assert.deepEqual(ok.a.go, { route: "news", args: { id: "7" } });
+  assert.equal(ok.a.pause, true);
+  assert.deepEqual(ok.drops, []);
+  assert.equal(answer({ go: { screen: {} } }).a.pause, false);
+  const bad = answer({ go: { title: { ref: "r", kind: "movie" } } });
+  assert.equal(bad.a.go, null);
+  assert.deepEqual(bad.drops, ["panel: answer go must be {screen: {route, args}} or {titleByIds: {...}} or {url: {href, title}} or {copy: {text, label}}, dropped"]);
+  const badRoute = answer({ go: { screen: { route: "https://x.example.com" } } });
+  assert.deepEqual(badRoute.drops, ["panel: answer go.screen route must be 1 to 64 letters, digits or . _ ~ -, dropped"]);
+  const p = check({ title: "P", elements: [
+    { type: "button", key: "open", label: "Abrir", go: { screen: { route: "tabs" } }, pause: true },
+    { type: "button", key: "plain", label: "Otro", pause: true },
+    { type: "button", key: "bad", label: "Malo", go: { url: "https://x.example.com" } },
+  ] });
+  const buttons = p.panel.elements.map((n) => n.leaf);
+  assert.deepEqual(buttons[0], { type: "button", key: "open", label: "Abrir", go: { route: "tabs" }, pause: true });
+  assert.deepEqual(buttons[1], { type: "button", key: "plain", label: "Otro" });
+  assert.deepEqual(buttons[2], { type: "button", key: "bad", label: "Malo" });
+  assert.deepEqual(p.drops, ['panel: button "bad" go must be {screen: {route, args}}, dropped']);
+});
+
+test("panel go.titleByIds (Task 8m): an answer opens Kino's own title page by ids, a ref or a bad id drops it", () => {
+  const ok = answer({ go: { titleByIds: { tmdb: 603, kind: "movie", title: " Matrix " } } });
+  assert.equal(ok.a.go, null);
+  assert.deepEqual(ok.a.titleByIds, { kind: "movie", tmdb: 603, title: "Matrix" });
+  assert.deepEqual(ok.drops, []);
+  const ref = answer({ go: { titleByIds: { tmdb: 603, kind: "movie", ref: "x" } } });
+  assert.equal(ref.a.titleByIds, null);
+  assert.deepEqual(ref.drops, ["panel: answer go.titleByIds takes only tmdb, imdb, kind, season, episode, title, year, dropped"]);
+  const noIds = answer({ go: { titleByIds: { kind: "series" } } });
+  assert.deepEqual(noIds.drops, ["panel: answer go.titleByIds needs tmdb or imdb, dropped"]);
+  // A button never carries it (a button's go is its own screen only).
+  const p = check({ title: "P", elements: [{ type: "button", key: "ids", label: "Abrir", go: { titleByIds: { tmdb: 603, kind: "movie" } } }] });
+  assert.deepEqual(p.drops, ['panel: button "ids" go must be {screen: {route, args}}, dropped']);
+});
+
+test("panel go.url (Task 8s): an answer asks Kino to open a link, a bad href drops it, a button never carries it", () => {
+  const ok = answer({ go: { url: { href: "HTTPS://News.Example.com/n/1?a=b", title: " Ver noticia " } } });
+  assert.equal(ok.a.go, null);
+  assert.equal(ok.a.titleByIds, null);
+  assert.deepEqual(ok.a.url, { href: "https://news.example.com/n/1?a=b", title: "Ver noticia" });
+  assert.deepEqual(ok.drops, []);
+  const http = answer({ go: { url: { href: "http://news.example.com/" } } });
+  assert.equal(http.a.url, null);
+  assert.deepEqual(http.drops, ["panel: answer go.url href must be an https address, dropped"]);
+  const secret = answer({ go: { url: { href: "https://me:s3cret@news.example.com/private?token=abc" } } });
+  assert.deepEqual(secret.drops, ["panel: answer go.url href must not carry a user name or password, dropped"]);
+  assert.ok(!secret.drops.join(" ").includes("s3cret") && !secret.drops.join(" ").includes("token"));
+  const p = check({ title: "P", elements: [{ type: "button", key: "u", label: "Abrir", go: { url: { href: "https://news.example.com/" } } }] });
+  assert.deepEqual(p.drops, ['panel: button "u" go must be {screen: {route, args}}, dropped']);
+});
+
+test("panel go.copy (Task 8x): an answer asks Kino to copy a text, a bad one drops it, a button never carries it", () => {
+  const ok = answer({ go: { copy: { text: " Sala: luna\n4821 ", label: "Invitación", sensitive: true } } });
+  assert.equal(ok.a.go, null);
+  assert.deepEqual(ok.a.copy, { text: "Sala: luna\n4821", label: "Invitación", sensitive: true });
+  assert.deepEqual(ok.drops, []);
+  const empty = answer({ go: { copy: { text: "" } } });
+  assert.equal(empty.a.copy, null);
+  assert.deepEqual(empty.drops, ["panel: answer go.copy text must be 1 to 500 characters, dropped"]);
+  const p = check({ title: "P", elements: [{ type: "button", key: "c", label: "Copiar", go: { copy: { text: "x" } } }] });
+  assert.deepEqual(p.drops, ['panel: button "c" go must be {screen: {route, args}}, dropped']);
 });

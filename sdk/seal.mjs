@@ -24,8 +24,9 @@
 // for a real, published plugin.
 import { createCipheriv, createHash, createPrivateKey, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, sign as cryptoSign, verify as cryptoVerify } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { contract } from "./contract.mjs";
 
 /** Kino's v1 production public key (spec §3); the private half lives only in the app's native library. */
@@ -263,9 +264,15 @@ export async function readValue() {
   return readHiddenPrompt("Secret value (hidden, not echoed): ");
 }
 
+/** A path as the shell would give it: a leading `~` is the home folder (cmd and PowerShell leave it as typed, Git Bash expands it). */
+export function expandHome(path, home = homedir()) {
+  if (typeof path !== "string") return path;
+  return path === "~" ? home : path.startsWith("~/") || path.startsWith(`~${sep}`) ? join(home, path.slice(2)) : path;
+}
+
 async function main(argv) {
   const opt = (name) => { const i = argv.indexOf(name); return i === -1 ? undefined : argv[i + 1]; };
-  if (argv.includes("--keygen")) return keygen(opt("--key") || "kino-author-key.pem");
+  if (argv.includes("--keygen")) return keygen(expandHome(opt("--key")) || "kino-author-key.pem");
   if (argv.includes("--sign")) return mainSign(opt);
   const repo = opt("--repo");
   const name = opt("--name");
@@ -335,7 +342,7 @@ function mainSign(opt) {
     const m = JSON.parse(readFileSync(manifestFile, "utf8"));
     if (!(m.apiVersion >= SIG.apiVersion)) throw new Error(`${manifestFile} needs "apiVersion": ${SIG.apiVersion} or newer to carry a signature`);
     if (typeof m.entry !== "string") throw new Error(`${manifestFile} has no "entry"`);
-    const keyFile = opt("--key") || "kino-author-key.pem";
+    const keyFile = expandHome(opt("--key")) || "kino-author-key.pem";
     if (!existsSync(keyFile)) throw new Error(`no author key at ${keyFile}: create one once with node sdk/seal.mjs --keygen --key ${keyFile}`);
     const entryFile = join(dirname(manifestFile), m.entry);
     const signature = signEntry(readFileSync(entryFile), repo, m.id, m.version, readFileSync(keyFile, "utf8"));

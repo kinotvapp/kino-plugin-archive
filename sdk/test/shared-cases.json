@@ -1,0 +1,183 @@
+{
+  "$comment": "Task 8q-2: kino.shared cases run by the app (PluginSharedTest.kitParity) and the kit (test/shared.test.mjs). values: a value's JSON text ({R} is replaced by unit repeated repeat times) and the code that refuses it (null: kept). keys: whether a key is kept. scripts: steps over two simulated devices, phone and tv, starting at the same clock; set expects synced (stored and sent now), held (stored, sent when its key may travel again), unchanged, or an error code; sync sends from's snapshot to to (only what is newer there); flush sends what is held and due.",
+  "values": [
+    { "name": "number", "text": "1", "refused": null },
+    { "name": "string", "text": "\"x\"", "refused": null },
+    { "name": "object", "text": "{\"stories\":[{\"id\":1,\"t\":\"a\"}],\"fetchedAt\":5}", "refused": null },
+    { "name": "exponent", "text": "-1.5e3", "refused": null },
+    { "name": "true", "text": "true", "refused": null },
+    { "name": "null is a removal, not a value", "text": "null", "refused": "bad_request" },
+    { "name": "unquoted key", "text": "{a:1}", "refused": "bad_request" },
+    { "name": "single quotes", "text": "'x'", "refused": "bad_request" },
+    { "name": "bare word", "text": "abc", "refused": "bad_request" },
+    { "name": "two values", "text": "1 2", "refused": "bad_request" },
+    { "name": "trailing text", "text": "{\"a\":1}x", "refused": "bad_request" },
+    { "name": "empty", "text": "", "refused": "bad_request" },
+    { "name": "comment", "text": "/*c*/1", "refused": "bad_request" },
+    { "name": "NaN", "text": "{\"a\":NaN}", "refused": "bad_request" },
+    { "name": "16 levels", "text": "[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]", "refused": null },
+    { "name": "17 levels", "text": "[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]", "refused": "bad_request" },
+    { "name": "depth bomb", "text": "{R}", "unit": "[", "repeat": 50000, "refused": "bad_request" },
+    { "name": "64 KB exactly", "text": "\"{R}\"", "unit": "a", "repeat": 65534, "refused": null },
+    { "name": "one byte over", "text": "\"{R}\"", "unit": "a", "repeat": 65535, "refused": "too_large" },
+    { "name": "two-byte characters count twice", "text": "\"{R}\"", "unit": "é", "repeat": 32768, "refused": "too_large" },
+    {"name": "leading zero", "text": "[01]", "refused": "bad_request"},
+    {"name": "bare e", "text": "[e]", "refused": "bad_request"},
+    {"name": "bare minus", "text": "[-]", "refused": "bad_request"},
+    {"name": "trailing comma", "text": "[1,]", "refused": "bad_request"},
+    {"name": "leading comma", "text": "[,1]", "refused": "bad_request"},
+    {"name": "double comma", "text": "[1,,2]", "refused": "bad_request"},
+    {"name": "lone dot", "text": "[.5]", "refused": "bad_request"},
+    {"name": "plus sign", "text": "[+1]", "refused": "bad_request"},
+    {"name": "empty exponent", "text": "[1e]", "refused": "bad_request"},
+    {"name": "double minus", "text": "[--1]", "refused": "bad_request"},
+    {"name": "dot without digits", "text": "[1.]", "refused": "bad_request"},
+    {"name": "object trailing comma", "text": "{\"a\":1,}", "refused": "bad_request"},
+    {"name": "bad escape", "text": "\"\\x\"", "refused": "bad_request"},
+    {"name": "short unicode escape", "text": "\"\\u12\"", "refused": "bad_request"},
+    {"name": "raw control character", "text": "\"a\u0001b\"", "refused": "bad_request"},
+    {"name": "escapes", "text": "\"a\\n\\u00e9\\\\\"", "refused": null},
+    {"name": "zero", "text": "0", "refused": null},
+    {"name": "negative fraction exponent", "text": "-0.5E+3", "refused": null},
+    {"name": "nested", "text": "{\"a\":[1,{\"b\":[]}],\"c\":\"x\"}", "refused": null}
+  ],
+  "keys": [
+    { "key": "cache", "ok": true },
+    { "key": "categories.v2", "ok": true },
+    { "key": "last_run-1", "ok": true },
+    { "key": "", "ok": false },
+    { "key": "a b", "ok": false },
+    { "key": "ñ", "ok": false },
+    { "key": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "ok": false },
+    { "key": "token", "ok": false },
+    { "key": "authToken", "ok": false },
+    { "key": "API_KEY", "ok": false },
+    { "key": "userPassword", "ok": false },
+    { "key": "sessionId", "ok": false },
+    { "key": "cookieJar", "ok": false },
+    { "key": "clientSecret", "ok": false },
+    { "key": "credentials", "ok": false },
+    { "key": "author", "ok": true },
+    { "key": "authors", "ok": true },
+    { "key": "tokenizer", "ok": true },
+    { "key": "sessions", "ok": false },
+    { "key": "tokens", "ok": false },
+    { "key": "APIKey", "ok": false },
+    { "key": "my-api-key", "ok": false },
+    { "key": "passwordHash", "ok": false },
+    { "key": "pwd2", "ok": false }
+  ],
+  "scripts": [
+    {
+      "name": "the phone writes, the tv reads, and back",
+      "steps": [
+        { "op": "set", "device": "phone", "key": "cache", "value": "[1]", "expect": "synced" },
+        { "op": "get", "device": "tv", "key": "cache", "expect": null },
+        { "op": "sync", "from": "phone", "to": "tv" },
+        { "op": "get", "device": "tv", "key": "cache", "expect": "[1]" },
+        { "op": "wait", "ms": 61000 },
+        { "op": "set", "device": "tv", "key": "cache", "value": "[2]", "expect": "synced" },
+        { "op": "sync", "from": "tv", "to": "phone" },
+        { "op": "get", "device": "phone", "key": "cache", "expect": "[2]" },
+        { "op": "get", "device": "phone", "plugin": "other", "key": "cache", "expect": null }
+      ]
+    },
+    {
+      "name": "an unchanged write is skipped",
+      "steps": [
+        { "op": "set", "device": "phone", "key": "cache", "value": "[1]", "expect": "synced" },
+        { "op": "set", "device": "phone", "key": "cache", "value": "[1]", "expect": "unchanged" },
+        { "op": "set", "device": "phone", "key": "nothing", "value": null, "expect": "unchanged" }
+      ]
+    },
+    {
+      "name": "a key travels at most once a minute, the newest value",
+      "steps": [
+        { "op": "set", "device": "phone", "key": "cache", "value": "1", "expect": "synced" },
+        { "op": "wait", "ms": 10000 },
+        { "op": "set", "device": "phone", "key": "cache", "value": "2", "expect": "held" },
+        { "op": "set", "device": "phone", "key": "cache", "value": "3", "expect": "held" },
+        { "op": "get", "device": "phone", "key": "cache", "expect": "3" },
+        { "op": "sync", "from": "phone", "to": "tv" },
+        { "op": "get", "device": "tv", "key": "cache", "expect": "1" },
+        { "op": "set", "device": "phone", "key": "other", "value": "1", "expect": "synced" },
+        { "op": "wait", "ms": 40000 },
+        { "op": "flush", "device": "phone" },
+        { "op": "sync", "from": "phone", "to": "tv" },
+        { "op": "get", "device": "tv", "key": "cache", "expect": "1" },
+        { "op": "wait", "ms": 10000 },
+        { "op": "flush", "device": "phone" },
+        { "op": "sync", "from": "phone", "to": "tv" },
+        { "op": "get", "device": "tv", "key": "cache", "expect": "3" }
+      ]
+    },
+    {
+      "name": "last writer wins by Kino's clock",
+      "steps": [
+        { "op": "set", "device": "phone", "key": "cache", "value": "\"phone\"", "expect": "synced" },
+        { "op": "wait", "ms": 5 },
+        { "op": "set", "device": "tv", "key": "cache", "value": "\"tv\"", "expect": "synced" },
+        { "op": "sync", "from": "phone", "to": "tv" },
+        { "op": "sync", "from": "tv", "to": "phone" },
+        { "op": "get", "device": "phone", "key": "cache", "expect": "\"tv\"" },
+        { "op": "get", "device": "tv", "key": "cache", "expect": "\"tv\"" }
+      ]
+    },
+    {
+      "name": "caps: four keys, 128 KB a plugin, a refused write changes nothing",
+      "steps": [
+        { "op": "set", "device": "phone", "key": "k1", "value": "1", "expect": "synced" },
+        { "op": "set", "device": "phone", "key": "k2", "value": "2", "expect": "synced" },
+        { "op": "set", "device": "phone", "key": "k3", "value": "3", "expect": "synced" },
+        { "op": "set", "device": "phone", "key": "k4", "value": "4", "expect": "synced" },
+        { "op": "set", "device": "phone", "key": "k5", "value": "5", "expect": "too_large" },
+        { "op": "get", "device": "phone", "key": "k5", "expect": null },
+        { "op": "set", "device": "phone", "key": "k1", "value": null, "expect": "held" },
+        { "op": "set", "device": "phone", "key": "k5", "value": "5", "expect": "held" },
+        { "op": "set", "device": "phone", "key": "token", "value": "1", "expect": "bad_request" },
+        { "op": "set", "device": "phone", "key": "k2", "value": "{a:1}", "expect": "bad_request" }
+      ]
+    },
+    {
+      "name": "renaming keys gains nothing: at most four of a plugin's keys travel a minute",
+      "steps": [
+        { "op": "set", "device": "phone", "key": "a", "value": "1", "expect": "synced" },
+        { "op": "set", "device": "phone", "key": "a", "value": null, "expect": "held" },
+        { "op": "set", "device": "phone", "key": "b", "value": "1", "expect": "synced" },
+        { "op": "set", "device": "phone", "key": "b", "value": null, "expect": "held" },
+        { "op": "set", "device": "phone", "key": "c", "value": "1", "expect": "synced" },
+        { "op": "set", "device": "phone", "key": "c", "value": null, "expect": "held" },
+        { "op": "set", "device": "phone", "key": "d", "value": "1", "expect": "synced" },
+        { "op": "set", "device": "phone", "key": "d", "value": null, "expect": "held" },
+        { "op": "set", "device": "phone", "key": "e", "value": "1", "expect": "held" },
+        { "op": "set", "device": "phone", "plugin": "other", "key": "a", "value": "1", "expect": "synced" },
+        { "op": "sync", "from": "phone", "to": "tv" },
+        { "op": "get", "device": "tv", "key": "e", "expect": null },
+        { "op": "get", "device": "tv", "key": "a", "expect": "1" },
+        { "op": "wait", "ms": 60000 },
+        { "op": "flush", "device": "phone" },
+        { "op": "sync", "from": "phone", "to": "tv" },
+        { "op": "get", "device": "tv", "key": "a", "expect": null },
+        { "op": "get", "device": "tv", "key": "e", "expect": "1" },
+        { "op": "get", "device": "tv", "key": "d", "expect": "1" },
+        { "op": "wait", "ms": 60000 },
+        { "op": "flush", "device": "phone" },
+        { "op": "sync", "from": "phone", "to": "tv" },
+        { "op": "get", "device": "tv", "key": "d", "expect": null }
+      ]
+    },
+    {
+      "name": "removed with the plugin, on every device",
+      "steps": [
+        { "op": "set", "device": "phone", "key": "a", "value": "1", "expect": "synced" },
+        { "op": "set", "device": "phone", "plugin": "other", "key": "a", "value": "2", "expect": "synced" },
+        { "op": "sync", "from": "phone", "to": "tv" },
+        { "op": "wait", "ms": 1000 },
+        { "op": "forget", "device": "phone" },
+        { "op": "sync", "from": "phone", "to": "tv" },
+        { "op": "get", "device": "tv", "key": "a", "expect": null },
+        { "op": "get", "device": "tv", "plugin": "other", "key": "a", "expect": "2" }
+      ]
+    }
+  ]
+}

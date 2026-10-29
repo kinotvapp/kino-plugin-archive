@@ -1,0 +1,10 @@
+{
+  "id": "screen-demo",
+  "name": "Screen demo",
+  "version": "1.0.0",
+  "apiVersion": 14,
+  "entry": "plugin.js",
+  "hosts": ["example.com"],
+  "capabilities": ["screen"],
+  "screen": { "label": "Noticias", "labelEn": "News", "icon": "list" }
+}

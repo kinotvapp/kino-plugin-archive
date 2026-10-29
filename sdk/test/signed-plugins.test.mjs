@@ -28,10 +28,6 @@ function signedPlugin({ source = SOURCE, key = generateAuthorKey(), binding = "o
   return { dir, key };
 }
 
-// These tests read files of the Kino repo itself (docs/plugins/, plugins/archive-org, its .gitignore). A template does
-// not carry them, so they are skipped here and run in the Kino repo.
-const NEEDS_KINO_REPO = "needs files of the Kino repo that this template does not have";
-
 test("signEntry: an Ed25519 signature over the documented message, checked independently", () => {
   const { pem, raw } = generateAuthorKey();
   const sig = signEntry(Buffer.from(SOURCE), "Owner/Repo/Sub", "demo", "1.2.3", pem);
@@ -144,6 +140,10 @@ test("seal.mjs --keygen writes a private key once; --sign writes the signature i
     assert.equal(cli("--sign", "--repo", "o/r").status, 2); // apiVersion 5 needed
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+// These tests read files of the Kino repo itself (docs/plugins/, plugins/archive-org, its .gitignore). A template does
+// not carry them, so they are skipped here and run in the Kino repo.
+const NEEDS_KINO_REPO = "needs files of the Kino repo that this template does not have";
 
 test("backward compatibility: the example plugin validates exactly as before, with no signature note", { skip: NEEDS_KINO_REPO }, async () => {
   const r = await validate(join(here, "..", "..", "archive-org"));

@@ -1,0 +1,25 @@
+{
+  "$comment": "Task 8p: where kino.qr.scan may open the scanner, shared by the app (ScreenQrOriginTest.kitParityWithTheSharedOriginCases, through PluginQrScanner.mayScanFrom) and the kit (test/qr-origin.test.mjs, through qrScanOriginAllowed). Each case is a call as the app's PluginCall sees it: function (the export running), screen (a plugin screen's call: a root screen, a screen-mode panel or a contributed tab in screen mode), press (that screen event follows the person's own tap or submit, never an open, a timer tick, a load-more or a change), tick (a screen timer's tick), interactive and personStarted (default true; false for a background or unattended call such as a panel's refreshMs). Absent booleans are false, except interactive and personStarted. allowed: whether the scanner may open.",
+  "cases": [
+    { "name": "a settings action in Ajustes (also: one from the settings node inside a screen, which runs as the Ajustes action does)", "function": "action", "allowed": true },
+    { "name": "a legacy panel's press (also: a contributed legacy tab's press)", "function": "panelAction", "allowed": true },
+    { "name": "a root screen's tap (also: a root screen's submit)", "function": "screenEvent", "screen": true, "press": true, "allowed": true },
+    { "name": "a screen-mode panel's press (also: a contributed tab's press in screen mode)", "function": "panelAction", "screen": true, "press": true, "allowed": true },
+    { "name": "a screen's open event (also: a screen's load-more; a screen's change)", "function": "screenEvent", "screen": true, "allowed": false },
+    { "name": "a screen timer's tick", "function": "screenEvent", "screen": true, "tick": true, "allowed": false },
+    { "name": "a tick is never a press", "function": "screenEvent", "screen": true, "press": true, "tick": true, "allowed": false },
+    { "name": "a screen-mode panel's timer tick", "function": "panelAction", "screen": true, "tick": true, "allowed": false },
+    { "name": "a screen-mode panel's load-more (also: a screen-mode panel's change)", "function": "panelAction", "screen": true, "allowed": false },
+    { "name": "a screenEvent outside a screen session", "function": "screenEvent", "allowed": false },
+    { "name": "a screen's render", "function": "screen", "screen": true, "allowed": false },
+    { "name": "a panel's refreshMs", "function": "panel", "screen": true, "personStarted": false, "allowed": false },
+    { "name": "a panel the person opened", "function": "panel", "allowed": false },
+    { "name": "a playerEvent", "function": "playerEvent", "personStarted": false, "allowed": false },
+    { "name": "a contributed tab's playerEvent", "function": "playerEvent", "allowed": false },
+    { "name": "an unattended panelAction", "function": "panelAction", "personStarted": false, "allowed": false },
+    { "name": "a background action", "function": "action", "interactive": false, "personStarted": false, "allowed": false },
+    { "name": "Home", "function": "home", "allowed": false },
+    { "name": "a search", "function": "search", "allowed": false },
+    { "name": "settingsStatus", "function": "settingsStatus", "allowed": false }
+  ]
+}

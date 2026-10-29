@@ -3,9 +3,26 @@
 // PanelIconFile) and of the manifest's `settingsLayout`. Kino's own Kotlin is authoritative: every limit and every log
 // line below is the app's, so `· dropped: <reason>` here is the line the app logs. Nothing throws on a bad answer:
 // an invalid element is dropped with a reason, a panel that is not an object is null.
-import { contract, imageVerdict, isPublicIpv4Literal, javaDouble, skipOf } from "./contract.mjs";
+import { createHmac } from "node:crypto";
+import { contract, imageVerdict, javaDouble, qrUrl, screenGoOf, skipOf, titleByIdsOf, urlGoOf, copyGoOf } from "./contract.mjs";
 import { resolvePalette } from "./palette.mjs";
 import { shownSentence } from "./kino-shim.mjs";
+
+/**
+ * ScreenLimits.colorHint (screen asks, owner's #8): what a "is not a color role" line adds so the author sees what to write: a
+ * role in another case, or a common colour word (contract colorHints; `success` is a banner's and a toast's role) names its
+ * closest role. Empty when there is none.
+ */
+export function colorHint(raw) {
+  if (typeof raw !== "string") return "";
+  // Kotlin's trim, as the app's line reads it.
+  const w = raw.replace(/^[\s\u001C-\u001F]+|[\s\u001C-\u001F]+$/gu, "");
+  const lower = w.toLowerCase();
+  const role = contract.manifest.screen.colorRoles.find((r) => r.toLowerCase() === lower) ?? contract.manifest.screen.colorHints[lower];
+  if (!role) return "";
+  const banner = contract.manifest.screen.roles.includes(lower) && !contract.manifest.screen.colorRoles.includes(lower) ? `"${lower}" is a banner and toast role; ` : "";
+  return ` (${banner}the closest color role is "${role}")`;
+}
 
 // ---------- limits (PluginPanelOutput, PluginLayout, PanelPlayerRules, PluginSettings, PanelIconFile) ----------
 
@@ -15,8 +32,15 @@ export const PLAYER = contract.output.player;
 /** PanelIcons.NAMES: the predefined panel-button icons; any other name draws the default. */
 export const PANEL_ICONS = contract.manifest.panel.icons;
 export const PANEL_ICON_DEFAULT = contract.manifest.panel.defaultIcon;
+/** PanelIcons.EXTRA_NAMES (Task 8v): the larger icon set, `refresh` first, read from its apiVersion (14). */
+export const PANEL_EXTRA_ICONS = contract.manifest.panel.extraIcons;
+/** PanelIcons.isKnown: whether a plugin on [apiVersion] may use [name]; a name of the larger set below its apiVersion is unknown. */
+export function panelIconKnown(name, apiVersion) {
+  if (!PANEL_ICONS.includes(name)) return false;
+  return !PANEL_EXTRA_ICONS.names.includes(name) || apiVersion >= PANEL_EXTRA_ICONS.apiVersion;
+}
 const ID = /^[A-Za-z0-9._~-]{1,128}$/;
-const PLAYER_KEYS = ["seekToMs", "seekStepMs", "speed", "resize", "skip", "markers", "autoNext"];
+const PLAYER_KEYS = ["seekToMs", "seekStepMs", "speed", "resize", "skip", "markers", "autoNext", "pause"];
 const ASPECTS = ["16:9", "2:3", "1:1", "banner"];
 const MAX_LONG = 9223372036854775807n;
 const MIN_LONG = -9223372036854775808n;
@@ -203,7 +227,7 @@ export function panelOutput(value, { lang = "es", servers = [], log = () => {} }
 function panelOf(o, lang, servers, log) {
   const presentation = optString(o.presentation) === "panel" ? "panel" : "modal";
   const title = localized(o, "title", lang).slice(0, PANEL.maxTitleChars);
-  const tabs = tabsOf(o.tabs, lang, log);
+  const tabs = panelTabsOf(o.tabs, lang, log);
   const wanted = typeof o.tab === "string" ? o.tab : null;
   const tab = wanted !== null && tabs.some((t) => t.id === wanted) ? wanted : tabs.length ? tabs[0].id : null;
   if (wanted !== null && tab !== wanted) log(`panel: tab "${wanted.slice(0, 40)}" names no tab`);
@@ -216,10 +240,14 @@ function panelOf(o, lang, servers, log) {
   // The keys placed so far are shared by the whole panel: a repeated one drops the later element.
   const keys = new Set();
   const elements = layoutTree(top, lang, (e, l) => element(e, lang, servers, keys, l), log);
-  return { presentation, title, accent: accentOf(o.accent, log), refreshMs: refreshOf(o.refreshMs, log), tabs, tab, elements };
+  const accent = panelAccentOf(o.accent, log);
+  const refreshMs = panelRefreshOf(o.refreshMs, log);
+  // Task 8j: the result's own player (a refreshMs tick's): honoured only with the playerControl capability.
+  const player = panelPlayerOf(o.player, log);
+  return { presentation, title, accent, refreshMs, tabs, tab, elements, ...(player ? { player } : {}) };
 }
 
-function accentOf(raw, log) {
+export function panelAccentOf(raw, log) {
   if (raw === undefined || raw === null) return null;
   if (typeof raw !== "string") { log("panel: accent is not a string, Kino's colors used"); return null; }
   if (resolvePalette({ accent: raw }).kept.includes("accent")) return raw;
@@ -227,7 +255,7 @@ function accentOf(raw, log) {
   return null;
 }
 
-function refreshOf(raw, log) {
+export function panelRefreshOf(raw, log) {
   if (raw === undefined || raw === null) return null;
   const n = finite(raw);
   if (n === null) { log("panel: refreshMs is not a number, dropped"); return null; }
@@ -236,7 +264,7 @@ function refreshOf(raw, log) {
   return Number(ms);
 }
 
-function tabsOf(arr, lang, log) {
+export function panelTabsOf(arr, lang, log) {
   const out = [];
   if (!Array.isArray(arr)) return out;
   const seen = new Set();
@@ -250,9 +278,42 @@ function tabsOf(arr, lang, log) {
     if (label === "") { log(`panel: tab ${id} has no label`); continue; }
     if (seen.has(id)) { log(`panel: duplicate tab ${id} dropped`); continue; }
     seen.add(id);
-    out.push({ id, label });
+    // Task 15: a tab's badge (the shared `badge`), beside its label.
+    const badge = t.badge !== undefined && t.badge !== null ? badgeOf(t.badge, lang, `panel: tab ${id}`, log) : null;
+    out.push({ id, label, badge });
   }
   return out;
+}
+
+/** A plugin value as the app's log lines show it (PluginScreenOutput.fmt): a string quoted and cut to 40, anything else cut to 40. */
+function fmtValue(v) {
+  if (typeof v === "string") return `"${v.slice(0, 40)}"`;
+  if (v === undefined || v === null) return "null";
+  const t = typeof v === "number" ? (Number.isInteger(v) ? String(v) : javaDouble(v)) : typeof v === "object" ? JSON.stringify(v).replace(/\//g, "\\/") : String(v);
+  return t.slice(0, 40);
+}
+
+const SCREEN_SHARED = contract.manifest.screen.sharedProps;
+
+/**
+ * PluginScreenOutput.badgeOf (Task 15): the shared `badge`, the Badge node's shape: `"dot"` or `{ text, textEn?, color? }`. A
+ * text over sharedProps.badge.maxChars is cut, a colour that is no role takes the default (both logged under [where]);
+ * anything else is dropped, logged (null). `{ text: null }` is a dot.
+ */
+export function badgeOf(raw, lang, where, log) {
+  const B = SCREEN_SHARED.badge;
+  if (raw === B.dot) return { text: null, color: null };
+  const text = isObj(raw) ? localized(raw, "text", lang).trim() : "";
+  if (!isObj(raw) || text === "") { log(`${where} badge ${fmtValue(raw)} is not "dot" or { text, textEn?, color? }, dropped`); return null; }
+  let cut = text;
+  if (text.length > B.maxChars) { cut = text.slice(0, B.maxChars); log(`${where} badge text is over ${B.maxChars} characters, cut`); }
+  let color = null;
+  const c = raw.color;
+  if (c !== undefined && c !== null) {
+    if (typeof c === "string" && contract.manifest.screen.colorRoles.includes(c)) color = c;
+    else log(`${where} badge color ${fmtValue(c)} is not a color role${colorHint(c)}, the default used`);
+  }
+  return { text: cut, color };
 }
 
 /** One leaf of a panel, or null (logged). [keys] are the keys already placed. */
@@ -291,7 +352,9 @@ function element(o, lang, servers, keys, log) {
       const confirm = localized(o, "confirm", lang);
       if (confirm.length > PANEL.maxConfirmChars) return drop(`confirm longer than ${PANEL.maxConfirmChars}`);
       const k = keyed();
-      return k ? { type, key: k.key, label: k.label, ...(confirm !== "" ? { confirm } : {}) } : null;
+      if (!k) return null;
+      const go = panelGoOf(o.go, `button "${k.key}"`, log);
+      return { type, key: k.key, label: k.label, ...(confirm !== "" ? { confirm } : {}), ...(go !== null ? { go, ...(o.pause === true ? { pause: true } : {}) } : {}) };
     }
     case "toggle": case "select": case "text-input": {
       const sc = scope();
@@ -338,34 +401,6 @@ function optionsOf(arr, lang) {
   return out;
 }
 
-/**
- * https only, at most maxQrUrlChars, on a public host with a dot or a public IPv4 address (never the device or the home
- * network: a single-label name such as `router` or `nas` is a home network's).
- */
-function qrUrl(raw) {
-  const v = typeof raw === "string" ? raw.trim() : null;
-  if (v === null || v.length > PANEL.maxQrUrlChars || !v.startsWith("https://")) return null;
-  // OkHttp keeps the host as written ("010.1.1.1" or "0x7f.1" are names to it, not IPv4 like WHATWG's URL reads them).
-  let parsed;
-  try { parsed = new URL(v); } catch { return null; }
-  if (!parsed.hostname) return null;
-  const written = /^https:\/\/(?:[^@/?#]*@)?(\[[^\]]*\]|[^:/?#]*)/.exec(v);
-  // OkHttp percent-decodes the host ("127.0.0.%31", "%6cocalhost"): judge what it would connect to; a bad escape is no URL.
-  let host;
-  try { host = decodeURIComponent(written ? written[1] : parsed.hostname).toLowerCase(); } catch { return null; }
-  if (!host) return null;
-  if (isPublicIpv4Literal(host)) return v;
-  return host.replace(/\.+$/, "").includes(".") && !isLocalAddress(host) ? v : null;
-}
-
-/** HostRules.isLocalAddress. */
-function isLocalAddress(host) {
-  const h = host.toLowerCase().replace(/\.+$/, "");
-  if (h === "" || h.includes(":") || h.includes("[")) return true;
-  if (h === "localhost" || contract.hostRules.privateSuffixes.some((s) => h.endsWith(s))) return true;
-  return /^\d+$/.test(h.split(".").pop());
-}
-
 // ---------- the answer of panelAction / playerEvent (PluginPanelOutput.answer) ----------
 
 /**
@@ -377,7 +412,7 @@ export function answerOutput(value, { lang = "es", servers = [], log = () => {} 
 }
 
 function answerOf(value, lang, servers, log) {
-  const empty = { panel: null, patch: {}, values: {}, save: [], focus: null, message: null, player: null };
+  const empty = { panel: null, patch: {}, values: {}, save: [], focus: null, message: null, player: null, go: null, pause: false };
   if (value === null || value === undefined) return empty;
   if (!isObj(value)) { log("panel: the action answer is not a JSON object"); return empty; }
   let panel = null;
@@ -388,7 +423,40 @@ function answerOf(value, lang, servers, log) {
   const values = valuesOf(value.values, log);
   const save = saveOf(value.save, log);
   const focus = focusOf(value.focus, log);
-  return { panel, patch, values, save, focus, message: messageOf(value.message, log), player: playerOf(value.player, log) };
+  const message = panelMessageOf(value.message, log);
+  const player = panelPlayerOf(value.player, log);
+  const go = panelGoOf(value.go, "answer", log, true);
+  const byIds = go !== null && "titleByIds" in go ? go.titleByIds : null;
+  const url = go !== null && "url" in go ? go.url : null;
+  const copy = go !== null && "copy" in go ? go.copy : null;
+  return { panel, patch, values, save, focus, message, player, go: byIds === null && url === null && copy === null ? go : null, pause: value.pause === true, titleByIds: byIds, url, copy };
+}
+
+/**
+ * PluginPanelOutput.goOf (Task 7g): a panel's `go` is only `{ screen: { route?, args? } }`, this plugin's own screen, read as a
+ * screen reads it; in an answer ([pressGoesToo]) also `{ titleByIds: {...} }` (Task 8m, returned as `{ titleByIds }`) and
+ * `{ url: { href, title? } }` (Task 8s, returned as `{ url }`) and `{ copy: { text, label?, sensitive? } }` (Task 8x, as `{ copy }`), the gos only a press honours. Anything else is dropped,
+ * logged under [where].
+ */
+function panelGoOf(raw, where, log, pressGoesToo = false) {
+  if (raw === undefined || raw === null) return null;
+  if (pressGoesToo && isObj(raw) && Object.keys(raw).length === 1 && "titleByIds" in raw) {
+    const g = titleByIdsOf(raw.titleByIds, (why) => log(`panel: ${where} go.titleByIds ${why}, dropped`));
+    return g === null ? null : { titleByIds: g };
+  }
+  if (pressGoesToo && isObj(raw) && Object.keys(raw).length === 1 && "url" in raw) {
+    const g = urlGoOf(raw.url, (why) => log(`panel: ${where} go.url ${why}, dropped`));
+    return g === null ? null : { url: g };
+  }
+  if (pressGoesToo && isObj(raw) && Object.keys(raw).length === 1 && "copy" in raw) {
+    const g = copyGoOf(raw.copy, (why) => log(`panel: ${where} go.copy ${why}, dropped`));
+    return g === null ? null : { copy: g };
+  }
+  if (!isObj(raw) || Object.keys(raw).length !== 1 || !("screen" in raw)) {
+    log(`panel: ${where} go must be ${pressGoesToo ? "{screen: {route, args}} or {titleByIds: {...}} or {url: {href, title}} or {copy: {text, label}}" : "{screen: {route, args}}"}, dropped`);
+    return null;
+  }
+  return screenGoOf(raw.screen, (why) => log(`panel: ${where} go.screen ${why}, dropped`));
 }
 
 function focusOf(raw, log) {
@@ -445,7 +513,7 @@ function saveOf(raw, log) {
 }
 
 /** Cut to maxMessageChars, then shown only when the shape rule a plugin's `userMessage` passes accepts it. */
-function messageOf(raw, log) {
+export function panelMessageOf(raw, log) {
   if (raw === undefined || raw === null) return null;
   if (typeof raw !== "string") { log("panel: message is not a string, dropped"); return null; }
   const s = raw.trim().slice(0, PANEL.maxMessageChars);
@@ -457,7 +525,7 @@ function messageOf(raw, log) {
 
 // ---------- the `player` part (PluginPanelOutput.playerOf, PanelPlayerRules) ----------
 
-function playerOf(raw, log) {
+export function panelPlayerOf(raw, log) {
   if (raw === undefined || raw === null) return null;
   if (!isObj(raw)) { log("panel: player is not an object, dropped"); return null; }
   for (const k of Object.keys(raw)) if (!PLAYER_KEYS.includes(k)) log(`panel: player.${k.slice(0, 40)} is not available in this Kino`);
@@ -475,6 +543,11 @@ function playerOf(raw, log) {
   }
   if (has("markers")) action.markers = markers(raw.markers, null, log);
   if (has("autoNext")) action.autoNext = autoNext(raw.autoNext, log);
+  // Task 8j: true pauses, false resumes; anything else is dropped (PanelPlayerRules.pause).
+  if (has("pause")) {
+    if (typeof raw.pause === "boolean") action.pause = raw.pause;
+    else log("panel: player.pause is not true or false, dropped");
+  }
   const kept = Object.fromEntries(Object.entries(action).filter(([, v]) => v !== null && v !== undefined));
   return Object.keys(kept).length ? kept : null;
 }
@@ -602,7 +675,7 @@ export function printAnswer(a) {
  * "panel" (null `value` = the whole panel invalid, `ok` false), "panelAction" (the answer) or "playerEvent" (its
  * `player` and `message`). [context] feeds the player gate (duration, liveness).
  */
-export function checkPanelOutput(fn, value, servers = [], { context = {}, lang = "es" } = {}) {
+export function checkPanelOutput(fn, value, servers = [], { context = {}, lang = "es", apiVersion = 0 } = {}) {
   const drops = [];
   const log = (m) => { drops.push(m); };
   const json = JSON.stringify(value === undefined ? null : value);
@@ -622,6 +695,16 @@ export function checkPanelOutput(fn, value, servers = [], { context = {}, lang =
     const player = gatePlayer(a.player, context, log, "playerEvent");
     if (player) out.player = player;
     if (a.message !== null) out.message = a.message;
+    // Task 8i: an apiVersion 14 plugin's `panel` (either format) shows in the open panel of the title; below it, ignored as
+    // always (the app logs it once). A `state` is never applied.
+    const screenPanels = apiVersion >= contract.manifest.screen.apiVersion;
+    if (isObj(parsed) && isObj(parsed.panel)) {
+      if (screenPanels) out.panel = parsed.panel;
+      else drops.push("playerEvent: panel needs apiVersion 14, ignored");
+    }
+    if (screenPanels && isObj(parsed) && parsed.state !== undefined && parsed.state !== null) {
+      drops.push("playerEvent: answer.state is not applied (keep it in your own variables or answer a panel built from it)");
+    }
     return { ok: true, value: out, drops };
   }
   throw new Error(`unknown panel function ${fn}`);
@@ -672,3 +755,181 @@ export function actionEvent(key, trigger, value, values) {
 
 export const TRIGGERS = ["press", "change", "submit", "tab", "open"];
 export const PLAYER_EVENTS = ["started", "paused", "resumed", "ended", "failed", "copyChanged"];
+
+// ---------- Task 8k: a panel contributed to another plugin's title ----------
+
+const CONTRIBUTES = contract.manifest.panel.contributes;
+
+/** The salt `run.mjs --foreign` uses (the app uses its install's own: refs differ there, their shape does not). */
+export const KIT_FOREIGN_SALT = "kino-kit";
+
+/**
+ * The opaque ref a contributed panel gets for another plugin's title (the app's PanelForeign.opaqueRef): HMAC-SHA256 keyed by
+ * the install's [salt] over the contributor, the owner and the ref. The same title gives this contributor the same id on one
+ * install; another plugin or another install gets another. Opaque, not secret.
+ */
+export function foreignRef(contributorId, ownerId, ref, salt = KIT_FOREIGN_SALT) {
+  const hex = createHmac("sha256", Buffer.from(salt, "utf8")).update(`kino-panel-foreign:v2\n${contributorId}\n${ownerId}\n${ref}`, "utf8").digest("hex");
+  return CONTRIBUTES.foreignRefPrefix + hex.slice(0, CONTRIBUTES.foreignRefHexChars);
+}
+
+/**
+ * [context] as a contributed panel gets it (the app's PanelForeign.applyTo), from an ALLOW-LIST (contract
+ * `manifest.panel.contributes.contextFields`): the ref opaque, `playing` empty (the owner's copy), the player block without
+ * autoNext, `foreign: true` and `source: { pluginId, name }` (the plugin providing the stream) added.
+ */
+export function foreignContext(context, contributorId, source, salt = KIT_FOREIGN_SALT) {
+  const out = {};
+  for (const k of CONTRIBUTES.contextFields) if (context[k] !== undefined) out[k] = context[k];
+  const player = {};
+  for (const k of CONTRIBUTES.playerFields) if (context.player && context.player[k] !== undefined) player[k] = context.player[k];
+  return {
+    ...out, ref: foreignRef(contributorId, source.pluginId, context.ref, salt), playing: {}, player,
+    foreign: true, source: { pluginId: source.pluginId, name: source.name },
+  };
+}
+
+/** A `playerEvent`'s detail as a contributor gets it: a copyChanged's copy label is the owner's. */
+export function foreignEventDetail(type, detail) {
+  if (type !== "copyChanged") return detail;
+  const { label, ...rest } = detail;
+  return rest;
+}
+
+/**
+ * What the app does with a contributed panel's answer [answer] to a `panelAction` whose trigger is [trigger] (null: a
+ * `playerEvent`): its `player` only after a press, and only a seek; its `go.title` / `go.play` never. The lines it logs.
+ */
+export function foreignAnswerDrops(answer, trigger, { control = false } = {}) {
+  const out = [];
+  if (!answer || typeof answer !== "object") return out;
+  const p = answer.player;
+  if (p && typeof p === "object") {
+    // Task 8j: with playerControl every origin counts, and a seek, a pause and a speed.
+    const kept = control ? CONTRIBUTES.playerActionKeptWithControl : CONTRIBUTES.playerActionKept;
+    if (!control && !CONTRIBUTES.playerActionsFrom.includes(trigger)) out.push("player: a contributed panel's player action needs the person's press in it or the playerControl capability, dropped");
+    else {
+      const extra = Object.keys(p).filter((k) => !kept.includes(k));
+      if (extra.length) out.push(`player.${extra.join(", player.")}: a contributed panel only ${control ? "seeks, pauses and sets the speed" : "seeks"}; the playing plugin's player properties are its own, dropped`);
+    }
+  }
+  const g = answer.go;
+  if (g && typeof g === "object") for (const k of CONTRIBUTES.goDropped) if (g[k] !== undefined) out.push(`go.${k}: a contributed panel never opens a plugin's title, dropped`);
+  return out;
+}
+
+/** Whether [manifest] contributes a tab to the player panel of other plugins' titles (the merged manifest). */
+export function contributesPanel(manifest) {
+  return manifest.panel?.contributes === true && (manifest.capabilities || []).includes(CONTRIBUTES.capability);
+}
+
+// ---------- Task 11: the player panel on a live channel ----------
+
+const LIVE = contract.kinoLivePanel;
+
+/** The content kinds [manifest]'s contributed tab joins (`panel.kinds`, default ["title"]); empty when it contributes none. */
+export function contributedKinds(manifest) {
+  if (!contributesPanel(manifest)) return [];
+  return Array.isArray(manifest.panel.kinds) ? manifest.panel.kinds : [...CONTRIBUTES.kinds.default];
+}
+
+/** Whether [manifest]'s contributed tab joins an En vivo channel's panel (`"kinds"` holds "live"). */
+export function contributesLive(manifest) {
+  return contributedKinds(manifest).includes(LIVE.kind);
+}
+
+/**
+ * The context a tab gets on an En vivo channel (the app's PanelContextJson live shape), exactly contract
+ * `kinoLivePanel.contextFields`: the channel `{ provider, code, name }`, `foreign: true`, the provider as `source`, and the
+ * session's own parts taken from [base] (device, lang, tab, values, features; in screen mode state and size).
+ */
+export function liveContext(channel, base = {}, sourceName = channel.provider) {
+  const out = {
+    kind: LIVE.kind, live: true, channel: { provider: channel.provider, code: channel.code, name: channel.name ?? channel.code },
+    foreign: true, source: { pluginId: channel.provider, name: sourceName },
+    device: base.device ?? "tv", lang: base.lang ?? "es-CO", values: base.values ?? { video: {}, plugin: {} },
+  };
+  if (base.tab !== undefined) out.tab = base.tab;
+  if (base.features !== undefined) out.features = base.features;
+  for (const k of LIVE.screenContextAdds) if (base[k] !== undefined) out[k] = base[k];
+  return out;
+}
+
+/** What the app drops of a live tab's answer [answer]: its whole `player` (live_channel) and, as any contributed tab, go.title/play. */
+export function liveAnswerDrops(answer) {
+  const out = [];
+  if (!answer || typeof answer !== "object") return out;
+  if (answer.player !== undefined && answer.player !== null) out.push(LIVE.playerDroppedLog.replace(/^panel: /, ""));
+  const g = answer.go;
+  if (g && typeof g === "object") for (const k of CONTRIBUTES.goDropped) if (g[k] !== undefined) out.push(`go.${k}: a contributed panel never opens a plugin's title, dropped`);
+  return out;
+}
+
+// ---------- Task 8j: who may move the player (PlayerControlRules, contract.kinoPlayerControl) ----------
+
+const CONTROL = contract.kinoPlayerControl;
+export const PLAYER_CONTROL_LINES = {
+  needsControl: "panel: a player action from a panel result or a playerEvent needs the playerControl capability, dropped",
+  pauseNeedsPress: "panel: player.pause needs the person's press in the panel or the playerControl capability, dropped",
+  contributedNeedsPress: "panel: a contributed panel's player action needs the person's press in it or the playerControl capability, dropped",
+  contributedOnlySeeks: "panel: a contributed panel only seeks; the playing plugin's player properties are its own, dropped",
+  contributedOnlyControls: "panel: a contributed panel only seeks, pauses and sets the speed; the playing plugin's player properties are its own, dropped",
+};
+
+const onlyFields = (a, fields) => Object.fromEntries(Object.entries(a).filter(([k]) => fields.includes(k)));
+const sameAction = (a, b) => JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort());
+const emptyAction = (a) => Object.keys(a).length === 0;
+
+function withoutControl(a, origin, contributed) {
+  let kept;
+  if (contributed) kept = origin === "press" ? onlyFields(a, CONTROL.contributedWithoutControl) : {};
+  else if (origin === "refresh") kept = {};
+  else if (origin === "press") kept = { ...a };
+  else { kept = { ...a }; delete kept.pause; }
+  return emptyAction(kept) ? null : kept;
+}
+
+/**
+ * PlayerControlRules.sift: what of the checked player action [a] (panelPlayerOf's output) reaches the gate, by [origin]
+ * ("press", "change", "submit", "refresh": a panel result's own, "event": a playerEvent answer), [contributed] (a tab given to
+ * another plugin's title) and [control] (playerControl granted). `{ action, controlled, announce }` or null; each drop logged.
+ */
+export function siftPlayer(a, origin, { contributed = false, control = false } = {}, log = () => {}) {
+  if (!CONTROL.origins.includes(origin)) throw new Error(`unknown player action origin ${origin}`);
+  const plain = withoutControl(a, origin, contributed);
+  if (!control) {
+    if (contributed && plain === null) log(PLAYER_CONTROL_LINES.contributedNeedsPress);
+    else if (contributed && !sameAction(plain, a)) log(PLAYER_CONTROL_LINES.contributedOnlySeeks);
+    else if (origin === "refresh") log(PLAYER_CONTROL_LINES.needsControl);
+    else if (plain === null || !sameAction(plain, a)) log(PLAYER_CONTROL_LINES.pauseNeedsPress);
+    return plain === null ? null : { action: plain, controlled: false, announce: false };
+  }
+  const kept = contributed ? onlyFields(a, CONTROL.contributedWithControl) : { ...a };
+  if (!sameAction(kept, a)) log(PLAYER_CONTROL_LINES.contributedOnlyControls);
+  if (emptyAction(kept)) return null;
+  const controlled = plain === null || !sameAction(kept, plain);
+  return { action: kept, controlled, announce: controlled && CONTROL.announcedOrigins.includes(origin) };
+}
+
+/** "1:02:03" or "2:03". */
+function clock(ms) {
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  const two = (n) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${two(m)}:${two(sec)}` : `${m}:${two(sec)}`;
+}
+
+/**
+ * PlayerControlRules.notice: the short notice Kino shows for an announced action, in [lang] ("es" / "en"), naming the plugin
+ * ([name], qualified when it reads like Kino: [confusable]); null when the action does nothing the person would see.
+ */
+export function playerNotice(name, a, lang = "es", confusable = false) {
+  const parts = CONTROL.noticeParts[lang];
+  const what = [];
+  if (a.pause !== undefined) what.push(a.pause ? parts.paused : parts.resumed);
+  if (a.seekToMs !== undefined) what.push(parts.movedTo.replace("{time}", clock(a.seekToMs)));
+  if (a.speed !== undefined) what.push(parts.speed.replace("{speed}", `${a.speed}\u00d7`));
+  if (!what.length) return null;
+  const who = confusable ? (lang === "en" ? `Plugin \u201c${name}\u201d` : `Plugin \u00ab${name}\u00bb`) : name;
+  return CONTROL.notice[lang].replace("{who}", who).replace("{what}", what.join(", "));
+}

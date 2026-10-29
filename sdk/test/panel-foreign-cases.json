@@ -1,0 +1,37 @@
+{
+  "$comment": "Task 8k: a contributed panel's context for another plugin's title, through the app's PanelForeign (PanelForeignTest) and the kit's foreignContext (panel-foreign.test.mjs). refs: the opaque ref of (salt, contributor, owner, ref): HMAC-SHA256 keyed by the install's salt, so another install (salt) or another plugin gets another id. context: what the owner's panel would get (input) and what the contributed one gets (expected), built from an allow-list: the ref opaque, playing empty, player without autoNext, foreign and source added, a field the allow-list does not name (secretFromOwner) never sent. drops: what the app drops of a contributed panel's answer to a panelAction with that trigger (null: a playerEvent).",
+  "refs": [
+    { "salt": "salt-a", "contributor": "watch-party", "owner": "latino", "ref": "movie:550", "expected": "foreign:9d0e49e92d41551b63036c35c5e0146e" },
+    { "salt": "salt-b", "contributor": "watch-party", "owner": "latino", "ref": "movie:550", "expected": "foreign:6c8846e3511d0a68a901c3626fda31e1" },
+    { "salt": "salt-a", "contributor": "watch-party", "owner": "xtream", "ref": "tv:1399:s1e2", "expected": "foreign:9fad30b2a854b351c892411ace1a1500" },
+    { "salt": "salt-a", "contributor": "lyrics", "owner": "latino", "ref": "movie:550", "expected": "foreign:933a4910c028b4a1cfe8e8465d6e1cd8" },
+    { "salt": "salt-a", "contributor": "watch-party", "owner": "latino", "ref": "ñandú/ref?x=1", "expected": "foreign:03765928301738ba11d6ffffb315ade8" }
+  ],
+  "context": {
+    "salt": "salt-a",
+    "contributor": "watch-party",
+    "source": { "pluginId": "latino", "name": "Latino" },
+    "input": {
+      "kind": "episode", "ref": "tv:1399:s1e2", "title": "Juego de tronos", "year": "2011", "season": 1, "episode": 2,
+      "ids": { "tmdb": 1399, "imdb": "tt0944947" }, "playing": { "label": "Servidor 2", "server": "cdn.owner.example" }, "positionMs": 120000, "durationMs": 3300000,
+      "paused": false, "seekStepMs": 10000, "device": "tv", "lang": "es-CO",
+      "player": { "seekStepMs": 10000, "speed": 1, "resize": "fit", "autoNext": { "enabled": true, "countdownS": 10, "nextRef": "tv:1399:s1e3" } },
+      "secretFromOwner": "https://owner.example/stream.m3u8?token=abc"
+    },
+    "expected": {
+      "kind": "episode", "ref": "foreign:0cbadfbe335c60d7c67f918c48a11fc6", "title": "Juego de tronos", "year": "2011", "season": 1, "episode": 2,
+      "ids": { "tmdb": 1399, "imdb": "tt0944947" }, "playing": {}, "positionMs": 120000, "durationMs": 3300000,
+      "paused": false, "seekStepMs": 10000, "device": "tv", "lang": "es-CO",
+      "player": { "seekStepMs": 10000, "speed": 1, "resize": "fit" },
+      "foreign": true, "source": { "pluginId": "latino", "name": "Latino" }
+    }
+  },
+  "drops": [
+    { "trigger": "press", "answer": { "player": { "seekToMs": 60000 } }, "lines": [] },
+    { "trigger": "change", "answer": { "player": { "seekToMs": 60000 } }, "lines": ["player: a contributed panel's player action needs the person's press in it or the playerControl capability, dropped"] },
+    { "trigger": null, "answer": { "player": { "seekToMs": 60000 } }, "lines": ["player: a contributed panel's player action needs the person's press in it or the playerControl capability, dropped"] },
+    { "trigger": "press", "answer": { "player": { "seekToMs": 60000, "speed": 1.5 } }, "lines": ["player.speed: a contributed panel only seeks; the playing plugin's player properties are its own, dropped"] },
+    { "trigger": "press", "answer": { "go": { "title": { "ref": "movie:1" } } }, "lines": ["go.title: a contributed panel never opens a plugin's title, dropped"] },
+    { "trigger": "press", "answer": { "go": { "screen": { "route": "room" } } }, "lines": [] }
+  ]
+}

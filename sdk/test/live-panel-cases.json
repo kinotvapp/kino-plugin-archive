@@ -1,0 +1,50 @@
+{
+  "$comment": "Task 11: the player panel on an En vivo channel. Shared by the kit (plugins/sdk/test/live-panel.test.mjs) and the app (LivePanelParityTest): panel.kinds in the manifest, the go.liveChannel shape and when it is honoured, and the live context. A manifest case's panel and capabilities go into a minimal apiVersion 14 manifest (id watch-party, entry plugin.js, hosts example.com).",
+  "manifestKinds": [
+    { "name": "no kinds: a contributed tab joins titles only", "capabilities": ["playerPanelTab"], "panel": { "contributes": true }, "expected": { "kinds": ["title"] } },
+    { "name": "title and live", "capabilities": ["playerPanelTab"], "panel": { "contributes": true, "kinds": ["title", "live"] }, "expected": { "kinds": ["title", "live"] } },
+    { "name": "live only", "capabilities": ["playerPanelTab"], "panel": { "contributes": true, "kinds": ["live"] }, "expected": { "kinds": ["live"] } },
+    { "name": "order and duplicates do not matter", "capabilities": ["playerPanelTab"], "panel": { "contributes": true, "kinds": ["live", "title", "live"] }, "expected": { "kinds": ["title", "live"] } },
+    { "name": "null is the default", "capabilities": ["playerPanelTab"], "panel": { "contributes": true, "kinds": null }, "expected": { "kinds": ["title"] } },
+    { "name": "an empty list", "capabilities": ["playerPanelTab"], "panel": { "contributes": true, "kinds": [] }, "expected": { "invalid": { "field": "panel", "message": "The \"panel.kinds\" field must be a non-empty list of \"title\" and \"live\"" } } },
+    { "name": "an unknown kind", "capabilities": ["playerPanelTab"], "panel": { "contributes": true, "kinds": ["title", "radio"] }, "expected": { "invalid": { "field": "panel", "message": "The \"panel.kinds\" field must be a non-empty list of \"title\" and \"live\"" } } },
+    { "name": "not a list", "capabilities": ["playerPanelTab"], "panel": { "contributes": true, "kinds": "live" }, "expected": { "invalid": { "field": "panel", "message": "The \"panel.kinds\" field must be a non-empty list of \"title\" and \"live\"" } } },
+    { "name": "a number in the list", "capabilities": ["playerPanelTab"], "panel": { "contributes": true, "kinds": ["live", 1] }, "expected": { "invalid": { "field": "panel", "message": "The \"panel.kinds\" field must be a non-empty list of \"title\" and \"live\"" } } },
+    { "name": "kinds on the plugin's own panel (no contributes)", "capabilities": ["search", "resolve"], "panel": { "label": "Panel", "kinds": ["live"] }, "expected": { "invalid": { "field": "panel", "message": "The \"panel.kinds\" field needs \"panel\": { \"contributes\": true }" } } }
+  ],
+  "goParse": [
+    { "name": "a provider and a channel id", "input": { "provider": "tdt", "code": "la1" }, "expected": { "go": { "provider": "tdt", "code": "la1" } } },
+    { "name": "a playlist entry's id", "input": { "provider": "tdt", "code": "~p1.e42" }, "expected": { "go": { "provider": "tdt", "code": "~p1.e42" } } },
+    { "name": "not an object", "input": "tdt:la1", "expected": { "why": "is not an object" } },
+    { "name": "another field", "input": { "provider": "tdt", "code": "la1", "name": "La 1" }, "expected": { "why": "takes only provider, code" } },
+    { "name": "Mis canales is never a provider", "input": { "provider": "own", "code": "abc" }, "expected": { "why": "provider must be a plugin id" } },
+    { "name": "Kino is never a provider", "input": { "provider": "kino", "code": "abc" }, "expected": { "why": "provider must be a plugin id" } },
+    { "name": "a provider in the wire form", "input": { "provider": "plugin:tdt", "code": "la1" }, "expected": { "why": "provider must be a plugin id" } },
+    { "name": "an upper-case provider", "input": { "provider": "TDT", "code": "la1" }, "expected": { "why": "provider must be a plugin id" } },
+    { "name": "a code with a colon", "input": { "provider": "tdt", "code": "la:1" }, "expected": { "why": "code must be a channel id (1 to 128 letters, digits, . _ ~ -)" } },
+    { "name": "an empty code", "input": { "provider": "tdt", "code": "" }, "expected": { "why": "code must be a channel id (1 to 128 letters, digits, . _ ~ -)" } },
+    { "name": "a code that is a number", "input": { "provider": "tdt", "code": 7 }, "expected": { "why": "code must be a channel id (1 to 128 letters, digits, . _ ~ -)" } },
+    { "name": "a code too long", "input": { "provider": "tdt", "code": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }, "expected": { "why": "code must be a channel id (1 to 128 letters, digits, . _ ~ -)" } }
+  ],
+  "goRefusal": [
+    { "name": "a press from a tab that joins live channels", "capabilities": ["playerPanelTab"], "panel": { "contributes": true, "kinds": ["title", "live"] }, "trigger": "press", "expected": null },
+    { "name": "a submit counts as the person's", "capabilities": ["playerPanelTab"], "panel": { "contributes": true, "kinds": ["live"] }, "trigger": "submit", "expected": null },
+    { "name": "a change never tunes", "capabilities": ["playerPanelTab"], "panel": { "contributes": true, "kinds": ["live"] }, "trigger": "change", "expected": "not_press" },
+    { "name": "a refresh tick never tunes", "capabilities": ["playerPanelTab"], "panel": { "contributes": true, "kinds": ["live"] }, "trigger": "refresh", "expected": "not_press" },
+    { "name": "the reserved open never tunes", "capabilities": ["playerPanelTab"], "panel": { "contributes": true, "kinds": ["live"] }, "trigger": "open", "expected": "not_press" },
+    { "name": "a tab for titles only", "capabilities": ["playerPanelTab"], "panel": { "contributes": true }, "trigger": "press", "expected": "needs_live_tab" },
+    { "name": "a plugin without a contributed tab", "capabilities": ["search", "resolve"], "panel": null, "trigger": "press", "expected": "needs_live_tab" }
+  ],
+  "context": {
+    "channel": { "provider": "tdt", "code": "la1", "name": "La 1" },
+    "sourceName": "TDT",
+    "base": { "device": "phone", "lang": "en-US", "tab": "chat", "values": { "video": { "seen": true }, "plugin": {} }, "features": ["loading", "screen"], "state": { "n": 1 }, "size": { "width": "compact", "height": "medium" } },
+    "expected": {
+      "kind": "live", "live": true, "channel": { "provider": "tdt", "code": "la1", "name": "La 1" },
+      "foreign": true, "source": { "pluginId": "tdt", "name": "TDT" },
+      "device": "phone", "lang": "en-US", "values": { "video": { "seen": true }, "plugin": {} }, "tab": "chat", "features": ["loading", "screen"],
+      "state": { "n": 1 }, "size": { "width": "compact", "height": "medium" }
+    }
+  },
+  "playerDroppedLog": "panel: player actions do nothing on a live channel, dropped (live_channel)"
+}

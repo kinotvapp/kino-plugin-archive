@@ -1,0 +1,43 @@
+{
+  "$comment": "Task 8r: kino.ai.ask, shared by the app (PluginAiTest.kitParityWithTheSharedCases, through PluginAi.mayAskFrom and PluginAiBridge) and the kit (test/kino-ai.test.mjs, through aiOriginAllowed and aiRequestVerdict). origins: a call as the app's PluginCall sees it: function (the export running), screen (a plugin screen's call), press (that screen event follows the person's own tap or submit), tick (a screen timer's tick), job (a scheduled job's run), interactive and personStarted (default true; false for a background or unattended call). Absent booleans are false, except interactive and personStarted. allowed: whether it may ask. requests: an ask's options and what Kino answers before any model is asked: ok (the request is read) or the error code; repeat makes a string of that many copies of the given text.",
+  "origins": [
+    { "name": "a settings action in Ajustes", "function": "action", "allowed": true },
+    { "name": "a legacy panel's press", "function": "panelAction", "allowed": true },
+    { "name": "a root screen's tap", "function": "screenEvent", "screen": true, "press": true, "allowed": true },
+    { "name": "a screen-mode panel's press", "function": "panelAction", "screen": true, "press": true, "allowed": true },
+    { "name": "a scheduled job's run", "function": "job", "job": true, "interactive": false, "personStarted": false, "allowed": true },
+    { "name": "a job mark on another export is never a job", "function": "screen", "job": true, "allowed": false },
+    { "name": "a screen's open event", "function": "screenEvent", "screen": true, "allowed": false },
+    { "name": "a screen's load-more", "function": "screenEvent", "screen": true, "allowed": false },
+    { "name": "a screen timer's tick", "function": "screenEvent", "screen": true, "tick": true, "allowed": false },
+    { "name": "a tick is never a press", "function": "screenEvent", "screen": true, "press": true, "tick": true, "allowed": false },
+    { "name": "a screen-mode panel's timer tick", "function": "panelAction", "screen": true, "tick": true, "allowed": false },
+    { "name": "a screenEvent outside a screen session", "function": "screenEvent", "allowed": false },
+    { "name": "a screen's render", "function": "screen", "screen": true, "allowed": false },
+    { "name": "a panel's refreshMs", "function": "panel", "screen": true, "personStarted": false, "allowed": false },
+    { "name": "a playerEvent", "function": "playerEvent", "personStarted": false, "allowed": false },
+    { "name": "an unattended panelAction", "function": "panelAction", "personStarted": false, "allowed": false },
+    { "name": "a background action", "function": "action", "interactive": false, "personStarted": false, "allowed": false },
+    { "name": "a job export called outside a job run", "function": "job", "allowed": false },
+    { "name": "Home", "function": "home", "allowed": false },
+    { "name": "a search", "function": "search", "allowed": false },
+    { "name": "a play", "function": "resolve", "allowed": false }
+  ],
+  "requests": [
+    { "name": "a plain prompt", "options": { "prompt": "Sum this up" }, "result": "ok", "maxChars": 2048 },
+    { "name": "every option", "options": { "prompt": "Classify", "system": "You sort news", "json": true, "maxChars": 300 }, "result": "ok", "maxChars": 300 },
+    { "name": "a prompt of exactly the byte limit", "options": { "prompt": { "repeat": 8192, "of": "a" } }, "result": "ok", "maxChars": 2048 },
+    { "name": "a prompt one byte over", "options": { "prompt": { "repeat": 8193, "of": "a" } }, "result": "too_large" },
+    { "name": "multi-byte characters count their UTF-8 bytes", "options": { "prompt": { "repeat": 4097, "of": "ñ" } }, "result": "too_large" },
+    { "name": "a system text of exactly the byte limit", "options": { "prompt": "x", "system": { "repeat": 2048, "of": "s" } }, "result": "ok", "maxChars": 2048 },
+    { "name": "a system text one byte over", "options": { "prompt": "x", "system": { "repeat": 2049, "of": "s" } }, "result": "too_large" },
+    { "name": "an empty prompt", "options": { "prompt": "" }, "result": "refused" },
+    { "name": "a prompt that is not a string", "options": { "prompt": 42 }, "result": "refused" },
+    { "name": "a system that is not a string", "options": { "prompt": "x", "system": ["a"] }, "result": "refused" },
+    { "name": "json that is not true or false", "options": { "prompt": "x", "json": "yes" }, "result": "refused" },
+    { "name": "maxChars at its limit", "options": { "prompt": "x", "maxChars": 4096 }, "result": "ok", "maxChars": 4096 },
+    { "name": "maxChars over its limit", "options": { "prompt": "x", "maxChars": 4097 }, "result": "refused" },
+    { "name": "maxChars zero", "options": { "prompt": "x", "maxChars": 0 }, "result": "refused" },
+    { "name": "maxChars not whole", "options": { "prompt": "x", "maxChars": 10.5 }, "result": "refused" }
+  ]
+}

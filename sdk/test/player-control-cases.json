@@ -1,0 +1,76 @@
+{
+  "$comment": "Task 8j: what Kino does with a player action, by who asks (owner: the plugin whose title plays; contributed: a panel another plugin contributes, Task 8k), why (origin) and whether playerControl is granted (control). The app (PlayerControlTest, PlayerControlRules.sift + PanelPlayerGate) and the kit (player-control.test.mjs, panel.mjs siftPlayer + kino-shim.mjs playerControlGate) read these same cases. sift: kept null means nothing reaches the player. gate: each step at atMs through ONE gate (one plugin); live, held (Kino not in front, a Kino dialog, the person seeking), casting (the phone player held for a cast) and paused (the video is paused now) default to false.",
+  "sift": [
+    { "name": "owner press pause, no capability", "action": { "pause": true }, "origin": "press", "contributed": false, "control": false, "kept": { "pause": true }, "controlled": false, "announce": false, "logs": [] },
+    { "name": "owner change pause needs a press", "action": { "pause": true }, "origin": "change", "contributed": false, "control": false, "kept": null, "logs": ["panel: player.pause needs the person's press in the panel or the playerControl capability, dropped"] },
+    { "name": "owner playerEvent seek as before", "action": { "seekToMs": 5000 }, "origin": "event", "contributed": false, "control": false, "kept": { "seekToMs": 5000 }, "controlled": false, "announce": false, "logs": [] },
+    { "name": "owner playerEvent pause needs the capability, its seek stays", "action": { "seekToMs": 5000, "pause": true }, "origin": "event", "contributed": false, "control": false, "kept": { "seekToMs": 5000 }, "controlled": false, "announce": false, "logs": ["panel: player.pause needs the person's press in the panel or the playerControl capability, dropped"] },
+    { "name": "owner panel result never without the capability", "action": { "seekToMs": 5000 }, "origin": "refresh", "contributed": false, "control": false, "kept": null, "logs": ["panel: a player action from a panel result or a playerEvent needs the playerControl capability, dropped"] },
+    { "name": "owner refresh pause with the capability, announced", "action": { "pause": true }, "origin": "refresh", "contributed": false, "control": true, "kept": { "pause": true }, "controlled": true, "announce": true, "logs": [] },
+    { "name": "owner playerEvent resume with the capability, announced", "action": { "pause": false }, "origin": "event", "contributed": false, "control": true, "kept": { "pause": false }, "controlled": true, "announce": true, "logs": [] },
+    { "name": "owner press pause with the capability is the person's", "action": { "pause": true }, "origin": "press", "contributed": false, "control": true, "kept": { "pause": true }, "controlled": false, "announce": false, "logs": [] },
+    { "name": "owner change with the capability, the person's: not announced", "action": { "seekStepMs": 15000, "pause": true }, "origin": "change", "contributed": false, "control": true, "kept": { "seekStepMs": 15000, "pause": true }, "controlled": true, "announce": false, "logs": [] },
+    { "name": "contributed press keeps only the seek", "action": { "seekToMs": 5000, "speed": 1.5 }, "origin": "press", "contributed": true, "control": false, "kept": { "seekToMs": 5000 }, "controlled": false, "announce": false, "logs": ["panel: a contributed panel only seeks; the playing plugin's player properties are its own, dropped"] },
+    { "name": "contributed playerEvent needs a press", "action": { "seekToMs": 5000 }, "origin": "event", "contributed": true, "control": false, "kept": null, "logs": ["panel: a contributed panel's player action needs the person's press in it or the playerControl capability, dropped"] },
+    { "name": "contributed refresh with the capability: seek, pause and speed", "action": { "seekToMs": 5000, "pause": true, "speed": 1.5, "seekStepMs": 15000 }, "origin": "refresh", "contributed": true, "control": true, "kept": { "seekToMs": 5000, "pause": true, "speed": 1.5 }, "controlled": true, "announce": true, "logs": ["panel: a contributed panel only seeks, pauses and sets the speed; the playing plugin's player properties are its own, dropped"] },
+    { "name": "contributed press seek with the capability is the person's", "action": { "seekToMs": 5000 }, "origin": "press", "contributed": true, "control": true, "kept": { "seekToMs": 5000 }, "controlled": false, "announce": false, "logs": [] },
+    { "name": "contributed press pause with the capability: controlled, not announced", "action": { "pause": true }, "origin": "press", "contributed": true, "control": true, "kept": { "pause": true }, "controlled": true, "announce": false, "logs": [] }
+  ],
+  "gate": [
+    {
+      "name": "one seek or pause a second, shared",
+      "steps": [
+        { "atMs": 0, "action": { "pause": true }, "controlled": true, "kept": { "pause": true }, "logs": [] },
+        { "atMs": 500, "action": { "seekToMs": 5000 }, "controlled": true, "kept": null, "logs": ["panel: a controlled player action more than once per second, dropped"] },
+        { "atMs": 900, "paused": true, "action": { "pause": false }, "controlled": false, "kept": null, "logs": ["panel: player.pause more than once per second, dropped"] },
+        { "atMs": 1000, "action": { "seekToMs": 5000 }, "controlled": true, "kept": { "seekToMs": 5000 }, "logs": [] }
+      ]
+    },
+    {
+      "name": "on live only pause or resume",
+      "steps": [
+        { "atMs": 0, "live": true, "action": { "seekToMs": 5000, "pause": true }, "controlled": true, "kept": { "pause": true }, "logs": ["panel: on a live stream a controlled player action only pauses or resumes, the rest dropped"] },
+        { "atMs": 2000, "live": true, "action": { "speed": 1.5 }, "controlled": true, "kept": null, "logs": ["panel: on a live stream a controlled player action only pauses or resumes, the rest dropped"] }
+      ]
+    },
+    {
+      "name": "never under a Kino dialog or while the person seeks",
+      "steps": [
+        { "atMs": 0, "held": true, "action": { "pause": true }, "controlled": true, "kept": null, "logs": ["panel: player action while Kino is not in front, a Kino dialog is open or the person is seeking, dropped"] },
+        { "atMs": 2000, "held": true, "action": { "pause": true }, "controlled": false, "kept": { "pause": true }, "logs": [] }
+      ]
+    },
+    {
+      "name": "while casting no pause or resume reaches the phone player, the person's press included",
+      "steps": [
+        { "atMs": 0, "casting": true, "action": { "pause": false }, "controlled": false, "kept": null, "logs": ["panel: player.pause while casting, dropped (the phone's player is held for the TV)"] },
+        { "atMs": 2000, "casting": true, "action": { "seekToMs": 5000, "pause": true }, "controlled": true, "kept": { "seekToMs": 5000 }, "logs": ["panel: player.pause while casting, dropped (the phone's player is held for the TV)"] }
+      ]
+    },
+    {
+      "name": "a pause that changes nothing is dropped and costs nothing",
+      "steps": [
+        { "atMs": 0, "paused": true, "action": { "pause": true }, "controlled": true, "kept": null, "logs": ["panel: player.pause changes nothing (the video is already so), dropped"] },
+        { "atMs": 100, "paused": true, "action": { "pause": false }, "controlled": true, "kept": { "pause": false }, "logs": [] },
+        { "atMs": 2000, "paused": false, "action": { "pause": false }, "controlled": false, "kept": null, "logs": ["panel: player.pause changes nothing (the video is already so), dropped"] }
+      ]
+    },
+    {
+      "name": "a controlled action of any field at most once a second; the owner's own stored fields as before",
+      "steps": [
+        { "atMs": 0, "action": { "speed": 1.5 }, "controlled": true, "kept": { "speed": 1.5 }, "logs": [] },
+        { "atMs": 500, "action": { "speed": 2 }, "controlled": true, "kept": null, "logs": ["panel: a controlled player action more than once per second, dropped"] },
+        { "atMs": 600, "action": { "seekStepMs": 15000 }, "controlled": false, "kept": { "seekStepMs": 15000 }, "logs": [] },
+        { "atMs": 1000, "action": { "speed": 1.25 }, "controlled": true, "kept": { "speed": 1.25 }, "logs": [] }
+      ]
+    }
+  ],
+  "perMinute": { "every": 1000, "count": 31, "keptCount": 30, "afterWindowAtMs": 60000 },
+  "notice": [
+    { "name": "Fiesta", "action": { "pause": true }, "es": "Fiesta: pausado", "en": "Fiesta: paused" },
+    { "name": "Fiesta", "action": { "pause": false, "seekToMs": 3723000 }, "es": "Fiesta: reanudado, movido a 1:02:03", "en": "Fiesta: resumed, moved to 1:02:03" },
+    { "name": "Fiesta", "action": { "seekToMs": 125000, "speed": 1.5 }, "es": "Fiesta: movido a 2:05, velocidad 1.5×", "en": "Fiesta: moved to 2:05, speed 1.5×" },
+    { "name": "K1no", "action": { "pause": true }, "es": "Plugin «K1no»: pausado", "en": "Plugin “K1no”: paused" },
+    { "name": "Fiesta", "action": { "seekStepMs": 15000 }, "es": null, "en": null }
+  ]
+}

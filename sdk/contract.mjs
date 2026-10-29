@@ -62,33 +62,286 @@ export function schemeAllowed(u, manifest) {
   return (manifest.insecureHosts || []).includes(h);
 }
 
-/** What the entry must export: the capabilities' functions, settingsStatus/action for a status/action setting, and `section` for a declared section (apiVersion 6). */
+/** What the entry must export: the capabilities' functions, settingsStatus/action for a status (or qr, apiVersion 13)/action setting, and `section` for a declared section (apiVersion 6). */
 export function requiredExports(caps, settings = [], manifest = {}) {
   const ui = contract.settings.ui.exports;
   const fromSettings = [
-    ...(settings.some((s) => s && s.type === "status") ? [ui.status] : []),
+    ...(settings.some((s) => s && (s.type === "status" || s.type === "qr")) ? [ui.status] : []),
     ...(settings.some((s) => s && s.type === "action") ? [ui.action] : []),
   ];
-  return [...new Set([...caps.flatMap((c) => contract.capabilities.exports[c] || (contract.capabilities.declarative.includes(c) ? [] : [c])), ...fromSettings, ...(manifest.section ? [contract.manifest.section.export] : []), ...(manifest.panel ? [contract.manifest.panel.exports.panel] : [])])];
+  return [...new Set([...caps.flatMap((c) => contract.capabilities.exports[c] || (contract.capabilities.declarative.includes(c) ? [] : [c])), ...fromSettings, ...(manifest.section ? [contract.manifest.section.export] : []), ...(manifest.panel ? [contract.manifest.panel.exports.panel] : []), ...((manifest.screen?.replaces || []).includes("categories") ? [contract.output.categories.export] : [])])];
 }
+
+/** PluginManifest.kt's refusals for the `screen` field (apiVersion 14). */
+/** A `go.screen` route (PluginScreenOutput.GO_ROUTE). */
+const GO_ROUTE = /^[A-Za-z0-9._~-]{1,64}$/;
+
+/**
+ * PluginScreenOutput.screenGoOf: a `go.screen`'s value (Task 7g), `{ route?, args? }` and nothing else, or null with [bad] told
+ * why. Shared by screens, the player panel and the `open` of a home/section/browse item or row. `args` is measured as the app
+ * measures it (org.json's text, which escapes "/").
+ */
+export function screenGoOf(v, bad) {
+  if (v === null || typeof v !== "object" || Array.isArray(v)) { bad("is not an object"); return null; }
+  if (Object.keys(v).some((k) => k !== "route" && k !== "args")) { bad("takes only route and args"); return null; }
+  const S = contract.manifest.screen.limits;
+  let route = null;
+  if (v.route !== undefined && v.route !== null) {
+    if (typeof v.route !== "string" || !GO_ROUTE.test(v.route) || v.route.length > S.maxGoRouteChars) { bad(`route must be 1 to ${S.maxGoRouteChars} letters, digits or . _ ~ -`); return null; }
+    route = v.route;
+  }
+  let args = null;
+  if (v.args !== undefined && v.args !== null) {
+    if (typeof v.args !== "object" || Array.isArray(v.args)) { bad("args is not an object"); return null; }
+    if (Buffer.byteLength(JSON.stringify(v.args).replace(/\//g, "\\/"), "utf8") > S.maxGoArgsBytes) { bad(`args is over ${S.maxGoArgsBytes} bytes`); return null; }
+    args = v.args;
+  }
+  return { ...(route !== null ? { route } : {}), ...(args !== null ? { args } : {}) };
+}
+
+/** A value as the app's screen log lines show it (PluginScreenOutput.fmt). */
+function goFmt(v) {
+  if (typeof v === "string") return `"${v.slice(0, 40)}"`;
+  if (v === undefined || v === null) return "null";
+  const t = typeof v === "number" ? (Number.isInteger(v) ? String(v) : javaDouble(v)) : typeof v === "object" ? JSON.stringify(v).replace(/\//g, "\\/") : String(v);
+  return t.slice(0, 40);
+}
+
+/**
+ * PluginScreenOutput.titleByIdsOf (Task 8m): a `go.titleByIds`'s value, only its fields, a kind of movie or series, at least
+ * one of tmdb and imdb, every number a whole number in its range and the title scrubbed; or null with [bad] told the first
+ * reason. A null field is an absent one. Shared by screens and the player panel's answers. Returns only the fields kept.
+ */
+export function titleByIdsOf(v, bad) {
+  const T = contract.manifest.screen.goTitleByIds;
+  if (v === null || typeof v !== "object" || Array.isArray(v)) { bad("is not an object"); return null; }
+  if (Object.keys(v).some((k) => !T.fields.includes(k))) { bad(`takes only ${T.fields.join(", ")}`); return null; }
+  const present = (k) => v[k] !== undefined && v[k] !== null;
+  const kind = present("kind") ? v.kind : null;
+  if (typeof kind !== "string" || !T.kinds.includes(kind)) { bad(`kind ${goFmt(kind)} is not ${T.kinds.join(", ")}`); return null; }
+  const NOT = Symbol("not whole");
+  const whole = (k, lo, hi) => {
+    if (!present(k)) return null;
+    const d = v[k];
+    if (typeof d !== "number" || !Number.isInteger(d) || d < lo || d > hi) { bad(`${k} must be a whole number from ${lo} to ${hi}`); return NOT; }
+    return d;
+  };
+  const tmdb = whole("tmdb", 1, T.maxTmdb);
+  if (tmdb === NOT) return null;
+  let imdb = null;
+  if (present("imdb")) {
+    if (typeof v.imdb !== "string" || !new RegExp(T.imdbPattern).test(v.imdb)) { bad("imdb must be tt and 7 to 10 digits"); return null; }
+    imdb = v.imdb;
+  }
+  if (tmdb === null && imdb === null) { bad("needs tmdb or imdb"); return null; }
+  const season = whole("season", 0, T.maxSeason);
+  if (season === NOT) return null;
+  const episode = whole("episode", 1, T.maxEpisode);
+  if (episode === NOT) return null;
+  if ((season !== null || episode !== null) && kind !== "series") { bad("season and episode are for a series only"); return null; }
+  if (episode !== null && season === null) { bad("episode needs a season"); return null; }
+  const year = whole("year", T.minYear, T.maxYear);
+  if (year === NOT) return null;
+  const badTitle = `title must be text of at most ${T.maxTitleChars} characters`;
+  let title = null;
+  if (present("title")) {
+    if (typeof v.title !== "string") { bad(badTitle); return null; }
+    const t = v.title.replace(new RegExp(T.scrubPattern, "g"), "").trim();
+    if (t.length > T.maxTitleChars) { bad(badTitle); return null; }
+    if (t !== "") title = t;
+  }
+  const out = { kind };
+  if (tmdb !== null) out.tmdb = tmdb;
+  if (imdb !== null) out.imdb = imdb;
+  if (season !== null) out.season = season;
+  if (episode !== null) out.episode = episode;
+  if (title !== null) out.title = title;
+  if (year !== null) out.year = year;
+  return out;
+}
+
+/**
+ * ScreenUrl.read (Task 8s): a `go.url`'s href by the same textual rule as the app, step for step, so both give the same
+ * verdict, reason and normalized address (screen-cases.json pins it). Returns `{ href, host }` or `{ bad }`. The kit never
+ * gates on `new URL()`: the WHATWG parser re-encodes `'` in a query, maps or refuses some punycode labels and resolves dot
+ * segments, so it would disagree with the app. The app also asks java.net.URI, which accepts everything this rule accepts.
+ */
+export function urlHrefOf(raw) {
+  const U = contract.manifest.screen.goUrl;
+  const NOT_HTTPS = "href must be an https address";
+  const NOT_VALID = "href is not a valid address";
+  if (typeof raw !== "string" || raw === "") return { bad: NOT_HTTPS };
+  if (raw.length > U.maxHrefChars) return { bad: `href is longer than ${U.maxHrefChars} characters` };
+  if (!new RegExp(U.hrefChars).test(raw)) return { bad: "href holds a space, a control, direction or non-ASCII character (write the host as punycode, percent-encode the rest)" };
+  if (raw.slice(0, 8).toLowerCase() !== "https://") return { bad: NOT_HTTPS };
+  if (/%(?![0-9A-Fa-f]{2})/.test(raw) || raw.split("#").length > 2) return { bad: NOT_VALID };
+  const rest = raw.slice(8);
+  const cut = rest.search(/[/?#]/);
+  const end = cut < 0 ? rest.length : cut;
+  const authority = rest.slice(0, end);
+  const tail = rest.slice(end);
+  if (authority.includes("@")) return { bad: "href must not carry a user name or password" };
+  const colon = authority.indexOf(":");
+  if (colon >= 0) {
+    const port = authority.slice(colon + 1);
+    if (!/^[0-9]*$/.test(port)) return { bad: NOT_VALID };
+    if (port !== "" && port.replace(/^0+/, "") !== "443") return { bad: "href must not name a port other than 443" };
+  }
+  const host = (colon >= 0 ? authority.slice(0, colon) : authority).toLowerCase();
+  if (!urlPublicName(host)) return { bad: `href host "${host.slice(0, 64)}" is not a public name with a dot (never an IP address, localhost, a local name or a single label)` };
+  const path = tail === "" || tail[0] !== "/" ? `/${tail}` : tail;
+  return { href: `https://${host}${path}`, host };
+}
+
+/** ScreenUrl.publicName: 2+ labels of letters, digits and inner hyphens, the last starting with a letter, never a local name. */
+function urlPublicName(host) {
+  if (host === "" || host.length > 253) return false;
+  const labels = host.split(".");
+  if (labels.length < 2 || !labels.every((l) => /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(l)) || !/^[a-z]/.test(labels[labels.length - 1])) return false;
+  return !contract.manifest.screen.goUrl.blockedSuffixes.some((s) => host === s || host.endsWith(`.${s}`));
+}
+
+/**
+ * PluginScreenOutput.copyGoOf (Task 8x): a `go.copy`'s value, only text, label and sensitive; the text scrubbed (newlines kept),
+ * trimmed, 1..goCopy.maxTextChars characters in at most goCopy.maxLines lines; the label scrubbed, trimmed, at most
+ * goCopy.maxLabelChars (blank: none); sensitive true or false. Or null with [bad] told the first reason (never the text).
+ * Returns `{ text, label?, sensitive? }` (`sensitive` only when true).
+ */
+export function copyGoOf(v, bad) {
+  const C = contract.manifest.screen.goCopy;
+  if (v === null || typeof v !== "object" || Array.isArray(v)) { bad("is not an object"); return null; }
+  if (Object.keys(v).some((k) => !C.fields.includes(k))) { bad(`takes only ${C.fields.join(", ")}`); return null; }
+  const badText = `text must be 1 to ${C.maxTextChars} characters`;
+  if (typeof v.text !== "string") { bad(badText); return null; }
+  const text = v.text.replace(new RegExp(C.textScrubPattern, "g"), "").trim();
+  if (text === "" || text.length > C.maxTextChars) { bad(badText); return null; }
+  if (text.split("\n").length > C.maxLines) { bad(`text must be at most ${C.maxLines} lines`); return null; }
+  const badLabel = `label must be text of at most ${C.maxLabelChars} characters`;
+  let label = null;
+  if (v.label !== undefined && v.label !== null) {
+    if (typeof v.label !== "string") { bad(badLabel); return null; }
+    const l = v.label.replace(new RegExp(C.labelScrubPattern, "g"), "").trim();
+    if (l.length > C.maxLabelChars) { bad(badLabel); return null; }
+    if (l !== "") label = l;
+  }
+  let sensitive = false;
+  if (v.sensitive !== undefined && v.sensitive !== null) {
+    if (typeof v.sensitive !== "boolean") { bad("sensitive must be true or false"); return null; }
+    sensitive = v.sensitive;
+  }
+  return { text, ...(label !== null ? { label } : {}), ...(sensitive ? { sensitive: true } : {}) };
+}
+
+/**
+ * PluginScreenOutput.liveChannelGoOf (Task 11): a `go.liveChannel`'s value, exactly `provider` (a plugin id, never a reserved
+ * one) and `code` (an item id: the channel's id in that plugin's listing). Or null with [bad] told the first reason.
+ */
+export function liveChannelGoOf(v, bad) {
+  const L = contract.manifest.screen.goLiveChannel;
+  if (v === null || typeof v !== "object" || Array.isArray(v)) { bad("is not an object"); return null; }
+  if (Object.keys(v).some((k) => !L.fields.includes(k))) { bad(`takes only ${L.fields.join(", ")}`); return null; }
+  if (typeof v.provider !== "string" || !new RegExp(L.providerPattern).test(v.provider) || L.reservedProviders.includes(v.provider)) {
+    bad("provider must be a plugin id"); return null;
+  }
+  if (typeof v.code !== "string" || !new RegExp(L.codePattern).test(v.code)) { bad("code must be a channel id (1 to 128 letters, digits, . _ ~ -)"); return null; }
+  return { provider: v.provider, code: v.code };
+}
+
+/**
+ * ScreenLiveChannel.refusal (Task 11): why a kept `go.liveChannel` from [manifest]'s plugin is not honoured for an event of
+ * [trigger] ("press", "submit", "change", "open", "timer", ...), or null when Kino tunes. Not the person's own press or submit:
+ * "not_press"; a plugin whose approved contributing panel does not declare "live" in kinds: goLiveChannel.needsLiveTabLog.
+ */
+export function liveChannelGoRefusal(manifest, trigger) {
+  const L = contract.manifest.screen.goLiveChannel;
+  const C = contract.manifest.panel.contributes;
+  if (!L.fromTriggers.includes(trigger)) return "not_press";
+  const caps = manifest?.capabilities ?? [];
+  const kinds = Array.isArray(manifest?.panel?.kinds) ? manifest.panel.kinds : C.kinds.default;
+  if (manifest?.panel?.contributes !== true || !caps.includes(C.capability) || !kinds.includes(L.needsKind)) return L.needsLiveTabLog;
+  return null;
+}
+
+/**
+ * ScreenUrl.cleanTitle (Task 8s fix round 1, M3): goUrl.titleScrubPattern's characters removed, runs of combining marks cut to
+ * goUrl.maxCombiningMarks, trimmed.
+ */
+export function urlTitleOf(raw) {
+  const U = contract.manifest.screen.goUrl;
+  return raw.replace(new RegExp(U.titleScrubPattern, "g"), "").replace(new RegExp(`(\\p{Mn}{${U.maxCombiningMarks}})\\p{Mn}+`, "gu"), "$1").trim();
+}
+
+/**
+ * PluginScreenOutput.urlGoOf (Task 8s): a `go.url`'s value, only href and title, the href read by [urlHrefOf], the title
+ * scrubbed and trimmed (at most goUrl.maxTitleChars); or null with [bad] told the first reason. Returns `{ href, title? }`.
+ */
+export function urlGoOf(v, bad) {
+  const U = contract.manifest.screen.goUrl;
+  if (v === null || typeof v !== "object" || Array.isArray(v)) { bad("is not an object"); return null; }
+  if (Object.keys(v).some((k) => !U.fields.includes(k))) { bad(`takes only ${U.fields.join(", ")}`); return null; }
+  const read = urlHrefOf(v.href === undefined ? null : v.href);
+  if (read.bad !== undefined) { bad(read.bad); return null; }
+  const badTitle = `title must be text of at most ${U.maxTitleChars} characters`;
+  let title = null;
+  if (v.title !== undefined && v.title !== null) {
+    if (typeof v.title !== "string") { bad(badTitle); return null; }
+    const t = urlTitleOf(v.title);
+    if (t.length > U.maxTitleChars) { bad(badTitle); return null; }
+    if (t !== "") title = t;
+  }
+  return title === null ? { href: read.href } : { href: read.href, title };
+}
+
+/** PluginManifest.kt's LABEL_SCRUB: what a plugin's button label never keeps (control characters, bidirectional overrides). */
+const LABEL_SCRUB = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+
+const SCREEN_MESSAGES = {
+  notObject: 'The "screen" field must be an object with a "label"',
+  badIconFile: 'The "screen.iconFile" field must be a relative path to a .png',
+  bothIcons: 'The "screen" field takes an "icon" or an "iconFile", not both',
+  badMenuOpens: 'The "screen.menuOpens" field must be "section", "screen" or "both"',
+  menuNeedsSection: 'The "screen.menuOpens" value "section" or "both" needs the "section" field',
+  badAdult: 'The "screen.adult" field must be true or false',
+  badSettingsIn: 'The "screen.settingsIn" field must be "settings", "screen" or "both"',
+  settingsNeedScreen: 'The "screen.settingsIn" value "screen" needs a screen entry: "screen.menuOpens" "screen" or "both", or "settings" in "screen.opensFrom"',
+  badOpensFrom: 'The "screen.opensFrom" field must be a list of "menu" and "settings"',
+  emptyOpensFrom: 'The "screen.opensFrom" field needs "menu", "settings" or both',
+  badSettingsButton: 'The "screen.settingsButton" field must be an object whose "label" and "labelEn" are 1 to 40 characters',
+  badReplaces: 'The "screen.replaces" field must be a list of "categories"',
+  replacesNeedsCatalog: 'The "screen.replaces" value "categories" needs a catalog: the "browse" capability',
+  needsCapability: 'The "screen" field needs the "screen" capability',
+  capabilityNeedsBlock: 'The "screen" capability needs a "screen" field with a "label"',
+};
 
 /** Same checks, same order, same English messages as the app's own manifest validation. Returns { ok, field?, message?, manifest? }. */
 const EXTERNAL_RESOLVER_BAD =
-  'The "externalResolver" field must be an object with a "package" (an Android package name) and, optionally, an "apk" with a GitHub release "url" (https://github.com/<owner>/<repo>/releases/download/<tag>/<file>) and a 64-character hex "sha256"; "fdroid" may only be true and "downloader" an object with a "code" of 3 to 10 digits';
+  'The "externalResolver" field must be an object with a "package" (an Android package name) and, optionally, an "apk" with a GitHub release or archive.org "url" (https://github.com/<owner>/<repo>/releases/download/<tag>/<file> or https://archive.org/download/<item>/<file>) and a 64-character hex "sha256"; "fdroid" may only be true and "downloader" an object with a "code" of 3 to 10 digits; "desktop" may only have "windows", "linux" and "macos", each an object with the same kind of "url" and "sha256"';
+const DESKTOP_SYSTEMS = ["windows", "linux", "macos"];
 const RESOLVER_APK_PATH = /^\/[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}\/releases\/(?:download\/[A-Za-z0-9._+-]{1,100}|latest\/download)\/[A-Za-z0-9._+-]{1,200}$/;
+const RESOLVER_ARCHIVE_PATH = /^\/download\/[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._+-]{1,200}$/;
 
-/** Whether `externalResolver` is well formed, as the app reads it: `{ package, apk?: { url, sha256, label? }, fdroid?: true, downloader?: { code } }`. */
+/** A `{ url, sha256 }` download: only a GitHub release asset or an archive.org file (that is where Kino fetches a recommended resolver from, nowhere else) and the sha256 its bytes must have. */
+function resolverDownloadOk(a) {
+  if (a === null || typeof a !== "object" || Array.isArray(a) || typeof a.url !== "string" || a.url.length > 2048 || /[\u0000-\u001f\u007f]/.test(a.url)) return false;
+  let u;
+  try { u = new URL(a.url); } catch { return false; }
+  if (u.protocol !== "https:" || u.port !== "" || u.username || u.password || u.search) return false;
+  if (!(u.hostname === "github.com" ? RESOLVER_APK_PATH : u.hostname === "archive.org" ? RESOLVER_ARCHIVE_PATH : /(?!)/).test(u.pathname)) return false;
+  return typeof a.sha256 === "string" && /^[0-9a-fA-F]{64}$/.test(a.sha256);
+}
+
+/** Whether `externalResolver` is well formed, as the app reads it: `{ package, apk?: { url, sha256, label? }, fdroid?: true, downloader?: { code }, desktop?: { windows|linux|macos: { url, sha256 } } }`. */
 export function externalResolverOk(r) {
   if (r === null || typeof r !== "object" || Array.isArray(r)) return false;
   if (typeof r.package !== "string" || r.package.length > 255 || !ANDROID_PACKAGE.test(r.package)) return false;
+  if (r.desktop !== undefined) {
+    const d = r.desktop;
+    if (d === null || typeof d !== "object" || Array.isArray(d)) return false;
+    for (const [os, p] of Object.entries(d)) if (!DESKTOP_SYSTEMS.includes(os) || !resolverDownloadOk(p)) return false;
+  }
   if (r.apk !== undefined) {
     const a = r.apk;
-    if (a === null || typeof a !== "object" || Array.isArray(a) || typeof a.url !== "string" || a.url.length > 2048 || /[\u0000-\u001f\u007f]/.test(a.url)) return false;
-    let u;
-    try { u = new URL(a.url); } catch { return false; }
-    // Only a GitHub release asset: that is where Kino downloads a recommended resolver from, nowhere else.
-    if (u.protocol !== "https:" || u.hostname !== "github.com" || u.port !== "" || u.username || u.password || u.search || !RESOLVER_APK_PATH.test(u.pathname)) return false;
-    if (typeof a.sha256 !== "string" || !/^[0-9a-fA-F]{64}$/.test(a.sha256)) return false;
+    if (!resolverDownloadOk(a)) return false;
     if (a.label !== undefined && (typeof a.label !== "string" || a.label.trim().length > 40 || /[\u0000-\u001f\u007f]/.test(a.label.trim()))) return false;
   }
   if (r.fdroid !== undefined && r.fdroid !== true) return false;
@@ -99,13 +352,163 @@ export function externalResolverOk(r) {
   return true;
 }
 
-export function validateManifest(text, { knownPermissions = contract.permissions } = {}) {
-  const m = contract.manifest;
+/**
+ * ManifestParser.isStandaloneSet: at least one standalone capability and nothing else but standaloneSupplements (socket,
+ * storageLarge, catalog, qrScan, room, schedule, ai, shared, and playerControl beside a panel). Such a plugin plays nothing and needs neither `required` nor `atLeastOneOf`.
+ */
+export function isStandaloneSet(caps) {
+  const { standalone, standaloneSupplements = [] } = contract.capabilities;
+  return caps.some((c) => standalone.includes(c)) && caps.every((c) => standalone.includes(c) || standaloneSupplements.includes(c));
+}
+
+/**
+ * The app's ManifestParser.parse: the manifest validated, then each `enhancements` block this Kino knows (key <= maxApiVersion)
+ * merged over it in numeric order through the same checks, at the key's apiVersion (contract.manifest.enhancements, Task 8c).
+ * A block that fails is dropped (manifest.enhancementsDropped, as the app logs it): an enhancement never refuses the plugin.
+ * [exports] (the script's, when known: the app's probe or record) also drops a block whose new exports the script lacks.
+ * manifest.capabilities / screen / settings are the merged ones; manifest.enhancementsApplied lists the keys merged.
+ */
+export function validateManifest(text, { knownPermissions = contract.permissions, exports = null } = {}) {
+  const base = validateManifestWithoutEnhancements(text, { knownPermissions });
+  if (!base.ok) return base;
+  return withEnhancements(JSON.parse(text), base.manifest, { knownPermissions }, exports);
+}
+
+/** ManifestParser.allRequiredExports: everything the entry must export for [m]. */
+function allRequiredExports(m) {
+  return new Set(requiredExports(m.capabilities, m.settings || [], m));
+}
+
+/** ManifestParser.shownKey: at most 40 characters, control and bidirectional characters replaced by "?". */
+const shownKey = (k) => k.slice(0, 40).replace(LABEL_SCRUB, "?");
+
+/**
+ * G5, PluginManifest.settingsApiVersion: the apiVersion the settings list in effect was read at: the key of the last enhancement
+ * that replaced `settings`, else the plugin's own. An action's setSettings (a password) and a status answer's `hide` gate on it.
+ */
+export function settingsApiVersion(manifest) {
+  return manifest.settingsApiVersion ?? (manifest.apiVersion || 1);
+}
+
+/** The apiVersion whose features the manifest uses: its own, or the newest enhancement merged (PluginManifest.featureApiVersion). */
+export function featureApiVersion(manifest) {
+  return Math.max(manifest.apiVersion, ...(manifest.enhancementsApplied || []));
+}
+
+/** The manifest as a Kino before `enhancements` reads it: that key is never looked at (ManifestParser.parseWithoutEnhancements). */
+export function validateManifestWithoutEnhancements(text, { knownPermissions = contract.permissions } = {}) {
   const bad = (field, message) => ({ ok: false, field, message });
-  if (Buffer.byteLength(text, "utf8") > m.maxBytes) return bad("kino-plugin.json", "The manifest is over 16 KB");
+  if (Buffer.byteLength(text, "utf8") > contract.manifest.maxBytes) return bad("kino-plugin.json", "The manifest is over 16 KB");
   let o;
   try { o = JSON.parse(text); } catch { return bad("kino-plugin.json", "The manifest is not valid JSON"); }
   if (o === null || typeof o !== "object" || Array.isArray(o)) return bad("kino-plugin.json", "The manifest is not valid JSON");
+  return validateManifestObject(o, { knownPermissions });
+}
+
+const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+
+/** ManifestParser.withEnhancements: [base] with each block of o.enhancements this Kino knows merged in. */
+function withEnhancements(o, base, opts, exports) {
+  const E = contract.manifest.enhancements;
+  if (!has(o, "enhancements")) return { ok: true, manifest: { ...base, enhancementsApplied: [], enhancementsDropped: [] } };
+  const blocks = o.enhancements;
+  if (blocks === null || typeof blocks !== "object" || Array.isArray(blocks)) {
+    return { ok: true, manifest: { ...base, enhancementsApplied: [], enhancementsDropped: [E.dropped.notObject] } };
+  }
+  const dropped = [];
+  const numbered = [];
+  // Sorted by UTF-16 code units, as the app sorts them: the log reads the same in both.
+  for (const k of Object.keys(blocks).sort()) {
+    if (!re(E.keyPattern).test(k)) dropped.push(`enhancements.${shownKey(k)}: ${E.dropped.badKey}`);
+    else numbered.push([Number(k), blocks[k]]);
+  }
+  numbered.sort((a, b) => a[0] - b[0]);
+  let merged = { ...o };
+  delete merged.enhancements;
+  // Task 18 (G1): a top-level `jobs` the plugin's own apiVersion ignores never starts to count; jobs come only in a block.
+  if (base.apiVersion < contract.kinoJobs.apiVersion) delete merged.jobs;
+  let current = { ...base, enhancementsApplied: [] };
+  for (const [key, block] of numbered) {
+    // Dropped, never refused: an older Kino installed the plugin, and the app's store re-reads it after a Kino update.
+    if (key <= base.apiVersion) { dropped.push(`enhancements.${key}: ${E.dropped.notAboveApi.replace("{api}", String(base.apiVersion))}`); continue; }
+    // A key above this Kino's maxApiVersion belongs to a newer Kino: ignored without a word.
+    if (key > contract.maxApiVersion) continue;
+    const step = enhance(merged, key, block, current, opts, exports);
+    if (typeof step === "string") dropped.push(`enhancements.${key}: ${step}`);
+    else { merged = step.json; current = step.manifest; }
+  }
+  const out = { ...current, enhancementsDropped: dropped };
+  // G5: the settings list's own apiVersion survives the copy (not enumerable, like on every step: settingsApiVersion()).
+  if (current.settingsApiVersion !== undefined) Object.defineProperty(out, "settingsApiVersion", { value: current.settingsApiVersion, enumerable: false });
+  return { ok: true, manifest: out };
+}
+
+/** ManifestParser.enhance: the block of [key] merged over [json] and validated at apiVersion [key], or why not (a string). */
+function enhance(json, key, block, current, opts, exports) {
+  const E = contract.manifest.enhancements;
+  if (block === null || typeof block !== "object" || Array.isArray(block)) return E.dropped.blockNotObject;
+  const extra = Object.keys(block).filter((k) => !E.fields.includes(k)).sort()[0];
+  if (extra !== undefined) return E.dropped.badField.replace("{field}", shownKey(extra));
+  const candidate = { ...json };
+  if (has(block, "capabilities")) {
+    const added = block.capabilities;
+    if (!Array.isArray(added) || added.some((c) => typeof c !== "string")) return E.dropped.capabilitiesNotList;
+    const no = added.find((c) => !E.capabilities.includes(c));
+    if (no !== undefined) return E.dropped.badCapability.replace("{capability}", shownKey(no));
+    const caps = Array.isArray(candidate.capabilities) ? [...candidate.capabilities] : [];
+    for (const c of added) if (!caps.includes(c)) caps.push(c);
+    candidate.capabilities = caps;
+  }
+  if (has(block, "screen")) candidate.screen = block.screen;
+  if (has(block, "settings")) candidate.settings = block.settings;
+  if (has(block, "panel")) candidate.panel = block.panel;
+  if (has(block, "jobs")) candidate.jobs = block.jobs;
+  candidate.apiVersion = key;
+  const r = validateManifestObject(candidate, opts);
+  if (!r.ok) return `${r.field}: ${r.message}`;
+  // Only the enhanced fields come from the check at [key]: a field the plugin's apiVersion ignores must not start to count.
+  if ((r.manifest.section === null) !== (current.section === null)) return E.dropped.sectionChanges.replace("{key}", String(key));
+  // A setting the manifest (or an earlier block) declares keeps its type: another device on an older Kino stores it as that.
+  if (has(block, "settings")) {
+    const retyped = r.manifest.settings.find((s) => current.settings.some((b) => b.key === s.key && b.type !== s.type));
+    if (retyped) return E.dropped.settingRetyped.replace("{key}", retyped.key);
+    // Task 18 (G13): nor its sync, as each list's own apiVersion reads it (below the field's apiVersion every value syncs).
+    const syncs = (s, api) => !(api >= contract.settings.sync.apiVersion && s.sync === false);
+    const listApi = current.settingsApiVersion ?? current.apiVersion;
+    const resynced = r.manifest.settings.find((s) => current.settings.some((b) => b.key === s.key && b.type === s.type && syncs(b, listApi) !== syncs(s, key)));
+    if (resynced) return E.dropped.settingResynced.replace("{key}", resynced.key);
+  }
+  // Categorías for this plugin follow its OWN apiVersion: a screen cannot replace what is never there.
+  const categoriesApi = contract.output.categories.apiVersion;
+  if ((r.manifest.screen?.replaces || []).includes("categories") && current.apiVersion < categoriesApi) {
+    return E.dropped.replacesNeedsCategories.replace("{min}", String(categoriesApi));
+  }
+  const next = {
+    ...current, capabilities: r.manifest.capabilities, screen: r.manifest.screen,
+    settings: has(block, "settings") ? r.manifest.settings : current.settings,
+    panel: has(block, "panel") ? r.manifest.panel : current.panel,
+    // Task 18 (G1): the jobs of a `schedule` an enhancement added (the check at [key] makes each need the other).
+    jobs: r.manifest.jobs || [],
+    enhancementsApplied: [...current.enhancementsApplied, key],
+  };
+  // Task 18 (G13): the apiVersion the settings list was read at (the block's key when it carried one); kept out of the manifest's
+  // own fields (not enumerable), for the next block's sync check.
+  Object.defineProperty(next, "settingsApiVersion", { value: has(block, "settings") ? key : (current.settingsApiVersion ?? current.apiVersion), enumerable: false });
+  // Task 8k: the capability and the contributing panel come together (the check at [key] saw the merged JSON, which may hold a
+  // `panel` the plugin's own apiVersion ignores).
+  if (next.capabilities.includes(contract.manifest.panel.contributes.capability) !== (next.panel?.contributes === true)) return E.dropped.panelTabNeedsPanel;
+  if (exports) {
+    const before = allRequiredExports(current);
+    const have = new Set(exports);
+    const missing = [...allRequiredExports(next)].filter((e) => !before.has(e) && !have.has(e)).sort();
+    if (missing.length) return E.dropped.missingExports.replace("{exports}", missing.join(", "));
+  }
+  return { json: candidate, manifest: next };
+}
+
+function validateManifestObject(o, { knownPermissions = contract.permissions } = {}) {
+  const m = contract.manifest;
+  const bad = (field, message) => ({ ok: false, field, message });
   const id = typeof o.id === "string" ? o.id : "";
   if (!re(m.idPattern).test(id)) return bad("id", 'The "id" field must be 2 to 40 lowercase letters, digits or hyphens');
   if (m.reservedIds.includes(id)) return bad("id", `The id "${id}" is reserved by Kino`);
@@ -172,9 +575,13 @@ export function validateManifest(text, { knownPermissions = contract.permissions
     if (playback !== undefined) return bad("catalogOnly", co.forbidsMessage.replace("{name}", playback));
     if (!co.atLeastOneOf.some((c) => caps.includes(c))) return bad("catalogOnly", co.atLeastOneOfMessage);
   } else {
-    // Capabilities that play nothing, declared without any other (a subtitle provider, a tracker, or both): neither
-    // `required` nor `atLeastOneOf` applies.
-    const standalone = caps.length > 0 && caps.every((c) => contract.capabilities.standalone.includes(c));
+    // Capabilities that play nothing, declared without any other (a subtitle provider, a tracker, or both), maybe with the
+    // runtime room they use (apiVersion 13 standaloneSupplements): neither `required` nor `atLeastOneOf` applies.
+    const standalone = isStandaloneSet(caps);
+    // Task 8t (ManifestParser): a standalone set may hold playerControl only beside a panel object.
+    if (standalone && caps.includes("playerControl") && !(o.apiVersion >= m.panel.apiVersion && o.panel !== null && typeof o.panel === "object" && !Array.isArray(o.panel))) {
+      return bad("capabilities", contract.capabilities.playerControlNeedsPanelMessage);
+    }
     const missingRequiredCap = contract.capabilities.required.find((c) => !caps.includes(c));
     if (!standalone && missingRequiredCap !== undefined) return bad("capabilities", `The plugin must declare "${missingRequiredCap}"`);
     if (!standalone && !contract.capabilities.atLeastOneOf.some((c) => caps.includes(c))) {
@@ -253,7 +660,16 @@ export function validateManifest(text, { knownPermissions = contract.permissions
   if (o.panel !== undefined && o.apiVersion >= m.panel.apiVersion) {
     const max = m.panel.labelMaxChars;
     if (o.panel === null || typeof o.panel !== "object" || Array.isArray(o.panel)) return bad("panel", 'The "panel" field must be an object with a "label"');
-    const label = typeof o.panel.label === "string" ? o.panel.label.trim() : "";
+    // apiVersion 14 (Task 8k): `contributes`, a tab in the player panel of any content. Below it the key is unknown.
+    const C = m.panel.contributes;
+    let contributes = false;
+    if (o.apiVersion >= C.apiVersion && o.panel.contributes !== undefined && o.panel.contributes !== null) {
+      if (typeof o.panel.contributes !== "boolean") return bad("panel", C.badMessage);
+      contributes = o.panel.contributes;
+    }
+    // A contributing panel may leave its label out: the plugin's name stands in (cut to the label's limit).
+    let label = typeof o.panel.label === "string" ? o.panel.label.trim() : "";
+    if (!label && contributes && !has(o.panel, "label")) label = name.slice(0, max).trim();
     if (!label || label.length > max) return bad("panel", `The "panel.label" field must be 1 to ${max} characters`);
     const labelEn = englishVariant(o.panel, "label", 1, max);
     if (labelEn === null) return bad("panel", `The "panel.labelEn" field must be 1 to ${max} characters`);
@@ -263,7 +679,105 @@ export function validateManifest(text, { knownPermissions = contract.permissions
     const iconFile = typeof rawFile === "string" && rawFile.replace(/^\.\//, "") ? rawFile.replace(/^\.\//, "") : null;
     if (icon !== null && iconFile !== null) return bad("panel", 'The "panel" field takes "icon" or "iconFile", not both');
     if (iconFile !== null && (!isSafeRelativePath(iconFile) || !iconFile.endsWith(".png"))) return bad("panel", 'The "panel.iconFile" field must be a relative path to a .png');
-    panel = { label, ...(labelEn ? { labelEn } : {}), ...(icon !== null ? { icon } : {}), ...(iconFile !== null ? { iconFile } : {}) };
+    // Task 11 (apiVersion 14): which content a contributed tab joins, "title" and/or "live"; default ["title"].
+    const K = C.kinds;
+    let kinds = null;
+    if (o.apiVersion >= C.apiVersion && o.panel.kinds !== undefined && o.panel.kinds !== null) {
+      if (!contributes) return bad("panel", K.needsContributesMessage);
+      const raw = o.panel.kinds;
+      if (!Array.isArray(raw) || raw.length === 0 || raw.some((k) => !K.values.includes(k))) return bad("panel", K.badMessage);
+      kinds = K.values.filter((k) => raw.includes(k));
+    }
+    panel = {
+      label, ...(labelEn ? { labelEn } : {}), ...(icon !== null ? { icon } : {}), ...(iconFile !== null ? { iconFile } : {}), ...(contributes ? { contributes: true } : {}),
+      ...(contributes ? { kinds: kinds ?? [...K.default] } : {}),
+    };
+  }
+  // Task 8k: the capability and `panel.contributes` need each other (the capability is what the person approves).
+  if (panel?.contributes === true && !caps.includes(m.panel.contributes.capability)) return bad("panel", m.panel.contributes.needsCapabilityMessage);
+  if (caps.includes(m.panel.contributes.capability) && panel?.contributes !== true) return bad("capabilities", m.panel.contributes.capabilityNeedsMessage);
+  // apiVersion 14: the screen canvas's menu entry (PluginManifest.kt). The block and the capability need each other; below 14
+  // both are unknown. `icon` (a predefined name, any string: validate.mjs warns) or `iconFile` (a .png in the repo), not both.
+  let screen = null;
+  if (o.apiVersion >= m.screen.apiVersion) {
+    if (!caps.includes("screen")) {
+      if (o.screen !== undefined) return bad("screen", SCREEN_MESSAGES.needsCapability);
+    } else {
+      if (o.screen === undefined) return bad("screen", SCREEN_MESSAGES.capabilityNeedsBlock);
+      const sc = o.screen;
+      if (sc === null || typeof sc !== "object" || Array.isArray(sc)) return bad("screen", SCREEN_MESSAGES.notObject);
+      const max = m.screen.labelMaxChars;
+      const label = typeof sc.label === "string" ? sc.label.trim() : "";
+      if (!label || label.length > max) return bad("screen", `The "screen.label" field must be 1 to ${max} characters`);
+      const labelEn = englishVariant(sc, "label", 1, max);
+      if (labelEn === null) return bad("screen", `The "screen.labelEn" field must be 1 to ${max} characters`);
+      // Where the screen opens from (Task 7g): without the menu, the icon and menuOpens are ignored (no entry draws them).
+      let opensFrom = ["menu"];
+      if (sc.opensFrom !== undefined && sc.opensFrom !== null) {
+        if (!Array.isArray(sc.opensFrom)) return bad("screen", SCREEN_MESSAGES.badOpensFrom);
+        const out = [];
+        for (const v of sc.opensFrom) {
+          if (typeof v !== "string" || !m.screen.opensFrom.includes(v)) return bad("screen", SCREEN_MESSAGES.badOpensFrom);
+          if (!out.includes(v)) out.push(v);
+        }
+        if (out.length === 0) return bad("screen", SCREEN_MESSAGES.emptyOpensFrom);
+        opensFrom = out;
+      }
+      const inMenu = opensFrom.includes("menu");
+      let settingsButton = null;
+      if (sc.settingsButton !== undefined && sc.settingsButton !== null) {
+        const b = sc.settingsButton;
+        if (typeof b !== "object" || Array.isArray(b)) return bad("screen", SCREEN_MESSAGES.badSettingsButton);
+        const label = (key) => {
+          const v = b[key];
+          if (v === undefined || v === null) return "";
+          if (typeof v !== "string") return null;
+          const t = v.replace(LABEL_SCRUB, "").trim();
+          return t !== "" && t.length <= m.screen.settingsButtonLabelMaxChars ? t : null;
+        };
+        const es = label("label");
+        const en = label("labelEn");
+        if (es === null || en === null) return bad("screen", SCREEN_MESSAGES.badSettingsButton);
+        if (es !== "" || en !== "") settingsButton = { label: es, labelEn: en };
+      }
+      const icon = typeof sc.icon === "string" && sc.icon.trim() ? sc.icon.trim() : null;
+      const rawFile = sc.iconFile;
+      if (rawFile !== undefined && rawFile !== null && typeof rawFile !== "string") return bad("screen", SCREEN_MESSAGES.badIconFile);
+      const iconFile = typeof rawFile === "string" && rawFile.replace(/^\.\//, "") ? rawFile.replace(/^\.\//, "") : null;
+      if (icon !== null && iconFile !== null) return bad("screen", SCREEN_MESSAGES.bothIcons);
+      if (iconFile !== null && (!isSafeRelativePath(iconFile) || !iconFile.endsWith(".png"))) return bad("screen", SCREEN_MESSAGES.badIconFile);
+      let menuOpens;
+      // No menu entry for the screen: a section keeps its own entry, exactly as before screens existed.
+      if (!inMenu) menuOpens = section ? "section" : "screen";
+      else if (sc.menuOpens === undefined || sc.menuOpens === null) menuOpens = section ? "section" : "screen";
+      else if (typeof sc.menuOpens === "string" && m.screen.menuOpens.includes(sc.menuOpens)) menuOpens = sc.menuOpens;
+      else return bad("screen", SCREEN_MESSAGES.badMenuOpens);
+      if (inMenu && menuOpens !== "screen" && !section) return bad("screen", SCREEN_MESSAGES.menuNeedsSection);
+      if (sc.adult !== undefined && sc.adult !== null && typeof sc.adult !== "boolean") return bad("screen", SCREEN_MESSAGES.badAdult);
+      let settingsIn = "both";
+      if (sc.settingsIn !== undefined && sc.settingsIn !== null) {
+        if (typeof sc.settingsIn !== "string" || !m.screen.settingsIn.includes(sc.settingsIn)) return bad("screen", SCREEN_MESSAGES.badSettingsIn);
+        settingsIn = sc.settingsIn;
+      }
+      // Settings only in the screen need a screen the person can open: an entry of its own.
+      const hasEntry = (inMenu && menuOpens !== "section") || opensFrom.includes("settings");
+      if (settingsIn === "screen" && !hasEntry) return bad("screen", SCREEN_MESSAGES.settingsNeedScreen);
+      // What the screen takes the place of (Task 8): Kino's own Categorías needs the catalog it falls back on.
+      const replaces = [];
+      if (sc.replaces !== undefined && sc.replaces !== null) {
+        if (!Array.isArray(sc.replaces)) return bad("screen", SCREEN_MESSAGES.badReplaces);
+        for (const v of sc.replaces) {
+          if (typeof v !== "string" || !m.screen.replaces.includes(v)) return bad("screen", SCREEN_MESSAGES.badReplaces);
+          if (!replaces.includes(v)) replaces.push(v);
+        }
+      }
+      if (replaces.includes("categories") && !caps.includes("browse")) return bad("screen", SCREEN_MESSAGES.replacesNeedsCatalog);
+      screen = {
+        label, ...(labelEn ? { labelEn } : {}), ...(icon !== null && inMenu ? { icon } : {}), ...(iconFile !== null && inMenu ? { iconFile } : {}), menuOpens, adult: sc.adult === true, settingsIn,
+        ...(sc.every !== undefined && sc.every !== null ? { every: sc.every } : {}), opensFrom, ...(settingsButton !== null ? { settingsButton } : {}),
+        ...(replaces.length > 0 ? { replaces } : {}),
+      };
+    }
   }
   // apiVersion 9: where the settings go (rows, columns, cards). A list here; validate.mjs and panel.mjs judge the rest.
   if (o.settingsLayout !== undefined && o.apiVersion >= m.settingsLayout.apiVersion && !Array.isArray(o.settingsLayout)) return bad("settingsLayout", 'The "settingsLayout" field must be a list');
@@ -327,6 +841,26 @@ export function validateManifest(text, { knownPermissions = contract.permissions
     if (!caps.includes("externalResolve")) return bad("externalResolver", 'The "externalResolver" field needs the "externalResolve" capability');
     if (!externalResolverOk(o.externalResolver)) return bad("externalResolver", EXTERNAL_RESOLVER_BAD);
   }
+  // apiVersion 11, `nuvioRepos`: the Nuvio repositories a `nuvio` plugin uses (ManifestParser: 1 to 4, each a GitHub owner/repo or an https address).
+  if (o.apiVersion >= 11 && (caps.includes("nuvio") || o.nuvioRepos !== undefined)) {
+    const repos = o.nuvioRepos;
+    const one = (r) => typeof r === "string" && (/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}(@[A-Za-z0-9._\/-]+)?$/.test(r.trim()) || /^https:\/\/[^\s/]+\/\S*$/i.test(r.trim()) || /^https:\/\/github\.com\/[^\s/]+\/[^\s/]+/i.test(r.trim()));
+    if (!caps.includes("nuvio") || !Array.isArray(repos) || repos.length < 1 || repos.length > 4 || !repos.every(one)) {
+      return bad("nuvioRepos", 'The "nuvioRepos" field must list 1 to 4 GitHub repositories (owner/repo) or https addresses of a Nuvio manifest, and goes with the "nuvio" capability, which needs it');
+    }
+  }
+  // apiVersion 12, `sync` (ManifestParser.parseSync): only with syncProvider, which requires it; the numbers, keySecret and provision rules.
+  if (o.apiVersion >= m.sync.apiVersion) {
+    const syncError = syncFieldError(o, caps, o.settings || []);
+    if (syncError) return bad("sync", syncError);
+  }
+  // apiVersion 14, `jobs` (Task 8q, PluginJobs.parse): the background jobs of the `schedule` capability; each needs the other.
+  let jobs = [];
+  if (o.apiVersion >= contract.kinoJobs.apiVersion) {
+    const parsedJobs = parseJobs(o.jobs, caps, o.settings || []);
+    if (parsedJobs.message) return bad(caps.includes(contract.kinoJobs.capability) && !has(o, "jobs") ? "capabilities" : "jobs", parsedJobs.message);
+    jobs = parsedJobs.jobs;
+  }
   // Judged on what the app honours: below its apiVersion a field is ignored, so it forbids nothing there.
   if (catalogOnly) {
     const playback = { streamHosts: streamHostsAny, browser: browser && !browserPages };
@@ -335,10 +869,67 @@ export function validateManifest(text, { knownPermissions = contract.permissions
   }
   // Below apiVersion 9 the English keys are unknown: dropped here, so nothing downstream (the form, englishCoverage) sees them.
   const settingsOut = o.apiVersion >= contract.settings.english.apiVersion ? o.settings || [] : withoutEnglish(o.settings || []);
-  const out = { ...o, hosts: [...new Set(hosts)], capabilities: caps, permissions: o.permissions || [], settings: settingsOut, insecureHosts, liveStreamHostsAny, streamHostsAny, fetchHostsAny, discoverable, categories, debug, telemetry, browser, browserPages, section, panel, theme, secrets, secretKeyEncodings, catalogOnly };
+  const out = { ...o, hosts: [...new Set(hosts)], capabilities: caps, permissions: o.permissions || [], settings: settingsOut, insecureHosts, liveStreamHostsAny, streamHostsAny, fetchHostsAny, discoverable, categories, debug, telemetry, browser, browserPages, section, panel, screen, theme, secrets, secretKeyEncodings, catalogOnly };
+  // Task 8q: the parsed jobs (labels scrubbed, options sorted); none below apiVersion 14 or without `schedule`.
+  if (o.apiVersion >= contract.kinoJobs.apiVersion) out.jobs = jobs; else delete out.jobs;
   // `signature` only where the app reads it (apiVersion 5+): an ignored one is dropped, as the app drops it.
   if (!signed) delete out.signature;
   return { ok: true, manifest: out };
+}
+
+/** What a job label never keeps (PluginJobs.LABEL_SCRUB): control characters, zero-width and bidirectional marks. */
+const JOB_LABEL_SCRUB = /[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/g;
+
+/**
+ * The manifest's `jobs` as the app's PluginJobs.parse reads it: `{ jobs }` (each `{ id, label, labelEn, everyMin, everyOptions }`,
+ * labels scrubbed, options sorted, runOn "any" or "preferPhone") or `{ message }` (contract.kinoJobs.manifest). Other keys of a job
+ * are ignored. Shared cases: test/job-cases.json (run by the app too).
+ */
+export function parseJobs(raw, caps, settings = []) {
+  const J = contract.kinoJobs;
+  const M = J.manifest;
+  const declared = caps.includes(J.capability);
+  if (raw === undefined || raw === null) return declared ? { message: M.scheduleNeedsJobs } : { jobs: [] };
+  if (!declared) return { message: M.jobsNeedsCapability };
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > M.maxJobs) return { message: M.jobsBad };
+  const idPattern = new RegExp(M.idPattern);
+  const label = (v) => {
+    if (v === undefined || v === null) return "";
+    if (typeof v !== "string") return null;
+    const s = v.replace(JOB_LABEL_SCRUB, "").trim();
+    return s.length > 0 && s.length <= M.labelMaxChars ? s : null;
+  };
+  const minutes = (v) => (typeof v === "number" && Number.isInteger(v) && v >= M.minEveryMin && v <= M.maxEveryMin ? v : null);
+  const out = [];
+  for (const j of raw) {
+    if (j === null || typeof j !== "object" || Array.isArray(j)) return { message: M.jobsBad };
+    if (typeof j.id !== "string" || !idPattern.test(j.id)) return { message: M.badId };
+    if (out.some((x) => x.id === j.id)) return { message: M.duplicateId };
+    if (j.label === null || typeof j.label !== "object" || Array.isArray(j.label)) return { message: M.badLabel };
+    const es = label(j.label.es);
+    const en = label(j.label.en);
+    if (!es || en === null) return { message: M.badLabel };
+    if (!Array.isArray(j.everyOptions) || j.everyOptions.length < 1 || j.everyOptions.length > M.maxOptions) return { message: M.badOptions };
+    const options = [];
+    for (const v of j.everyOptions) {
+      const n = minutes(v);
+      if (n === null || options.includes(n)) return { message: M.badOptions };
+      options.push(n);
+    }
+    const every = minutes(j.everyMin);
+    if (every === null || !options.includes(every)) return { message: M.badEvery };
+    // Task 8q-2: runOn, the default when absent or null.
+    const runOn = j.runOn === undefined || j.runOn === null ? M.runOnDefault : j.runOn;
+    if (!M.runOnValues.includes(runOn)) return { message: M.badRunOn };
+    // Task 18 (G2): enabledBy, the key of one of the plugin's toggle settings (absent or null: the job's own opt-in switch).
+    let enabledBy = null;
+    if (j.enabledBy !== undefined && j.enabledBy !== null) {
+      if (typeof j.enabledBy !== "string" || !settings.some((s) => s && s.key === j.enabledBy && s.type === "toggle")) return { message: M.badEnabledBy };
+      enabledBy = j.enabledBy;
+    }
+    out.push({ id: j.id, label: es, labelEn: en, everyMin: every, everyOptions: options.sort((a, b) => a - b), runOn, enabledBy });
+  }
+  return { jobs: out };
 }
 
 /**
@@ -353,6 +944,45 @@ function isWellFormedSeal(seal, maxValueBytes, prefix) {
   const raw = Buffer.from(body, "base64url");
   const overhead = 60;
   return raw.length >= overhead + 1 && raw.length <= overhead + maxValueBytes;
+}
+
+/**
+ * What the app's ManifestParser refuses in the `sync` field (apiVersion 12), as its message, or null when it is fine (or
+ * absent without the syncProvider capability). [settings] are the manifest's own, already validated.
+ */
+function syncFieldError(o, caps, settings) {
+  const s = contract.manifest.sync;
+  if (!caps.includes(s.requires)) return o.sync !== undefined ? s.needsCapabilityMessage : null;
+  // Every provider derives its key from one of its own settings: a key one device made up could never reach another.
+  if (o.sync === undefined) return s.keySecret.missingMessage;
+  const v = o.sync;
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return s.badMessage;
+  if (v.mode !== undefined && !s.modes.includes(v.mode)) return s.badMessage;
+  const whole = (k) => v[k] === undefined || (Number.isInteger(v[k]) && v[k] > 0);
+  if (!whole("pullEveryMs") || !whole("pushDebounceMs") || !whole("maxBlobBytes")) return s.badMessage;
+  if (v.maxBlobBytes !== undefined && v.maxBlobBytes > s.maxBlobBytes) return s.badMessage;
+  if (v.keySecret === undefined) return s.keySecret.missingMessage;
+  const named = typeof v.keySecret === "string" && v.keySecret ? settings.find((x) => x.key === v.keySecret && x.type === s.keySecret.settingType) : null;
+  if (!named) return s.keySecret.badMessage;
+  if (named.default !== undefined && named.default !== null) return s.keySecret.noDefaultMessage;
+  // Every device derives the key from it: a device-only password ("sync": false, read from apiVersion 13) can't be the key.
+  if (named.sync === false && o.apiVersion >= contract.settings.sync.apiVersion) return s.keySecret.deviceOnlyMessage;
+  let provision = [];
+  if (v.provision !== undefined) {
+    if (!Array.isArray(v.provision) || v.provision.length > s.provision.maxNames || !v.provision.every((n) => typeof n === "string")) return s.provision.badMessage;
+    const valued = (n) => settings.some((x) => x.key === n && contract.settings.types[x.type]?.hasValue !== false);
+    if (new Set(v.provision).size !== v.provision.length || !v.provision.every(valued)) return s.provision.badMessage;
+    provision = v.provision;
+  }
+  // A device-only password may be named (apiVersion 13): a one-shot secret the pairing hands over while it holds a value;
+  // a device-only text never.
+  if (o.apiVersion >= contract.settings.sync.apiVersion && provision.some((n) => settings.some((x) => x.key === n && x.type === "text" && x.sync === false))) {
+    return s.provision.deviceOnlyTextMessage;
+  }
+  if (!provision.includes(v.keySecret)) return s.provision.needsKeySecretMessage;
+  // apiVersion 13 generateKey: Kino makes the keySecret value itself; below 13 the key is unknown, so ignored.
+  if (v.generateKey !== undefined && o.apiVersion >= s.generateKey.apiVersion && typeof v.generateKey !== "boolean") return s.generateKey.badMessage;
+  return null;
 }
 
 /**
@@ -445,10 +1075,32 @@ function validateSettings(list, apiVersion = contract.maxApiVersion) {
     if (!re(s.keyPattern).test(key)) return `Setting #${i + 1} has an invalid key`;
     if (keys.has(key)) return `The setting "${key}" is repeated`;
     keys.add(key);
-    const label = typeof o.label === "string" ? o.label.trim() : "";
-    if (!label || label.length > s.labelMaxChars) return `The setting "${key}" needs a label of 1 to ${s.labelMaxChars} characters`;
     const type = s.types[o.type];
     if (!type || typeof o.type !== "string") return `The setting "${key}" has an unknown type`;
+    const aids = s.configAids;
+    const aid = o.type === "link" || o.type === "help";
+    if (aid && apiVersion < aids.apiVersion) return `The setting "${key}" is of type ${o.type}: it needs apiVersion ${aids.apiVersion}`;
+    const label = typeof o.label === "string" ? o.label.trim() : "";
+    // A help's label is optional: without one Kino's own "Ayuda" / "Help" names the button.
+    const labelOptional = o.type === "help" && !label && (o.label === undefined || typeof o.label === "string");
+    if (!labelOptional && (!label || label.length > s.labelMaxChars)) return `The setting "${key}" needs a label of 1 to ${s.labelMaxChars} characters`;
+    if (o.type !== "link" && o.url !== undefined) return `Only a setting of type link has "url" ("${key}")`;
+    if (o.type !== "help" && ["title", "titleEn", "body", "bodyEn"].some((k) => o[k] !== undefined)) return `Only a setting of type help has "title" and "body" ("${key}")`;
+    if (o.type === "link" && !isLinkUrl(o.url)) return `The setting "${key}" of type link needs a "url": an https address without user info, at most ${aids.linkUrlMaxChars} characters`;
+    if (o.type === "help") {
+      const t = (k, max) => o[k] === undefined || o[k] === null ? "" : typeof o[k] === "string" && o[k].trim().length <= max ? o[k].trim() : null;
+      for (const [k, max] of [["title", aids.helpTitleMaxChars], ["titleEn", aids.helpTitleMaxChars], ["body", aids.helpBodyMaxChars], ["bodyEn", aids.helpBodyMaxChars]]) {
+        if (t(k, max) === null) return `"${k}" of the setting "${key}" must be a string of up to ${max} characters`;
+      }
+      if (!t("body", aids.helpBodyMaxChars) && !t("bodyEn", aids.helpBodyMaxChars)) return `The setting "${key}" of type help needs a "body" (or "bodyEn")`;
+    }
+    if (aid) {
+      // As PluginSettings.unsafeAidText: no control character (a body keeps \n; \r\n counts as one), invisible formatting
+      // (Cf: zero-width, direction overrides) or line/paragraph separator in the aid's texts.
+      const unsafe = (v, newlines) => typeof v === "string" && /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(newlines ? v.replace(/\r\n?/g, "\n").replace(/\n/g, "") : v.trim());
+      for (const k of ["label", "labelEn", "title", "titleEn"]) if (unsafe(o[k], false)) return `"${k}" of the setting "${key}" has a control, invisible or direction character`;
+      for (const k of ["body", "bodyEn"]) if (unsafe(o[k], true)) return `"${k}" of the setting "${key}" has a control, invisible or direction character`;
+    }
     if (type.hasValue === false && apiVersion < type.apiVersion) return `The setting "${key}" is of type ${o.type}: it needs apiVersion ${type.apiVersion}`;
     // A section's explanation may be longer than a field's hint (PluginSettings.MAX_SECTION_HINT_CHARS, Kino 0.9.51).
     const hintMax = o.type === "section" && s.sectionHintMaxChars ? s.sectionHintMaxChars : s.hintMaxChars;
@@ -471,6 +1123,12 @@ function validateSettings(list, apiVersion = contract.maxApiVersion) {
       const c = englishVariant(o, "confirm", 1, ui.confirmMaxChars);
       if (c === null) return `"confirmEn" of the setting "${key}" must be a string of 1 to ${ui.confirmMaxChars} characters`;
       if (o.confirm === undefined || o.confirm === null) return `"confirmEn" of the setting "${key}" also needs "confirm"`;
+    }
+    // apiVersion 13: only a qr setting has "refreshMs" (contract.qr.settingsQr), 2000 to 60000 ms; below 13 an unknown key, ignored.
+    if (o.refreshMs !== undefined && o.refreshMs !== null && apiVersion >= s.types.qr.apiVersion) {
+      const Q = contract.qr.settingsQr;
+      if (o.type !== "qr") return `Only a setting of type qr has "refreshMs" ("${key}")`;
+      if (!(Number.isInteger(o.refreshMs) && o.refreshMs >= Q.minRefreshMs && o.refreshMs <= Q.maxRefreshMs)) return `"refreshMs" of the setting "${key}" goes from ${Q.minRefreshMs} to ${Q.maxRefreshMs}`;
     }
     if (o.fields !== undefined && o.type !== "list") return `Only a setting of type list has "fields" ("${key}")`;
     if (o.type === "list") {
@@ -514,11 +1172,47 @@ function validateSettings(list, apiVersion = contract.maxApiVersion) {
           : typeof o.default === "string" && o.default.length <= type.maxChars;
       if (!fits) return `The default value of the setting "${key}" doesn't fit its type`;
     }
+    // apiVersion 12 `devices` (PluginSettings.devicesOf): a non-empty list of different known devices; ignored below it.
+    if (apiVersion >= s.devices.apiVersion && o.devices !== undefined) {
+      const d = o.devices;
+      if (!Array.isArray(d) || d.length === 0 || new Set(d).size !== d.length || !d.every((x) => s.devices.values.includes(x))) return s.devices.badMessage.replace("{key}", key);
+    }
+    // apiVersion 12 `linkOnly` (PluginSettings): only on an action, only a boolean; ignored below it.
+    if (apiVersion >= s.linkOnly.apiVersion && o.linkOnly !== undefined) {
+      if (o.type !== "action") return s.linkOnly.onlyActionMessage.replace("{key}", key);
+      if (typeof o.linkOnly !== "boolean") return s.linkOnly.notBooleanMessage.replace("{key}", key);
+    }
+    // apiVersion 13 `sync` (PluginSettings): a password or a text may stay on this device with "sync": false; only on
+    // those types, only a boolean; ignored below it.
+    if (apiVersion >= s.sync.apiVersion && o.sync !== undefined && o.sync !== null) {
+      if (!s.sync.types.includes(o.type)) return s.sync.onlyPasswordOrTextMessage.replace("{key}", key);
+      if (typeof o.sync !== "boolean") return s.sync.notBooleanMessage.replace("{key}", key);
+    }
+    // apiVersion 14 `unlockWith` (PluginSettings): a toggle or a select may ask Kino's 18+ code before it moves away from its
+    // default; only one of the known values; ignored below it.
+    if (apiVersion >= s.unlockWith.apiVersion && o.unlockWith !== undefined && o.unlockWith !== null) {
+      if (!s.unlockWith.types.includes(o.type)) return s.unlockWith.onlyToggleOrSelectMessage.replace("{key}", key);
+      if (!s.unlockWith.values.includes(o.unlockWith)) return s.unlockWith.badValueMessage.replace("{key}", key).replace("{values}", s.unlockWith.values.join(", "));
+    }
   }
+  if (list.filter((o) => o.type === "link").length > s.configAids.maxLinks) return `The plugin has more than ${s.configAids.maxLinks} settings of type link`;
+  if (list.filter((o) => o.type === "help").length > s.configAids.maxHelps) return `The plugin has more than ${s.configAids.maxHelps} settings of type help`;
   const valued = list.filter((o) => s.types[o.type].hasValue !== false).length;
   if (valued > s.max) return `The plugin asks for more than ${s.max} settings`;
   if (list.length - valued > ui.maxItems) return `The plugin has more than ${ui.maxItems} sections, statuses or actions`;
   return null;
+}
+
+/** A `link` setting's address as PluginSettings.linkUrlOf: https with a host, no user info (not even an empty one), at most linkUrlMaxChars. */
+export function isLinkUrl(raw) {
+  if (typeof raw !== "string") return false;
+  const t = raw.trim();
+  if (!t || t.length > contract.settings.configAids.linkUrlMaxChars || !/^https:\/\//i.test(t) || t.includes("\\")) return false;
+  const authority = t.slice("https://".length).split(/[/?#]/)[0];
+  if (authority.includes("@")) return false;
+  let u;
+  try { u = new URL(t); } catch { return false; }
+  return u.protocol === "https:" && !!u.hostname && !u.username && !u.password;
 }
 
 /** A server a person may type (spec §1.4): http(s), not loopback, link-local, unspecified or localhost. */
@@ -531,6 +1225,34 @@ export function isUserServer(value) {
   if (/^127\./.test(h) || /^169\.254\./.test(h) || h === "0.0.0.0" || h === "::1" || h === "::" || /^fe[89ab][0-9a-f]:/i.test(h)) return false;
   if (/^::ffff:(127\.|169\.254\.|0\.0\.0\.0)/i.test(h) || /^::ffff:7f/i.test(h)) return false;
   return true;
+}
+
+/**
+ * The app's PluginPanelOutput.qrUrl (the player panel's qr, and a web address in a settings `qr`): https only, at most maxQrUrlChars, on a public host with a dot or a public IPv4 address (never the device or the home
+ * network: a single-label name such as `router` or `nas` is a home network's).
+ */
+export function qrUrl(raw) {
+  const v = typeof raw === "string" ? raw.trim() : null;
+  if (v === null || v.length > contract.output.panel.maxQrUrlChars || !v.startsWith("https://")) return null;
+  // OkHttp keeps the host as written ("010.1.1.1" or "0x7f.1" are names to it, not IPv4 like WHATWG's URL reads them).
+  let parsed;
+  try { parsed = new URL(v); } catch { return null; }
+  if (!parsed.hostname) return null;
+  const written = /^https:\/\/(?:[^@/?#]*@)?(\[[^\]]*\]|[^:/?#]*)/.exec(v);
+  // OkHttp percent-decodes the host ("127.0.0.%31", "%6cocalhost"): judge what it would connect to; a bad escape is no URL.
+  let host;
+  try { host = decodeURIComponent(written ? written[1] : parsed.hostname).toLowerCase(); } catch { return null; }
+  if (!host) return null;
+  if (isPublicIpv4Literal(host)) return v;
+  return host.replace(/\.+$/, "").includes(".") && !hostRulesLocal(host) ? v : null;
+}
+
+/** HostRules.isLocalAddress. */
+function hostRulesLocal(host) {
+  const h = host.toLowerCase().replace(/\.+$/, "");
+  if (h === "" || h.includes(":") || h.includes("[")) return true;
+  if (h === "localhost" || contract.hostRules.privateSuffixes.some((s) => h.endsWith(s))) return true;
+  return /^\d+$/.test(h.split(".").pop());
 }
 
 // ---------- output: what the app keeps and drops ----------
@@ -580,6 +1302,115 @@ function image(v, servers) {
   return imageVerdict(typeof v === "string" ? v : "", servers).url;
 }
 
+/** imageSource (apiVersion 13): whether this manifest's answers may carry image references (the app's EffectiveHosts.imagePlugin). */
+export function allowsImageRefs(manifest) {
+  return Number.isInteger(manifest.apiVersion) && manifest.apiVersion >= contract.images.apiVersion &&
+    Array.isArray(manifest.capabilities) && manifest.capabilities.includes(contract.images.capability);
+}
+
+// ---------- byteSource (apiVersion 13): a stream whose bytes the plugin serves through read() ----------
+
+/** The app's PluginOutput.allowsBytes: the manifest declares byteSource at apiVersion 13 or later. */
+export function allowsByteSource(manifest) {
+  const b = contract.byteSource;
+  return Number.isInteger(manifest.apiVersion) && manifest.apiVersion >= b.apiVersion &&
+    Array.isArray(manifest.capabilities) && manifest.capabilities.includes("byteSource");
+}
+
+/** ContractProblem.ByteStreamInvalid's English: what the app logs for a malformed `{ source: "plugin" }` stream. */
+export const BYTE_STREAM_INVALID = "the plugin stream's handle, size or mime is not valid";
+/** ContractProblem.ReadInvalid's English: a read answer that is not `{ bytes }` of exactly the length asked for. */
+export const READ_INVALID = "read didn't return the bytes asked for";
+
+/**
+ * The app's PluginOutput.byteSourceOf: `{ handle, size, mime }` of a `{ source: "plugin" }` stream, or null. handle: a
+ * string of 1 to maxHandleChars characters with no ISO control character (U+0000..U+001F, U+007F..U+009F); size: a
+ * positive whole number; mime: trimmed, matching contract.byteSource.mimePattern.
+ */
+export function byteSourceOf(v) {
+  const b = contract.byteSource;
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return null;
+  const h = v.handle;
+  if (typeof h !== "string" || h.length < 1 || h.length > b.maxHandleChars || /[\u0000-\u001f\u007f-\u009f]/.test(h)) return null;
+  const size = v.size;
+  if (typeof size !== "number" || !Number.isInteger(size) || size <= 0) return null;
+  const mime = typeof v.mime === "string" ? v.mime.trim() : "";
+  if (!mime || !new RegExp(b.mimePattern).test(mime)) return null;
+  return { handle: h, size, mime };
+}
+
+/**
+ * The app's PluginByteStreams.decodeRead: the bytes of a `read` answer `{ bytes: <base64> }` (standard alphabet, padding
+ * optional, nothing else), which must be exactly min(length, size - offset) long; else an Error with READ_INVALID.
+ */
+export function readAnswer(value, offset, length, size) {
+  const text = value !== null && typeof value === "object" && !Array.isArray(value) ? value.bytes : undefined;
+  if (typeof text !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(text) || text.replace(/=+$/, "").length % 4 === 1) throw new Error(READ_INVALID);
+  const bytes = Buffer.from(text, "base64");
+  if (bytes.length !== Math.min(length, size - offset)) throw new Error(READ_INVALID);
+  return bytes;
+}
+
+/** Why Kino's proxy would never ask this range ([offset], [length] of a stream of [size] bytes), or null. */
+export function readRangeProblem(offset, length, size) {
+  const b = contract.byteSource;
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset % b.alignmentBytes !== 0) return `offset must be a non-negative multiple of ${b.alignmentBytes}`;
+  if (!Number.isSafeInteger(length) || length < 1 || length > b.chunkBytes) return `length must be 1 to ${b.chunkBytes}`;
+  if (Number.isFinite(size) && offset >= size) return `offset ${offset} is past the end of the ${size}-byte stream`;
+  return null;
+}
+
+/** The app's PluginImageRef.validHandle: 1 to maxHandleChars characters, no control character. */
+export function imageHandleOk(h) {
+  return typeof h === "string" && h.length >= 1 && h.length <= contract.images.maxHandleChars && !/[\u0000-\u001f\u007f-\u009f]/.test(h);
+}
+
+/** The app's PluginImageRef.fromOutput: `{ source: "plugin", handle }` with a valid handle as `{ source, handle }`, else null. */
+export function imageRefOf(v) {
+  if (v === null || typeof v !== "object" || Array.isArray(v) || v.source !== contract.images.source || !imageHandleOk(v.handle)) return null;
+  return { source: contract.images.source, handle: v.handle };
+}
+
+/**
+ * The app's PluginOutput.imageOrRef, for the fields that may carry a reference (poster, backdrop, still, a hero's image): a
+ * string is the Images rule's URL; an object is a reference only for a plugin that declares imageSource (ctx.imageRefs).
+ * The kit keeps a reference as `{ source: "plugin", handle }` (the app turns it into an address of its own).
+ */
+function imageOrRef(v, ctx) {
+  if (typeof v === "string") return image(v, ctx.servers);
+  if (ctx.imageRefs) return imageRefOf(v) || "";
+  return "";
+}
+
+const B64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/**
+ * What the app's PluginImages.decodeAnswer keeps of an `image` answer: `{ bytes: Buffer, mime }`, or throws an Error saying
+ * why Kino would show the placeholder (canonical base64 of at most maxBytes decoded bytes, a mime of contract.images.mimes,
+ * and bytes that really are that type).
+ */
+export function imageAnswer(value) {
+  const lim = contract.images;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("image didn't return { bytes, mime }");
+  if (typeof value.mime !== "string" || !lim.mimes.includes(value.mime)) throw new Error(`image: mime must be one of ${lim.mimes.join(", ")}`);
+  const text = value.bytes;
+  if (typeof text !== "string" || !text) throw new Error("image: bytes must be a base64 string");
+  if (text.length > Math.ceil(lim.maxBytes / 3) * 4) throw new Error(`image: over ${lim.maxBytes} bytes once decoded`);
+  const pad = text.endsWith("==") ? 2 : text.endsWith("=") ? 1 : 0;
+  const last = pad ? B64_ALPHABET.indexOf(text[text.length - pad - 1]) : 0;
+  if (!B64.test(text) || (pad && (last & (pad === 2 ? 15 : 3)) !== 0)) throw new Error("image: bytes is not canonical base64 (standard alphabet, padded, no whitespace)");
+  const bytes = Buffer.from(text, "base64");
+  if (!bytes.length || bytes.length > lim.maxBytes) throw new Error(`image: over ${lim.maxBytes} bytes once decoded`);
+  const sig = {
+    "image/jpeg": (b) => b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
+    "image/png": (b) => b.length >= 8 && [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every((x, i) => b[i] === x),
+    "image/webp": (b) => b.length >= 12 && b.toString("latin1", 0, 4) === "RIFF" && b.toString("latin1", 8, 12) === "WEBP",
+  }[value.mime];
+  if (!sig(bytes)) throw new Error(`image: the bytes are not ${value.mime}`);
+  return { bytes, mime: value.mime };
+}
+
 function sameServer(server, u) {
   let s;
   try { s = new URL(server); } catch { return false; }
@@ -598,15 +1429,34 @@ function strings(v, max, maxChars) {
   return out;
 }
 
-function items(list, max, { allowSeries, allowLive, allowAudio, allowAdult, servers }, drop) {
+/** org.json's optString: a string as it is, a number or boolean as Java prints it, an object or array as JSON, else "". */
+function optString(v) {
+  if (typeof v === "string") return v;
+  if (typeof v === "number") return Number.isInteger(v) ? String(v) : javaDouble(v);
+  if (typeof v === "boolean") return String(v);
+  if (v !== null && typeof v === "object") return JSON.stringify(v);
+  return "";
+}
+
+function items(list, max, ctx, drop) {
+  const { allowSeries, allowLive, allowAudio, allowAdult } = ctx;
   const out = [];
   const seen = new Set();
-  (Array.isArray(list) ? list : []).forEach((x, i) => {
-    if (out.length >= max) { drop(`items beyond ${max} dropped`); return; }
-    if (x === null || typeof x !== "object") return;
-    const id = typeof x.id === "string" ? x.id : "";
+  const list2 = Array.isArray(list) ? list : [];
+  for (let i = 0; i < list2.length; i++) {
+    // The app's loop: one line at the cap, then it stops.
+    if (out.length >= max) { drop(`items beyond ${max} dropped`); break; }
+    one(list2[i], i);
+  }
+  return out;
+
+  function one(x, i) {
+    // org.json's optJSONObject: an array (or anything not an object) is skipped silently.
+    if (x === null || typeof x !== "object" || Array.isArray(x)) return;
+    const id = optString(x.id);
     if (!re(o().itemIdPattern).test(id)) return drop(`item #${i}: invalid id`);
-    if (typeof x.ref !== "string" || !x.ref || x.ref.length > o().maxRefChars) return drop(`item ${id}: invalid ref`);
+    const ref = optString(x.ref);
+    if (!ref || ref.length > o().maxRefChars) return drop(`item ${id}: invalid ref`);
     const title = text(x.title, o().maxTitleChars);
     if (!title) return drop(`item ${id}: no title`);
     if (!o().itemKinds.includes(x.kind)) return drop(`item ${id}: invalid kind '${String(x.kind).slice(0, 20)}'`);
@@ -624,8 +1474,8 @@ function items(list, max, { allowSeries, allowLive, allowAudio, allowAdult, serv
     seen.add(id);
     const ids = x.ids && typeof x.ids === "object" ? x.ids : {};
     out.push({
-      id, ref: x.ref, title, kind: x.kind, year: text(x.year, 10),
-      poster: image(x.poster, servers), backdrop: image(x.backdrop, servers),
+      id, ref, title, kind: x.kind, year: text(x.year, 10),
+      poster: imageOrRef(x.poster, ctx), backdrop: imageOrRef(x.backdrop, ctx),
       overview: text(x.overview, o().maxTextChars), lang: text(x.lang, 20), quality: text(x.quality, 20),
       originalTitle: text(x.originalTitle, o().maxTitleChars),
       genres: strings(x.genres, o().maxGenres, o().maxGenreChars),
@@ -638,9 +1488,34 @@ function items(list, max, { allowSeries, allowLive, allowAudio, allowAdult, serv
       ...(adult ? { adult: true } : {}),
       // Only an audio item has one (and audio items only exist from apiVersion 8, dropped above below it).
       ...(o().audioKinds.includes(x.kind) && text(x.artist, o().maxArtistChars) ? { artist: text(x.artist, o().maxArtistChars) } : {}),
+      ...openField(x.open, `item ${id}`, drop),
     });
-  });
-  return out;
+  }
+}
+
+/**
+ * The app's PluginOutput.screenItems: the items of a plugin screen's title components (apiVersion 14 allows every item
+ * kind and `adult`), read by the same item parser as `home` rows, with its drop lines; at most [max].
+ */
+export function screenItems(list, max, drop, allowSeries = true) {
+  // A screen's images are https only (spec Safety): a cleartext poster or backdrop is blanked, Kino's placeholder shows.
+  const https = (u) => (u.startsWith("https://") ? u : "");
+  return items(list, max, { allowSeries, allowLive: true, allowAudio: true, allowAdult: true, servers: [] }, drop)
+    .map((x) => ({ ...x, poster: https(x.poster), backdrop: https(x.backdrop) }));
+}
+
+/**
+ * PluginOutput.openOf (Task 7g): an item's or a row's `open` is only `{ screen: { route?, args? } }` (read as a screen's
+ * go.screen); anything else is ignored, the item or row kept. `{ open }` to spread, or nothing.
+ */
+function openField(raw, where, drop) {
+  if (raw === undefined || raw === null) return {};
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).length !== 1 || !("screen" in raw)) {
+    drop(`${where}: open must be {screen: {route, args}}, ignored`);
+    return {};
+  }
+  const g = screenGoOf(raw.screen, (why) => drop(`${where}: open.screen ${why}, ignored`));
+  return g === null ? {} : { open: { screen: g } };
 }
 
 function page(value, max, ctx, drop) {
@@ -681,7 +1556,7 @@ function rows(value, ctx, drop) {
     let ref = typeof r.ref === "string" && r.ref ? r.ref : null;
     if (ref && !ctx.allowNext) { drop(`home: row ${id} has a ref but the plugin doesn't declare browse`); ref = null; }
     if (ref && ref.length > o().maxRefChars) { drop(`home: row ${id} ref too long`); ref = null; }
-    out.push({ id, title, ref, items: list, genre: genreOf(r.genre) });
+    out.push({ id, title, ref, items: list, genre: genreOf(r.genre), ...openField(r.open, `home: row ${id}`, drop) });
   });
   return out;
 }
@@ -711,7 +1586,7 @@ function section(value, ctx, drop) {
   if (value.hero !== null && typeof value.hero === "object" && !Array.isArray(value.hero)) {
     const title = strictText(value.hero.title, o().maxTitleChars);
     if (!title) drop("section: a hero without title dropped");
-    else hero = { title, image: image(value.hero.image, ctx.servers), text: strictText(value.hero.text, lim.maxHeroTextChars) };
+    else hero = { title, image: imageOrRef(value.hero.image, ctx), text: strictText(value.hero.text, lim.maxHeroTextChars) };
   }
   return { tabs, tab, hero, rows: rows(Array.isArray(value.rows) ? value.rows : [], ctx, (m) => drop(`section ${m}`)) };
 }
@@ -740,7 +1615,7 @@ function categories(value, ctx, drop) {
   return out;
 }
 
-function episodes(value, drop, servers) {
+function episodes(value, drop, servers, imageRefs = false) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("the episode list is not valid JSON");
   if (!Array.isArray(value.episodes)) throw new Error("the plugin returned zero episodes");
   const seen = new Set();
@@ -757,7 +1632,7 @@ function episodes(value, drop, servers) {
     eps.push({
       season, number: e.number, ref: e.ref, title: text(e.title, o().maxTitleChars),
       // The same image and length rules as an item's poster and runtimeMinutes (PluginOutput.episodes).
-      still: image(e.still, servers), overview: text(e.overview, o().maxTextChars),
+      still: imageOrRef(e.still, { servers, imageRefs }), overview: text(e.overview, o().maxTextChars),
       airDate: re(o().airDatePattern).test(text(e.airDate, 10)) ? text(e.airDate, 10) : "",
       runtimeMinutes: Number.isInteger(e.runtimeMinutes) && e.runtimeMinutes >= o().minRuntimeMinutes && e.runtimeMinutes <= o().maxRuntimeMinutes ? e.runtimeMinutes : 0,
     });
@@ -1029,8 +1904,13 @@ export function mediaOf(raw) {
   return empty ? null : out;
 }
 
-function stream(value, { manifest, servers, allowDrm, liveChannel = false, inline = false, drop = () => {} }) {
+function stream(value, { manifest, servers, allowDrm, liveChannel = false, inline = false, alternative = false, drop = () => {} }) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("the plugin returned zero videos");
+  // byteSource (apiVersion 13, PluginOutput.stream's allowBytes): a movie's, an episode's or a track's own stream only, never a
+  // live channel's, an inline one or a lazy copy's. Anything else has `source` ignored and fails below like a missing url.
+  if (!liveChannel && !inline && !alternative && value.source === contract.byteSource.source && allowsByteSource(manifest)) {
+    return byteStream(value, manifest, servers, drop);
+  }
   // apiVersion 11, `externalResolve`: the answer is a hand-off to a resolver app, not a playable URL (PluginOutput.externalOf).
   // Read only from a plugin that declares both; anything else has its `external` ignored and fails below like a missing url.
   const external = !liveChannel && !inline ? externalOf(value.external, manifest) : null;
@@ -1111,6 +1991,46 @@ function stream(value, { manifest, servers, allowDrm, liveChannel = false, inlin
   if (media) out.media = media; else delete out.media;
   if (portable) out.portable = portable;
   return sig ? { ...out, ...sig } : out;
+}
+
+/**
+ * The app's PluginOutput.byteStreamOf: the byte source (or ByteStreamInvalid), with its subtitles, audio tracks, duration,
+ * skip times, label and media read as a url Stream's; nothing that needs a url of its own (drm, signing, alternatives,
+ * alternate hosts, an external hand-off, a portable copy).
+ */
+function byteStream(value, manifest, servers, drop) {
+  const bytes = byteSourceOf(value);
+  if (!bytes) throw new Error(BYTE_STREAM_INVALID);
+  const check = urlChecker(manifest, servers);
+  const anyPublic = liveStreamUrlAllowed(manifest, servers);
+  const sideOk = (url, what) => {
+    if (manifest.streamHostsAny) return anyPublic(url);
+    try { check(url, what); return true; } catch { return false; }
+  };
+  const subtitles = (Array.isArray(value.subtitles) ? value.subtitles : []).slice(0, o().maxSubtitles).filter((s) => sideOk(s && s.url, "the subtitle"));
+  const audioUrls = new Set();
+  const audioTracks = (Array.isArray(value.audioTracks) ? value.audioTracks : []).slice(0, o().maxAudioTracks).filter((a) => {
+    if (!sideOk(a && a.url, "the audio")) return false;
+    if (audioUrls.has(a.url)) return false;
+    audioUrls.add(a.url);
+    return true;
+  });
+  const durationMs = Number.isFinite(value.durationMs) && value.durationMs > 0 ? Math.floor(value.durationMs) : 0;
+  const expires = Number.isInteger(value.expiresInSeconds) && value.expiresInSeconds >= o().minExpiresInSeconds && value.expiresInSeconds <= o().maxExpiresInSeconds ? value.expiresInSeconds : 0;
+  for (const k of ["drm", "signing", "alternatives", "alternateHosts", "external", "portable", "url"]) {
+    if (value[k] !== undefined) drop(`resolve: ${k} is ignored on a { source: "plugin" } stream`);
+  }
+  const out = { source: contract.byteSource.source, ...bytes, headers: {}, subtitles, audioTracks, expiresInSeconds: expires, drm: null };
+  if (durationMs) out.durationMs = durationMs;
+  const skip = skipOf(value[o().skip.field], durationMs);
+  if (skip) out.skip = skip;
+  if ((manifest.apiVersion || 1) >= o().streamLabels.apiVersion) {
+    const label = labelOf(value, "resolve: label", drop);
+    if (label) out.label = label;
+  }
+  const media = mediaOf(value.media);
+  if (media) out.media = media;
+  return out;
 }
 
 /**
@@ -1804,12 +2724,137 @@ function clearSettingsOf(raw, settings, max, drop) {
 
 /**
  * What the app keeps of a settings-form export's answer (apiVersion 6), as PluginSettingsUi reads it:
- * `settingsStatus` -> { [statusKey]: text }, `action` -> { message, refresh, clearSettings }, `validateSettings` ->
+ * `settingsStatus` -> { [statusKey]: text }, `action` -> { message, refresh, clearSettings, link?, setSettings? }, `validateSettings` ->
  * { accepted: true } or { accepted: false, fieldErrors, general }. Garbage is dropped, never thrown,
  * except where the app refuses to save (validateSettings answering something that is not null, a text
  * or an object). `scrub` (the app's secret scrubbing) runs on each kept text before it is clipped.
  */
-export function checkSettingsOutput(fn, value, manifest, scrub = (t) => t, drop = () => {}) {
+/**
+ * The app's PluginSettingsUi.qrText: a settings `qr`'s text (apiVersion 13), or null. A string of 1 to
+ * contract.qr.settingsQr.maxChars characters once trimmed, no control character; an http(s) address only by the panel
+ * qr's rule (qrUrl); a text the secret scrub would change is dropped whole.
+ */
+export function settingsQrText(raw, scrub = (t) => t) {
+  if (typeof raw !== "string") return null;
+  const v = raw.trim();
+  // Kotlin's Char.isISOControl: U+0000..U+001F and U+007F..U+009F.
+  if (!v || v.length > contract.qr.settingsQr.maxChars || /[\u0000-\u001f\u007f-\u009f]/.test(v)) return null;
+  const lower = v.toLowerCase();
+  if ((lower.startsWith("http:") || lower.startsWith("https:")) && qrUrl(v) === null) return null;
+  return scrub(v) === v ? v : null;
+}
+
+/**
+ * An action answer's `link` (additive action.link), as PluginSettingsUi.linkOf: null when Kino cannot use it, with one drop
+ * line. Only ANOTHER declared action than `actionKey` (the one that answered) may confirm it; the candidate is never clipped.
+ */
+function linkOf(raw, settings, actionKey, scrub, drop) {
+  const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+  if (!isObj(raw)) { drop("action answered a link that is not an object; it was ignored"); return null; }
+  // Never the action that answered, and never one with its own confirm question (a destructive action passed off as "Is this you?").
+  const targets = new Set(settings.filter((s) => s.type === "action" && s.key !== actionKey && !s.confirm && !s.confirmEn).map((s) => s.key));
+  if (typeof raw.confirm !== "string" || !targets.has(raw.confirm)) { drop("action answered a link whose confirm is not another declared action; it was ignored"); return null; }
+  const max = contract.settings.ui.link.candidateMaxChars;
+  // As the app refuses them: control characters, invisible formatting (bidi overrides, zero-width), line/paragraph separators,
+  // any space but the ASCII one, and the fillers that draw nothing (Hangul U+115F, U+1160, U+3164, U+FFA0; blank Braille U+2800).
+  const unsafe = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\u115F\u1160\u3164\uFFA0\u2800]|(?! )\p{Zs}/u;
+  const collapse = (t) => t.replace(/ {2,}/g, " ");
+  const c = typeof raw.candidate === "string" ? collapse(raw.candidate.trim()) : "";
+  const shown = c && c.length <= max && !unsafe.test(c) ? collapse(scrub(c).trim()) : "";
+  if (!shown || shown.length > max || unsafe.test(shown)) { drop("action answered a link with an unusable candidate; it was ignored"); return null; }
+  return { candidate: shown, confirm: raw.confirm };
+}
+
+/** PluginSettingsUi.settableTypes: the setting types an action's setSettings may fill at [apiVersion] (a password from passwordApiVersion). */
+export function settableTypes(apiVersion) {
+  const rule = contract.settings.ui.setSettings;
+  return rule.types.filter((t) => t !== "url" && (t !== "password" || apiVersion >= rule.passwordApiVersion));
+}
+
+/**
+ * SettingLocks.refusesPluginWrite: whether a plugin's own write of [wanted] to setting [s] (its manifest entry) is refused by its
+ * `unlockWith`: anything but its default (a toggle without one starts off, a select at its first option).
+ */
+export function lockRefuses(s, wanted) {
+  if (!s || s.unlockWith === undefined || s.unlockWith === null) return false;
+  const def = s.default !== undefined && s.default !== null ? s.default
+    : s.type === "toggle" ? false : s.type === "select" && Array.isArray(s.options) && s.options[0] ? s.options[0].value : null;
+  return wanted !== def;
+}
+
+/**
+ * An action answer's `setSettings` (additive action.setSettings), as PluginSettingsUi.setValues: the kept values, or null when
+ * Kino refuses the whole field (one drop line). Only the plugin's own text/select settings and, from apiVersion 13, its
+ * passwords (never a url); a value the scrub would change holds a secret and is refused.
+ */
+function setSettingsOf(raw, settings, cleared, scrub, drop, apiVersion) {
+  const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+  const rule = contract.settings.ui.setSettings;
+  if (!isObj(raw)) { drop("action answered setSettings that is not an object; nothing was set"); return null; }
+  const keys = Object.keys(raw);
+  if (keys.length > rule.maxEntries) { drop(`action answered more than ${rule.maxEntries} setSettings; nothing was set`); return null; }
+  const out = {};
+  const types = settableTypes(apiVersion);
+  for (const k of keys) {
+    // Never a url (its value would become a server the plugin may reach); a password only from passwordApiVersion.
+    const s = settings.find((x) => x.key === k && types.includes(x.type));
+    const v = typeof raw[k] === "string" ? raw[k].trim() : null;
+    const type = s && contract.settings.types[s.type];
+    // A locked select (unlockWith) moves away from its default only by the person, after the code (SettingLocks).
+    const fits = s && v !== null && !cleared.includes(k) && !(s.required === true && !v) && !lockRefuses(s, v) &&
+      (s.type === "select" ? (s.options || []).some((o) => o.value === v)
+        : v.length <= type.maxChars && (s.type !== "url" || !v || isUserServer(v))) &&
+      scrub(v) === v;
+    if (!fits) { drop("action answered setSettings Kino cannot apply; nothing was set"); return null; }
+    out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * The password values an action answer's setSettings names (kept or not), longest first: PluginSettingsUi.passwordsIn.
+ * They are secrets from then on, so the action's message and link are scrubbed of them.
+ */
+function setPasswordsIn(raw, settings, apiVersion) {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw) || !settableTypes(apiVersion).includes("password")) return [];
+  return Object.keys(raw).filter((k) => settings.some((x) => x.key === k && x.type === "password"))
+    .map((k) => (typeof raw[k] === "string" ? raw[k].trim() : "")).filter((v) => v).sort((a, b) => b.length - a.length);
+}
+
+/** [scrub], then each of [values] removed until none is left; a text still holding one after 8 rounds is dropped. */
+function withoutValues(scrub, values) {
+  if (!values.length) return scrub;
+  return (t) => {
+    let out = scrub(t);
+    for (let i = 0; i < 8 && values.some((v) => out.includes(v)); i++) for (const v of values) out = out.split(v).join("");
+    return values.some((v) => out.includes(v)) ? "" : out;
+  };
+}
+
+/**
+ * An action's checked answer with the password values of its setSettings masked, for printing: the kit never shows a
+ * value Kino would store as a password (Kino never logs one).
+ */
+export function maskSetPasswords(out, manifest) {
+  if (!out || typeof out !== "object" || !out.setSettings) return out;
+  const pw = new Set((manifest.settings || []).filter((s) => s.type === "password").map((s) => s.key));
+  return { ...out, setSettings: Object.fromEntries(Object.entries(out.setSettings).map(([k, v]) => [k, pw.has(k) ? "••••••••" : v])) };
+}
+
+/**
+ * PluginSettingsUi.parseStatusAnswer's `hide` (apiVersion 13): the keys of [manifest]'s own settings, among the answer's first
+ * contract.settings.ui.statusHide.maxEntries entries, that the form does not draw while this answer is current. [] below 13,
+ * for a non-array, and for unknown keys or non-strings (dropped).
+ */
+export function statusHide(value, manifest) {
+  const rule = contract.settings.ui.statusHide;
+  // G5: at the settings list's apiVersion (an enhancement's list: its key).
+  if (settingsApiVersion(manifest) < rule.apiVersion || value === null || typeof value !== "object" || !Array.isArray(value.hide)) return [];
+  const known = new Set((manifest.settings || []).map((s) => s.key));
+  return [...new Set(value.hide.slice(0, rule.maxEntries).filter((k) => typeof k === "string" && known.has(k)))];
+}
+
+export function checkSettingsOutput(fn, value, manifest, scrub = (t) => t, drop = () => {}, actionKey = null) {
   const ui = contract.settings.ui;
   const clip = (t, max) => (t.length <= max ? t : t.slice(0, max - 1) + "…");
   const text = (v, max) => {
@@ -1825,14 +2870,34 @@ export function checkSettingsOutput(fn, value, manifest, scrub = (t) => t, drop 
       const t = isObj(value) ? text(value[s.key], ui.statusMaxChars) : null;
       if (t) out[s.key] = t;
     }
+    // apiVersion 13: a qr setting's text, kept whole or not at all (PluginSettingsUi.qrText).
+    for (const s of settings.filter((x) => x.type === "qr")) {
+      const raw = isObj(value) ? value[s.key] : undefined;
+      const t = settingsQrText(raw, scrub);
+      if (t !== null) out[s.key] = t;
+      else if (raw !== undefined && raw !== null) drop(`settingsStatus answered a qr text Kino does not draw ("${s.key}")`);
+    }
     return out;
   }
   if (fn === "action") {
-    return {
-      message: isObj(value) ? text(value.message, ui.messageMaxChars) : null,
+    // G5: a password from apiVersion 13 of the settings list in effect (an enhancement's list: its key).
+    const api = settingsApiVersion(manifest);
+    // A password the answer fills (or tried to) is a secret from now on: never echoed in the message or a link.
+    const shown = withoutValues(scrub, isObj(value) ? setPasswordsIn(value.setSettings, settings, api) : []);
+    const shownText = (v, max) => {
+      if (typeof v !== "string" || !v.trim()) return null;
+      const t = shown(v.trim()).trim();
+      return t ? clip(t, max) : null;
+    };
+    const out = {
+      message: isObj(value) ? shownText(value.message, ui.messageMaxChars) : null,
       refresh: isObj(value) && value.refresh === true,
       clearSettings: isObj(value) ? clearSettingsOf(value.clearSettings, settings, ui.clearSettings.maxEntries, drop) : [],
     };
+    // Only when the answer carried one, so an answer without it keeps its shape: null means Kino refuses it (generic error).
+    if (isObj(value) && value.link !== undefined && value.link !== null) out.link = linkOf(value.link, settings, actionKey, shown, drop);
+    if (isObj(value) && value.setSettings !== undefined && value.setSettings !== null) out.setSettings = setSettingsOf(value.setSettings, settings, out.clearSettings, scrub, drop, api);
+    return out;
   }
   if (value === null || value === undefined) return { accepted: true };
   if (typeof value === "string") {
@@ -1858,7 +2923,45 @@ export function checkSettingsOutput(fn, value, manifest, scrub = (t) => t, drop 
  * `liveChannel`: the `resolve` answer is for a live channel's ref (the app knows; the kit is told),
  * so `liveStreamHosts: "any"` applies to its stream URL.
  */
-export function checkOutput(fn, value, manifest, servers = [], { liveChannel = false, migrateInput = null, segmentsQuery = null } = {}) {
+/**
+ * The caps of a syncProvider's syncPull/syncPush call (contract.fetch.syncCall): ceil(sync.maxBlobBytes * 4/3) +
+ * envelopeChars for each kino.fetch request and response body and for the call's answer. Null for any other plugin.
+ */
+export function syncCallCap(manifest) {
+  if (!manifest || !Array.isArray(manifest.capabilities) || !manifest.capabilities.includes("syncProvider")) return null;
+  const max = contract.manifest.sync.maxBlobBytes;
+  const declared = Number(manifest.sync?.maxBlobBytes ?? max);
+  return Math.ceil(Math.min(declared, max) * 4 / 3) + contract.fetch.syncCall.envelopeChars;
+}
+
+/**
+ * What Kino keeps of a sync export's answer: syncPull `{ blob, version }` or null, syncPush `{ version }`, syncStatus
+ * `{ ready, message? }`. The answer of syncPull/syncPush may reach [syncCallCap] characters as JSON; syncStatus keeps the
+ * usual 2,000,000. Throws what the app would refuse.
+ */
+export function checkSyncAnswer(fn, value, manifest) {
+  const json = JSON.stringify(value === undefined ? null : value);
+  const cap = contract.fetch.syncCall.functions.includes(fn) ? syncCallCap(manifest) ?? o().maxResultChars : o().maxResultChars;
+  if (json.length > cap) throw new Error(`plugin answer too large (over ${cap} characters)`);
+  const v = JSON.parse(json);
+  const blobOk = (b) => typeof b === "string" && /^[A-Za-z0-9+/]*={0,2}$/.test(b) && b.length % 4 === 0;
+  if (fn === "syncPull") {
+    if (v === null) return null;
+    if (!v || typeof v.version !== "string" || !v.version || !blobOk(v.blob)) throw new Error("syncPull must answer null or { blob: <base64>, version: <string> }");
+    const bytes = (v.blob.length / 4) * 3 - (v.blob.endsWith("==") ? 2 : v.blob.endsWith("=") ? 1 : 0);
+    const max = Math.min(Number(manifest.sync?.maxBlobBytes ?? contract.manifest.sync.maxBlobBytes), contract.manifest.sync.maxBlobBytes);
+    if (bytes > max) throw new Error(`pull blob is ${bytes} bytes, over the ${max} cap`);
+    return { blob: v.blob, version: v.version };
+  }
+  if (fn === "syncPush") {
+    if (!v || typeof v.version !== "string" || !v.version) throw new Error("syncPush must answer { version: <string> }");
+    return { version: v.version };
+  }
+  if (fn === "syncStatus") return { ready: !(v && v.ready === false), message: v && typeof v.message === "string" ? v.message : null };
+  throw new Error(`not a sync export: ${fn}`);
+}
+
+export function checkOutput(fn, value, manifest, servers = [], { liveChannel = false, alternative = false, migrateInput = null, segmentsQuery = null } = {}) {
   const drops = [];
   const drop = (m) => { drops.push(m); };
   const ctx = {
@@ -1871,6 +2974,8 @@ export function checkOutput(fn, value, manifest, servers = [], { liveChannel = f
     // 18+ entries are apiVersion 6: kept and marked (shown behind the person's 18+ code); below it, dropped.
     allowAdult: Number.isInteger(manifest.apiVersion) && manifest.apiVersion >= o().adultApiVersion,
     servers,
+    // imageSource (apiVersion 13): a poster, backdrop, still or hero image may be { source: "plugin", handle }.
+    imageRefs: allowsImageRefs(manifest),
   };
   const liveAdult = Number.isInteger(manifest.apiVersion) && manifest.apiVersion >= live().adultApiVersion;
   const json = JSON.stringify(value === undefined ? null : value);
@@ -1882,9 +2987,11 @@ export function checkOutput(fn, value, manifest, servers = [], { liveChannel = f
     case "home": return { value: rows(parsed, { ...ctx, homeLive: Number.isInteger(manifest.apiVersion) && manifest.apiVersion >= o().homeLiveApiVersion }, drop), drops };
     case "section": return { value: section(parsed, ctx, drop), drops };
     case "categories": return { value: categories(parsed, ctx, drop), drops };
-    case "episodes": return { value: episodes(parsed, drop, servers), drops };
+    case "episodes": return { value: episodes(parsed, drop, servers, ctx.imageRefs), drops };
+    // imageSource (apiVersion 13): what the app keeps of an image answer, or the reason it shows the placeholder.
+    case "image": return { value: imageAnswer(parsed), drops };
     // Widevine is the `drm` capability (apiVersion 2 by the manifest rules): without it every DRM-shaped key refuses the stream.
-    case "resolve": return { value: stream(parsed, { manifest, servers, allowDrm: manifest.capabilities.includes("drm"), liveChannel, drop }), drops };
+    case "resolve": return { value: stream(parsed, { manifest, servers, allowDrm: manifest.capabilities.includes("drm"), liveChannel, alternative, drop }), drops };
     case "sign": {
       if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed) || parsed.headers === null || typeof parsed.headers !== "object" || Array.isArray(parsed.headers)) {
         throw new Error("sign didn't return { headers }");

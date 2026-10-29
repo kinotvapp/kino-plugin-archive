@@ -11,8 +11,8 @@ import { gzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { checkOutput, checkSettingsOutput, mediaOf, contract, englishCoverage, imageVerdict, localizedSettings, sectionLabel, markSearchHits, metaAnswer, optInt, requiredExports, segmentSkip, segmentsAnswer, validateManifest } from "../contract.mjs";
-import { createKino, errorReport, shownSentence, signingLane } from "../kino-shim.mjs";
+import { checkOutput, checkSettingsOutput, maskSetPasswords, settableTypes, settingsApiVersion, statusHide, mediaOf, contract, englishCoverage, imageVerdict, localizedSettings, sectionLabel, markSearchHits, metaAnswer, optInt, requiredExports, segmentSkip, segmentsAnswer, validateManifest, checkSyncAnswer, syncCallCap } from "../contract.mjs";
+import { catalogAnswer, catalogNorm, catalogTokens, createKino, errorReport, kitCall, newCatalogState, shownSentence, signingLane } from "../kino-shim.mjs";
 import { filterRelevant, shortQuery, sortBySimilarity } from "../kino-rank.mjs";
 import { contrast, deltaE, formatRatio, luminance, resolvePalette } from "../palette.mjs";
 import { consentLines, KEY_PAIRS_OLD_API, metaForFirstTitle, validate } from "../validate.mjs";
@@ -30,16 +30,12 @@ const manifest = (extra = {}) => JSON.stringify({
   hosts: ["example.com"], capabilities: ["search", "resolve"], ...extra,
 });
 
-// These tests read files of the Kino repo itself (docs/plugins/, plugins/archive-org, its .gitignore). A template does
-// not carry them, so they are skipped here and run in the Kino repo.
-const NEEDS_KINO_REPO = "needs files of the Kino repo that this template does not have";
-
 test("contract.json is the one the app pins", () => {
-  assert.equal(contract.apiVersion, 11);
+  assert.equal(contract.apiVersion, 14);
   // apiVersion 5 stays what Kino 0.9.45 made it: the author-signed entry, nothing else.
   assert.equal(contract.manifest.signature.apiVersion, 5);
-  assert.deepEqual(contract.capabilities.names, ["search", "home", "browse", "episodes", "resolve", "download", "drm", "channels", "migrate", "scopedSearch", "meta", "subtitles", "tracking", "segments", "playlists", "externalResolve"]);
-  assert.deepEqual(contract.capabilities.declarative, ["download", "drm", "scopedSearch", "externalResolve"]);
+  assert.deepEqual(contract.capabilities.names, ["search", "home", "browse", "episodes", "resolve", "download", "drm", "channels", "migrate", "scopedSearch", "meta", "subtitles", "tracking", "segments", "playlists", "externalResolve", "nuvio", "syncProvider", "socket", "byteSource", "storageLarge", "catalog", "qrScan", "imageSource", "screen", "library", "playerPanelTab", "playerControl", "room", "schedule", "ai", "shared"]);
+  assert.deepEqual(contract.capabilities.declarative, ["download", "drm", "scopedSearch", "externalResolve", "nuvio", "socket", "storageLarge", "catalog", "qrScan", "library", "playerControl", "room", "ai", "shared"]);
   assert.deepEqual(contract.permissions, []);
 });
 
@@ -159,6 +155,10 @@ test("validate() reports the palette guardrails as notes", async () => {
   }
 });
 
+// These tests read files of the Kino repo itself (docs/plugins/, plugins/archive-org, its .gitignore). A template does
+// not carry them, so they are skipped here and run in the Kino repo.
+const NEEDS_KINO_REPO = "needs files of the Kino repo that this template does not have";
+
 test("the archive-org plugin passes the kit's checks", { skip: NEEDS_KINO_REPO }, async () => {
   const r = await validate(archive);
   assert.deepEqual(r.problems, []);
@@ -221,6 +221,142 @@ test("crypto gives the app's vectors", () => {
   assert.throws(() => c.hash("sha3", "x"), (e) => e.code === "crypto_error" && e.name === "KinoError_crypto_error");
   assert.throws(() => c.pbkdf2("sha1", "p", "s", 100001, 20), (e) => e.code === "crypto_error");
   assert.throws(() => c.randomBytes(1025), (e) => e.code === "crypto_error");
+});
+
+test("kino.ws: undefined without the socket capability, wss to a declared host only, frames round-trip", async () => {
+  assert.equal(createKino(JSON.parse(manifest())).kino.ws, undefined);
+  const m = JSON.parse(manifest({ apiVersion: 13, capabilities: ["search", "resolve", "socket"] }));
+  const { kino } = createKino(m);
+  assert.equal(typeof kino.ws.open, "function");
+  await assert.rejects(kino.ws.open("ws://" + m.hosts[0] + "/s"), (e) => e.code === "not_https");
+  await assert.rejects(kino.ws.open("wss://evil.example/s"), (e) => e.code === "host_not_allowed" && e.host === "evil.example");
+  for (const u of ["wss://127.0.0.1/s", "wss://192.168.1.5/s", "wss://[::1]/s", "wss://localhost/s"]) {
+    await assert.rejects(kino.ws.open(u), (e) => e.code === "host_not_allowed", u);
+  }
+  // A declared host on another port than 443, as the app.
+  await assert.rejects(kino.ws.open("wss://" + m.hosts[0] + ":8443/s"), (e) => e.code === "host_not_allowed");
+});
+
+/** A WebSocket that echoes every binary frame back, recording what was sent (Node's global WebSocket swapped out). */
+async function withEchoSocket(body) {
+  const sent = [];
+  const Real = globalThis.WebSocket;
+  globalThis.WebSocket = class EchoSocket {
+    constructor() { this.readyState = 0; this.listeners = {}; setTimeout(() => { this.readyState = 1; this.emit("open", {}); }, 0); }
+    addEventListener(name, f) { (this.listeners[name] ||= []).push(f); }
+    emit(name, ev) { (this.listeners[name] || []).forEach((f) => f(ev)); }
+    send(data) {
+      const copy = Uint8Array.from(data);
+      sent.push(Buffer.from(copy).toString("hex"));
+      setTimeout(() => this.emit("message", { data: copy.buffer }), 0);
+    }
+    close() { this.readyState = 3; this.emit("close", {}); }
+  };
+  try {
+    return await body(sent);
+  } finally {
+    globalThis.WebSocket = Real;
+  }
+}
+
+test("kino.ws frames as hex or base64 strings: the app's answers and refusals, word for word", async () => {
+  assert.deepEqual(contract.socket.encodings, ["hex", "base64"]);
+  const m = JSON.parse(manifest({ apiVersion: 13, capabilities: ["search", "resolve", "socket"] }));
+  await withEchoSocket(async (sent) => {
+    const { kino } = createKino(m);
+    const ws = await kino.ws.open("wss://" + m.hosts[0] + "/s");
+    // The app's PluginWebSocketTest exchange: either case going out, lower case coming back.
+    await ws.send("0A0bff", { encoding: "hex" });
+    assert.equal(await ws.recv(1000, { encoding: "hex" }), "0a0bff");
+    await ws.send("CgsM", { encoding: "base64" });
+    assert.equal(await ws.recv(1000, { encoding: "base64" }), "CgsM");
+    await ws.send("", { encoding: "hex" });
+    assert.equal(await ws.recv(1000, { encoding: "hex" }), "");
+    await ws.send("Cg==", { encoding: "base64" });
+    assert.deepEqual(Array.from(await ws.recv(1000)), [10]);
+    await ws.send(new Uint8Array([1]), { encoding: "hex" });
+    assert.deepEqual(Array.from(await ws.recv(1000, {})), [1]);
+    const refusal = async (f) => { try { await f(); return "ok"; } catch (e) { return `${e.code}: ${e.message}`; } };
+    for (const bad of ["abc", "zz", "+0", " 00", "0g"]) assert.equal(await refusal(() => ws.send(bad, { encoding: "hex" })), "invalid_request: the frame is not valid hex", bad);
+    for (const bad of ["Cg", "Cg=", "C===", "Cg==Cg==", "Cg ==", "Ch==", "CgsN=", "-_8=", "Cgs\n"]) assert.equal(await refusal(() => ws.send(bad, { encoding: "base64" })), "invalid_request: the frame is not valid base64", JSON.stringify(bad));
+    assert.equal(await refusal(() => ws.recv(10, { encoding: "latin1" })), 'invalid_request: encoding must be "hex" or "base64"');
+    assert.equal(await refusal(() => ws.send("ab", { encoding: "utf8" })), 'invalid_request: encoding must be "hex" or "base64"');
+    assert.equal(await refusal(() => ws.send("abc")), "invalid_request: send() takes a Uint8Array");
+    assert.equal(await refusal(() => ws.send(12, { encoding: "hex" })), "invalid_request: send() takes a Uint8Array or an encoded string");
+    const max = contract.socket.maxSendBytes;
+    assert.equal(await refusal(() => ws.send("00".repeat(max + 1), { encoding: "hex" })), "too_large: frame too large");
+    assert.equal(await refusal(() => ws.send("A".repeat(max / 3 * 4 + 4), { encoding: "base64" })), "too_large: frame too large");
+    assert.equal(await refusal(() => ws.send("00".repeat(max), { encoding: "hex" })), "ok");
+    assert.equal((await ws.recv(1000, { encoding: "hex" })).length, 2 * max);
+    assert.equal(await ws.recv(5, { encoding: "hex" }), null);
+    await ws.close();
+    assert.equal(await refusal(() => ws.send("00", { encoding: "hex" })), "closed: the socket is closed");
+    assert.deepEqual(sent.slice(0, 5), ["0a0bff", "0a0b0c", "", "0a", "01"]);
+    assert.equal(sent.length, 6);
+  });
+});
+
+test("the README's encoded-frames example runs as written against an echo socket", { skip: NEEDS_KINO_REPO }, async () => {
+  const readme = readFileSync(README_PATH, "utf8");
+  const guide = readme.slice(readme.indexOf("**Frames as strings: `{ encoding: \"hex\" | \"base64\" }`.**"), readme.indexOf("**`byteSource`: a stream the plugin serves.**"));
+  const [example] = [...guide.matchAll(/```js\n([\s\S]*?)```/g)].map((x) => x[1]);
+  assert.ok(example && example.includes('{ encoding: "hex" }'), "the README lost its encoded-frames example");
+  const m = JSON.parse(manifest({ apiVersion: 13, capabilities: ["search", "resolve", "socket"], hosts: ["ws.example.org"] }));
+  await withEchoSocket(async (sent) => {
+    const { kino } = createKino(m);
+    const run = new Function("kino", `return (async () => { ${example}\n return { hex, b64 }; })();`);
+    const { hex, b64 } = await run(kino);
+    assert.equal(hex, "efefefef");
+    assert.equal(b64, "AAECAw==");
+    assert.deepEqual(sent, ["efefefef", "00010203"]);
+  });
+});
+
+test("crypto byte ops (apiVersion 13): IGE round-trips, modPow and gunzip behave like the app", () => {
+  const { kino } = createKino(JSON.parse(manifest({ apiVersion: 13 })));
+  const c = kino.crypto;
+  const key = "11".repeat(32), iv = "22".repeat(32), data = "33".repeat(48);
+  const o = { keyEncoding: "hex", ivEncoding: "hex", inputEncoding: "hex" };
+  // The app's PluginCryptoTest vector (MTProto spike, 64 bytes).
+  const vk = "030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dc", vi = "fffaf5f0ebe6e1dcd7d2cdc8c3beb9b4afaaa5a09b96918c87827d78736e6964";
+  const vp = "010e1b2835424f5c697683909daab7c4d1deebf805121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a5764717e8b98a5b2bfccd9e6f3000d1a2734";
+  const vc = "5f1d528dcb99652fb74ef03178d728e70639ab1fe08aed46eec6d198b0a2ccd6922d2c3a899e45884f48802f7286d7e40153381bb84fd7ee9928e0dbc49c081c";
+  assert.equal(c.aesIge("encrypt", vk, vi, vp, { ...o, outputEncoding: "hex" }), vc);
+  assert.equal(c.aesIge("decrypt", vk, vi, vc, { ...o, outputEncoding: "hex" }), vp);
+  const enc = c.aesIge("encrypt", key, iv, data, { ...o, outputEncoding: "hex" });
+  assert.equal(enc.length, 96);
+  assert.equal(c.aesIge("decrypt", key, iv, enc, { ...o, outputEncoding: "hex" }), data);
+  assert.throws(() => c.aesIge("encrypt", key, iv, "33".repeat(15), { ...o }), (e) => e.code === "crypto_error" && e.message === "invalid crypto operation");
+  assert.equal(c.modPow("04", "0d", "1f1"), (4n ** 13n % 0x1f1n).toString(16).padStart(4, "0"));
+  assert.equal(c.modPow("2", "0", "ff"), "01");
+  assert.throws(() => c.modPow("2", "3", "0"), (e) => e.message === "invalid crypto operation");
+  assert.throws(() => c.modPow("zz", "3", "7"), (e) => e.message === '"base" is not valid hex');
+  assert.throws(() => c.modPow("", "3", "7"), (e) => e.message === "invalid crypto operation");
+  assert.throws(() => c.modPow("2", "", "7"), (e) => e.message === "invalid crypto operation");
+  assert.equal(c.modPow("2", "00", "7"), "01");
+  assert.equal(c.gunzip(gzipSync("hola").toString("base64")), "hola");
+  assert.throws(() => c.gunzip("AAAA"), (e) => e.message === "invalid crypto operation");
+});
+
+test("crypto convert and aesIgeVerify (apiVersion 13) behave like the app", () => {
+  const c = createKino(JSON.parse(manifest({ apiVersion: 13 }))).kino.crypto;
+  assert.equal(c.convert("686f6c61", "hex", "base64"), "aG9sYQ==");
+  assert.equal(c.convert("aG9sYQ", "base64", "hex"), "686f6c61");
+  assert.equal(c.convert("686F6C61", "hex", "utf8"), "hola");
+  assert.throws(() => c.convert("abc", "hex", "base64"), (e) => e.code === "crypto_error" && e.message === '"data" is not valid hex');
+  assert.throws(() => c.convert("00", "hex", "latin1"), (e) => e.message === "unknown encoding: latin1");
+  // The app's PluginCryptoTest vector, checked by the middle 16 bytes of SHA-256(prefix || plaintext), as MTProto's msg_key.
+  const vk = "030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dc", vi = "fffaf5f0ebe6e1dcd7d2cdc8c3beb9b4afaaa5a09b96918c87827d78736e6964";
+  const vp = "010e1b2835424f5c697683909daab7c4d1deebf805121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a5764717e8b98a5b2bfccd9e6f3000d1a2734";
+  const vc = "5f1d528dcb99652fb74ef03178d728e70639ab1fe08aed46eec6d198b0a2ccd6922d2c3a899e45884f48802f7286d7e40153381bb84fd7ee9928e0dbc49c081c";
+  const prefix = "a1".repeat(32);
+  const mac = c.hash("sha256", prefix + vp, { inputEncoding: "hex" }).slice(16, 48);
+  const o = { keyEncoding: "hex", ivEncoding: "hex", inputEncoding: "hex", outputEncoding: "hex", mac, macPrefix: prefix, macOffset: 8 };
+  assert.equal(c.aesIgeVerify(vk, vi, vc, o), vp);
+  assert.equal(c.aesIgeVerify(vk, vi, vc, { ...o, outputEncoding: undefined }), Buffer.from(vp, "hex").toString("base64"));
+  assert.throws(() => c.aesIgeVerify(vk, vi, vc, { ...o, macOffset: 7 }), (e) => e.code === "crypto_error" && e.message === "the mac doesn't match");
+  assert.throws(() => c.aesIgeVerify(vk, vi, vc, { ...o, macOffset: 17 }), (e) => e.message === "invalid crypto operation");
+  assert.throws(() => c.aesIgeVerify(vk, vi, vc.slice(2), o), (e) => e.message === "invalid crypto operation");
 });
 
 // --- kino.crypto key pairs (apiVersion 6): the same vectors the app's PluginKeysTest checks ---
@@ -439,6 +575,233 @@ test("kino.error's userMessage: carried as the app carries it, shown only when t
   assert.match(errorReport(e, "Demo"), /the person reads: "Mensaje de Demo: Este capítulo ya no está disponible\."/);
   assert.match(errorReport(kino.error("not_found", "x", { userMessage: "Hola" })), /userMessage is not shown/);
   assert.equal(errorReport(kino.error("not_found", "x")), "[not_found] x");
+});
+
+test("storageLarge (apiVersion 13): 16 MB in total, 2 MB per value, 1000 keys of 256 characters, like the app; without it 256 KB as before", () => {
+  assert.equal(contract.capabilities.apiVersions.storageLarge, 13);
+  assert.equal(contract.storage.largeApiVersion, 13);
+  assert.equal(contract.storage.largeMaxTotalBytes, 16 * 1048576);
+  assert.equal(contract.storage.largeMaxValueBytes, 2 * 1048576);
+  assert.equal(contract.storage.largeMaxKeys, 1000);
+  assert.equal(contract.storage.largeMaxKeyChars, 256);
+  const caps = ["search", "resolve", "storageLarge"];
+  assert.equal(validateManifest(manifest({ apiVersion: 13, capabilities: caps })).ok, true);
+  assert.deepEqual(validateManifest(manifest({ apiVersion: 12, capabilities: caps })),
+    { ok: false, field: "capabilities", message: 'The "storageLarge" capability needs apiVersion 13' });
+  assert.equal(requiredExports(caps).includes("storageLarge"), false);
+  const small = createKino(JSON.parse(manifest())).kino;
+  assert.throws(() => small.storage.set("catalog", "x".repeat(1048576)), (e) => e.code === "too_large" && e.message === "plugin storage full (256 KB)");
+  const big = createKino(JSON.parse(manifest({ apiVersion: 13, capabilities: caps }))).kino;
+  big.storage.set("catalog", "x".repeat(2 * 1048576 - 7));
+  assert.equal(big.storage.get("catalog").length, 2 * 1048576 - 7);
+  assert.throws(() => big.storage.set("one", "y".repeat(2 * 1048576 + 1)), (e) => e.code === "too_large" && e.message === "plugin storage full (2 MB per value)");
+  assert.throws(() => big.storage.set("k".repeat(257), "v"), (e) => e.code === "invalid_request");
+  for (let i = 0; i < 7; i++) big.storage.set("p" + i, "p".repeat(2 * 1048576 - 2));
+  assert.throws(() => big.storage.set("last", "l".repeat(2 * 1048576 - 4)), (e) => e.code === "too_large" && e.message === "plugin storage full (16 MB)");
+  assert.equal(big.storage.get("last"), null);
+  const many = createKino(JSON.parse(manifest({ apiVersion: 13, capabilities: caps }))).kino;
+  for (let i = 0; i < 1000; i++) many.storage.set("k" + i, "v");
+  assert.throws(() => many.storage.set("one-more", "v"), (e) => e.code === "too_large" && e.message === "plugin storage full (1000 keys)");
+  many.storage.set("k0", "rewritten"); // an existing key is no new key
+});
+
+test("kino.catalog (apiVersion 13): the shared vectors give the app's answers, to the byte", { skip: NEEDS_KINO_REPO }, () => {
+  const vectors = JSON.parse(readFileSync(join(here, "..", "..", "..", "docs", "plugins", "catalog-vectors.json"), "utf8"));
+  const state = newCatalogState();
+  const canonical = (v) => (Array.isArray(v) ? v.map(canonical) : v !== null && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, canonical(v[k])])) : v);
+  vectors.forEach((v, i) => {
+    assert.deepEqual(canonical(JSON.parse(catalogAnswer(state, v.op, JSON.stringify(v.args)))), canonical(v.expect), `vector ${i} (${v.name})`);
+  });
+  assert.ok(vectors.length > 40);
+});
+
+test("kino.catalog: normalisation and tokens are the app's", () => {
+  assert.equal(catalogNorm("Película Ñandú"), "pelicula nandu");
+  assert.equal(catalogNorm("CAFÉ Über"), "cafe uber");
+  assert.deepEqual(catalogTokens("  Gato\u00A0ROJO\tgato  "), ["gato", "rojo"]);
+  assert.deepEqual(catalogTokens("   "), []);
+});
+
+test("kino.catalog (apiVersion 13): undefined without the capability, gated at 13, declarative; the API and its typed errors", async () => {
+  assert.equal(contract.capabilities.apiVersions.catalog, 13);
+  const caps = ["search", "resolve", "catalog"];
+  assert.deepEqual(validateManifest(manifest({ apiVersion: 12, capabilities: caps })),
+    { ok: false, field: "capabilities", message: 'The "catalog" capability needs apiVersion 13' });
+  assert.equal(validateManifest(manifest({ apiVersion: 13, capabilities: caps })).ok, true);
+  assert.equal(requiredExports(caps).includes("catalog"), false);
+  assert.equal(createKino(JSON.parse(manifest({ apiVersion: 13 }))).kino.catalog, undefined);
+  const { kino } = createKino(JSON.parse(manifest({ apiVersion: 13, capabilities: caps })));
+  assert.equal(signingLane(kino).catalog, undefined, "sign() has no kino.catalog, like the app");
+  assert.deepEqual(await kino.catalog.upsert([
+    { id: "1", title: "Película Ñandú", sort: 3, data: { poster: "p" }, pluginId: "other" },
+    { id: "2", title: "El gato ROJO", sort: 9 },
+  ]), { count: 2 });
+  const page = await kino.catalog.search({ q: "pelicula", pluginId: "other" });
+  assert.deepEqual(page, { items: [{ id: "1", title: "Película Ñandú", sort: 3, data: { poster: "p" } }], total: 1 });
+  assert.deepEqual((await kino.catalog.search()).items.map((i) => i.id), ["2", "1"]);
+  assert.deepEqual((await kino.catalog.get(["2", "x"])).map((i) => i.data), [null]);
+  assert.equal(await kino.catalog.count(), 2);
+  assert.deepEqual(await kino.catalog.remove(["1"]), { count: 1 });
+  assert.equal(await kino.catalog.clear(), undefined);
+  assert.equal(await kino.catalog.count(), 0);
+  const grab = async (f) => { try { await f(); return null; } catch (e) { return [e.code, e.message]; } };
+  assert.deepEqual(await grab(() => kino.catalog.upsert("nope")), ["invalid_request", "kino.catalog.upsert takes an array of items"]);
+  assert.deepEqual(await grab(() => kino.catalog.upsert(Array.from({ length: 501 }, (_, i) => ({ id: "i" + i, title: "t" })))),
+    ["too_large", "kino.catalog.upsert: at most 500 items per call (maxUpsertBatch)"]);
+  assert.deepEqual(await grab(() => kino.catalog.search({ limit: 101 })), ["too_large", "kino.catalog.search: limit is over 100 (maxSearchLimit)"]);
+  assert.deepEqual(await grab(() => kino.catalog.search("text")), ["invalid_request", "kino.catalog.search takes { q, limit, offset, order }"]);
+  assert.deepEqual(await grab(() => kino.catalog.get("x")), ["invalid_request", "kino.catalog.get takes an array of ids"]);
+  assert.deepEqual(await grab(() => kino.catalog.upsert([{ id: "a", title: "t", data: [1] }])), ["invalid_request", "kino.catalog.upsert: item 0 data must be an object"]);
+  assert.deepEqual(await grab(() => kino.catalog.upsert([{ id: "a", title: "t", data: () => 1 }])), ["invalid_request", "kino.catalog.upsert: item 0 data must be an object"]);
+  // maxItems: the 100,001st new item is refused with limit, and nothing of its batch is written.
+  const full = newCatalogState();
+  for (let from = 0; from < contract.catalog.maxItems; from += 500) {
+    catalogAnswer(full, "upsert", JSON.stringify({ items: Array.from({ length: 500 }, (_, i) => ({ id: "id" + (from + i), title: "t" })) }));
+  }
+  assert.equal(JSON.parse(catalogAnswer(full, "count", "{}")).count, 100000);
+  assert.deepEqual(JSON.parse(catalogAnswer(full, "upsert", JSON.stringify({ items: [{ id: "id5", title: "x" }, { id: "new", title: "t" }] }))),
+    { error: { code: "limit", message: "kino.catalog.upsert: the catalog is full (maxItems 100000)" } });
+  assert.equal(JSON.parse(catalogAnswer(full, "get", JSON.stringify({ ids: ["id5"] }))).items[0].title, "t");
+});
+
+const README_PATH = join(here, "..", "..", "..", "docs", "plugins", "README.md");
+
+/** The catalog guide's code blocks, as the README prints them. */
+function catalogGuideBlocks() {
+  const readme = readFileSync(README_PATH, "utf8");
+  const guide = readme.slice(readme.indexOf("### Catalog (SQLite): `kino.catalog`"), readme.indexOf("### Channels from any server"));
+  return [...guide.matchAll(/```js\n([\s\S]*?)```/g)].map((m) => m[1]);
+}
+
+// A fake source for the README's mini-plugin: pages of videos newest first, and their files.
+function fakeLibrary(videos, pageSizes) {
+  const lib = { videos, pageSizes, deleted: new Set(), fetches: [] };
+  lib.fetchImpl = async (url) => {
+    const u = new URL(url);
+    lib.fetches.push(u.pathname + u.search);
+    if (u.pathname === "/videos") {
+      const after = u.searchParams.get("after");
+      let start = after === null ? 0 : lib.videos.findIndex((v) => String(v.id) === after) + 1;
+      let size = lib.pageSizes[0];
+      // The page size of the page that starts here: the sizes are the pages of the first full pass, in order.
+      let at = 0;
+      for (const n of lib.pageSizes) { if (at === start) { size = n; break; } at += n; }
+      const videos = lib.videos.slice(start, start + size);
+      const next = start + size < lib.videos.length ? String(videos[videos.length - 1].id) : null;
+      return new Response(JSON.stringify({ videos, next }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    const file = decodeURIComponent(u.pathname.slice("/files/".length));
+    if (lib.deleted.has(file)) return new Response("gone", { status: 404 });
+    return new Response(JSON.stringify({ url: "https://cdn.example.org/" + file + ".mp4" }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  return lib;
+}
+
+test("the README's catalog mini-plugin runs as written: messy captions, batches of 500, indexing outside search", { skip: NEEDS_KINO_REPO }, async () => {
+  const [mini] = catalogGuideBlocks();
+  const head = mini.split("\n")[0];
+  assert.ok(head.startsWith("// kino-plugin.json (the parts that matter): "), head);
+  const parts = JSON.parse(head.slice(head.indexOf("{")));
+  const m = { id: "mini-catalog", name: "Mini", version: "1.0.0", entry: "plugin.js", ...parts };
+  assert.equal(validateManifest(JSON.stringify(m)).ok, true, "the manifest parts the example names validate");
+  const date0 = 1_700_000_000_000;
+  const videos = [];
+  for (let i = 0; i < 1750; i++) {
+    const n = 1750 - i;
+    let caption = `Capítulo ${n} de la serie`;
+    if (n === 1700) caption = undefined;                                   // no caption at all
+    if (n === 1699) caption = "Película " + "larga ".repeat(66) + "final"; // 400+ characters
+    if (n === 1698) caption = "x".repeat(299) + "😀 tail";               // a surrogate pair right at the 300 boundary
+    if (n === 1697) caption = "   \n\t  ";                                // only whitespace
+    if (n === 1696) caption = "Ñandú en la PELÍCULA";
+    videos.push({ id: n, caption, date: date0 + n * 1000, file: "f" + n, poster: "https://img.example.org/" + n + ".jpg" });
+  }
+  videos.splice(10, 0, { id: "bad id with spaces", caption: "skipped", date: date0, file: "b" }, { id: "x".repeat(121), caption: "skipped too", date: date0, file: "c" });
+  // The first full pass: pages of 1200 (three batches of up to 500), 300, 200, then the rest.
+  const lib = fakeLibrary(videos, [1200, 300, 200, 52]);
+  const dir = mkdtempSync(join(tmpdir(), "kino-mini-catalog-"));
+  try {
+    writeFileSync(join(dir, "plugin.js"), mini);
+    const { kino } = createKino(m, { fetchImpl: lib.fetchImpl });
+    const { plugin } = await loadPlugin(join(dir, "plugin.js"), kino);
+    // Search never reads the source: an empty catalog answers nothing.
+    assert.deepEqual(await plugin.search({ q: "capitulo" }), []);
+    assert.equal(lib.fetches.length, 0);
+    // Home indexes three pages per call: the first call stops on a cursor, the second completes the pass.
+    const rows = await plugin.home();
+    assert.equal(lib.fetches.length, 3);
+    assert.equal(await kino.catalog.count(), 1698, "1,700 videos read, the two bad ids skipped");
+    assert.equal(rows[0].items.length, 20);
+    assert.equal(rows[0].items[0].ref, "1750");
+    assert.ok(rows[0].items.every((it) => /^[A-Za-z0-9._~-]{1,128}$/.test(it.id)));
+    await plugin.home();
+    assert.equal(await kino.catalog.count(), 1750, "every valid video, the two bad ids skipped");
+    assert.equal(kino.storage.get("cursor"), null);
+    assert.notEqual(kino.storage.get("indexedAt"), null);
+    // The messy captions became valid titles.
+    const [none, long, edge, blank] = await kino.catalog.get(["1700", "1699", "1698", "1697"]);
+    assert.equal(none.title, "Video 1700");
+    assert.equal(long.title.length, 300);
+    assert.ok(edge.title.length <= 300 && !/[\uD800-\uDBFF]$/.test(edge.title));
+    assert.equal(blank.title, "Video 1697");
+    // Search: accents and case, words in any order, from the catalog only.
+    const fetched = lib.fetches.length;
+    assert.deepEqual((await plugin.search({ q: "pelicula nandu" })).map((it) => it.ref), ["1696"]);
+    assert.deepEqual((await plugin.search({ q: "larga pelicula" })).map((it) => it.ref), ["1699"]);
+    assert.equal((await plugin.search({ q: "serie capitulo" })).length, 50);
+    assert.equal(lib.fetches.length, fetched);
+    // New videos at the top: the next Home reads one page and stops at what it already has.
+    for (let n = 1751; n <= 1760; n++) lib.videos.unshift({ id: n, caption: "Nuevo " + n, date: date0 + n * 1000, file: "f" + n });
+    lib.pageSizes = [100];
+    const before = lib.fetches.length;
+    await plugin.home();
+    assert.equal(lib.fetches.length - before, 1);
+    assert.equal(await kino.catalog.count(), 1760);
+    // resolve: a playable URL, and a video the source deleted is dropped from the catalog.
+    assert.deepEqual(JSON.parse(JSON.stringify(await plugin.resolve("1750"))), { url: "https://cdn.example.org/f1750.mp4" });
+    lib.deleted.add("f1749");
+    await assert.rejects(plugin.resolve("1749"), (e) => e.code === "not_found");
+    assert.deepEqual(await kino.catalog.get(["1749"]), []);
+    await assert.rejects(plugin.resolve("1749"), (e) => e.code === "not_found");
+    // A restore brings kino.storage back but no catalog: the next Home starts over.
+    await kino.catalog.clear();
+    lib.pageSizes = [1200, 300, 200, 62];
+    await plugin.home();
+    assert.equal(kino.storage.get("indexedAt"), null, "the markers were reset and a new full pass started");
+    await plugin.home();
+    assert.equal(await kino.catalog.count(), 1760);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the catalog guide's search snippet and kino.d.ts's catalog examples run as written", { skip: NEEDS_KINO_REPO }, async () => {
+  const [, searches] = catalogGuideBlocks();
+  assert.ok(searches.includes("kino.catalog.search"), "the README's search snippet");
+  const { kino } = createKino(JSON.parse(manifest({ apiVersion: 13, capabilities: ["search", "resolve", "catalog"] })));
+  await kino.catalog.upsert([{ id: "1", title: "Gato rojo 2001" }, { id: "2", title: "gato" }]);
+  const AsyncFunction = (async () => {}).constructor;
+  await new AsyncFunction("kino", searches)(kino);
+  // kino.d.ts: every @example of kino.catalog, with the names they use given realistic values.
+  const dts = readFileSync(dtsPath(), "utf8");
+  const start = dts.indexOf("  namespace catalog {");
+  const ns = dts.slice(start, dts.indexOf("\n  namespace ", start + 1));
+  const examples = [...ns.matchAll(/@example\n((?:\s+\*   .*\n)+)/g)].map((m) => m[1].split("\n").map((l) => l.replace(/^\s+\*   /, "")).join("\n"));
+  assert.equal(examples.length, 6, "one example per function");
+  const videos = [
+    { id: 10, caption: undefined, date: 5, fileRef: "a" },
+    { id: 11, caption: "y".repeat(400), date: 6, fileRef: "b" },
+    { id: "z".repeat(129), caption: "too long an id", date: 7, fileRef: "c" },
+    { id: 12, caption: "Película 2001", date: 8.5, fileRef: "d" },
+    ...Array.from({ length: 600 }, (_, i) => ({ id: 1000 + i, caption: "Video " + i, date: i, fileRef: "f" + i })),
+  ];
+  let rebuilt = 0;
+  for (const code of examples) {
+    await new AsyncFunction("kino", "videos", "ref", "staleIds", "rebuild", code)(kino, videos, "12", ["10", "11"], async () => { rebuilt++; });
+  }
+  // upsert added 603 items (the 129-character id skipped), remove took 10 and 11 away, clear emptied it, and count saw 0.
+  assert.equal(await kino.catalog.count(), 0);
+  assert.equal(rebuilt, 1);
 });
 
 test("kino.storage entries with a ttlMs expire, are purged, and old data keeps working", () => {
@@ -985,7 +1348,7 @@ function dtsPath() {
 // kino.d.ts's header claims its numeric comments "come from contract.json"; nothing enforced that
 // claim until now. This ties each documented number to the contract value it describes, so the two
 // can't silently drift apart.
-test("kino.d.ts's documented numbers match contract.json", { skip: NEEDS_KINO_REPO }, () => {
+test("kino.d.ts's documented numbers match contract.json", () => {
   const dts = readFileSync(dtsPath(), "utf8");
   const c = contract;
   const kb = (bytes) => (bytes % (1024 * 1024) === 0 ? `${bytes / 1024 / 1024} MB` : `${bytes / 1024} KB`);
@@ -1018,7 +1381,7 @@ test("kino.d.ts's documented numbers match contract.json", { skip: NEEDS_KINO_RE
   for (const needle of mustContain) assert.ok(dts.includes(needle), `kino.d.ts is out of date with contract.json: missing "${needle}"`);
 });
 
-test("kino.d.ts's meta typings carry contract.json's meta rules", { skip: NEEDS_KINO_REPO }, () => {
+test("kino.d.ts's meta typings carry contract.json's meta rules", () => {
   const dts = readFileSync(dtsPath(), "utf8");
   const c = contract, m = contract.output.meta;
   const block = dts.slice(dts.indexOf("interface KinoMetaQuery"), dts.indexOf("type KinoMetaFn"));
@@ -1063,7 +1426,7 @@ function declaredKino() {
   return out;
 }
 
-test("kino.d.ts declares exactly what the kit's kino has", { skip: NEEDS_KINO_REPO }, () => {
+test("kino.d.ts declares exactly what the kit's kino has", () => {
   // At the highest apiVersion, so members gated on it (kino.meta.byTitle, apiVersion 9) are there too.
   const { kino } = createKino(JSON.parse(manifest({ apiVersion: contract.maxApiVersion })));
   const out = new Set();
@@ -1071,16 +1434,27 @@ test("kino.d.ts declares exactly what the kit's kino has", { skip: NEEDS_KINO_RE
     const v = o[k];
     // A function's own members too (kino.log.report).
     if (typeof v === "function") { out.add(`${p}.${k}=function`); walk(v, `${p}.${k}`); }
-    else if (v !== null && typeof v === "object") walk(v, `${p}.${k}`);
+    // An array (kino.screen.widgets) is one value, not one member per index.
+    else if (v !== null && typeof v === "object" && !Array.isArray(v)) walk(v, `${p}.${k}`);
     else out.add(`${p}.${k}=value`);
   });
   walk(kino, "kino");
   // kino.cloudstream exists only in a plugin Kino generated from a CloudStream repository (KinoDtsTest's rule): a
-  // hand-written plugin's kino, which is the kit's, never has it.
+  // hand-written plugin's kino, which is the kit's, never has it. kino.ws exists only with the "socket" capability.
   const declared = [...declaredKino()];
-  const conditional = declared.filter((m) => m.startsWith("kino.cloudstream."));
-  assert.ok(conditional.length > 0, "kino.d.ts no longer declares kino.cloudstream");
+  const conditional = declared.filter((m) => m.startsWith("kino.cloudstream.") || m.startsWith("kino.ws.") || m.startsWith("kino.catalog.") || m.startsWith("kino.qr."));
+  assert.ok(declared.some((m) => m.startsWith("kino.cloudstream.")), "kino.d.ts no longer declares kino.cloudstream");
+  assert.ok(declared.some((m) => m.startsWith("kino.ws.")), "kino.d.ts no longer declares kino.ws");
   assert.deepEqual([...out].sort(), declared.filter((m) => !conditional.includes(m)).sort());
+  // With the capability the kit's kino has kino.ws.open too (and nothing else is added).
+  const withSocket = createKino(JSON.parse(manifest({ apiVersion: contract.maxApiVersion, capabilities: ["search", "resolve", "socket"] }))).kino;
+  assert.equal(typeof withSocket.ws.open, "function");
+  // And with "catalog", exactly the six functions kino.d.ts declares.
+  const withCatalog = createKino(JSON.parse(manifest({ apiVersion: contract.maxApiVersion, capabilities: ["search", "resolve", "catalog"] }))).kino;
+  assert.deepEqual(Object.keys(withCatalog.catalog).sort(), declared.filter((m) => m.startsWith("kino.catalog.")).map((m) => m.slice(13, -9)).sort());
+  // And with "qrScan", exactly kino.qr.scan.
+  const withQr = createKino(JSON.parse(manifest({ apiVersion: contract.maxApiVersion, capabilities: ["search", "resolve", "qrScan"] }))).kino;
+  assert.deepEqual(Object.keys(withQr.qr).map((k) => `kino.qr.${k}=function`), declared.filter((m) => m.startsWith("kino.qr.")));
 });
 
 test("kino.seed in the kit answers nothing, never throws, and keeps the contract's keys and limits", () => {
@@ -1432,7 +1806,7 @@ test("secrets: parsed with apiVersion 4, ignored below it, and its Spanish messa
 });
 
 test("migrate: a consent line, and an update that adds it re-asks like any new reach", () => {
-  assert.deepEqual(contract.capabilities.needsApproval, ["download", "drm", "channels", "migrate", "tracking"]);
+  assert.deepEqual(contract.capabilities.needsApproval, ["download", "drm", "channels", "migrate", "tracking", "nuvio", "syncProvider", "library", "playerPanelTab", "playerControl", "room", "schedule", "ai"]);
   assert.deepEqual(consentLines(validateManifest(manifest({ apiVersion: 6, capabilities: ["search", "resolve", "migrate"] })).manifest),
     [{ text: "Revisar lo que tienes guardado (biblioteca, historial, favoritos) para pasarlo a este plugin", danger: false }]);
 });
@@ -3389,6 +3763,188 @@ test("an action's clearSettings keeps the plugin's own optional valued settings,
   assert.deepEqual(checkSettingsOutput("action", { clearSettings: keys }, many).clearSettings, keys.slice(0, 12));
 });
 
+// --- configuration aids: link and help settings (apiVersion 12), as PluginSettings.parseSettings ---
+
+test("link and help settings are judged like the app: https links, plain help texts, at most 4 of each", () => {
+  const v = (settings, apiVersion = 12) => validateManifest(manifest({ apiVersion, settings }));
+  const errs = (r) => (r.ok === false ? r.message : "");
+  const link = (url, extra = {}) => ({ key: "bot", type: "link", label: "Abrir @BotFather", url, ...extra });
+  const help = (extra = {}) => ({ key: "steps", type: "help", body: "Paso 1\nPaso 2", ...extra });
+  assert.equal(errs(v([link("https://t.me/BotFather", { labelEn: "Open @BotFather" }), help({ title: "Cómo", bodyEn: "Step 1" })])), "");
+  assert.equal(contract.settings.configAids.maxLinks, 4);
+  for (const bad of ["http://t.me/BotFather", "https://ana:pw@t.me/x", "https://@t.me/x", "javascript:alert(1)", "t.me/x", "", 7, "https://t.me/" + "a".repeat(2048)]) {
+    assert.match(errs(v([link(bad)])), /type link needs a "url"/, String(bad));
+  }
+  assert.match(errs(v([{ key: "bot", type: "link", url: "https://t.me/x" }])), /needs a label/);
+  assert.match(errs(v([link("https://t.me/x")], 11)), /needs apiVersion 12/);
+  assert.match(errs(v([help()], 11)), /needs apiVersion 12/);
+  assert.match(errs(v([1, 2, 3, 4, 5].map((i) => link("https://t.me/a" + i, { key: "l" + i })))), /more than 4 settings of type link/);
+  assert.match(errs(v([1, 2, 3, 4, 5].map((i) => help({ key: "h" + i })))), /more than 4 settings of type help/);
+  assert.match(errs(v([help({ body: "a".repeat(2001) })])), /"body" of the setting "steps"/);
+  assert.match(errs(v([help({ title: "t".repeat(61) })])), /"title" of the setting "steps"/);
+  assert.match(errs(v([{ key: "steps", type: "help" }])), /needs a "body"/);
+  assert.match(errs(v([{ key: "t", label: "T", type: "text", url: "https://t.me/x" }])), /Only a setting of type link has "url"/);
+  assert.match(errs(v([link("https://t.me/x", { body: "x" })])), /Only a setting of type help/);
+  // Control, invisible formatting and direction characters are refused in a link label and in help texts; a body keeps \n.
+  for (const bad of ["Abrir\u202E@BotFather", "Abrir\u200B", "Abrir\u0007", "Abrir\nBot", "Abrir\u2028x"]) {
+    assert.match(errs(v([link("https://t.me/x", { label: bad })])), /control, invisible or direction/, JSON.stringify(bad));
+    assert.match(errs(v([link("https://t.me/x", { labelEn: bad })])), /control, invisible or direction/, JSON.stringify(bad));
+    assert.match(errs(v([help({ title: bad })])), /control, invisible or direction/, JSON.stringify(bad));
+  }
+  for (const bad of ["Paso\u202E1", "Pa\u200Bso", "Pa\u0000so", "Pa\u2029so"]) assert.match(errs(v([help({ body: bad })])), /control, invisible or direction/, JSON.stringify(bad));
+  assert.equal(errs(v([help({ body: "Paso 1\r\nPaso 2\n\nPaso 3" })])), "");
+  // Markup is just text: accepted, and Kino shows it literally.
+  assert.equal(errs(v([help({ body: "<b>Paso</b> <a href=\"https://x.example\">x</a>" })])), "");
+});
+
+// --- setSettings (additive action.setSettings, Kino 0.9.74), as PluginSettingsUi.parseActionResult ---
+
+test("an action's setSettings keeps the plugin's own plain settings and refuses the whole field on any bad entry", () => {
+  const m = JSON.parse(manifest({ apiVersion: 6, settings: [
+    { key: "chatId", label: "Chat", type: "text" },
+    { key: "name", label: "Nombre", type: "text", required: true },
+    { key: "server", label: "Servidor", type: "url" },
+    { key: "quality", label: "Calidad", type: "select", options: [{ value: "hd", label: "HD" }, { value: "sd", label: "SD" }] },
+    { key: "botToken", label: "Token", type: "password" },
+    { key: "hd", label: "HD", type: "toggle" },
+    { key: "linked", label: "Estado", type: "status" },
+    { key: "link", label: "Vincular", type: "action" },
+  ] }));
+  const run = (set, extra = {}, scrub = (t) => t) => { const drops = []; const out = checkSettingsOutput("action", { message: "Listo", setSettings: set, ...extra }, m, scrub, (d) => drops.push(d), "link"); return { out, drops }; };
+  assert.deepEqual(run({ chatId: " 42 ", quality: "sd" }).out,
+    { message: "Listo", refresh: false, clearSettings: [], setSettings: { chatId: "42", quality: "sd" } });
+  assert.equal(contract.settings.ui.setSettings.maxEntries, 8);
+  // Never a url setting: its value becomes a server the plugin may reach, and only the person types one.
+  assert.deepEqual(contract.settings.ui.setSettings.types, ["text", "select", "password"]);
+  assert.equal(contract.settings.ui.setSettings.passwordApiVersion, 13);
+  for (const bad of [{ server: "http://192.168.1.1" }, { server: "https://media.example.com" }, { chatId: "1", server: "http://192.168.1.1" }]) {
+    assert.equal(run(bad).out.setSettings, null, JSON.stringify(bad));
+  }
+  for (const bad of [{ botToken: "x" }, { hd: "true" }, { linked: "x" }, { link: "x" }, { ghost: "x" }, { chatId: 42 }, { quality: "4k" },
+    { name: "  " }, { chatId: "x".repeat(501) }, "chatId", ["chatId"]]) {
+    const { out, drops } = run(bad);
+    assert.equal(out.setSettings, null, JSON.stringify(bad));
+    assert.equal(out.message, "Listo");
+    assert.match(drops[0], /setSettings/);
+  }
+  assert.equal(run({ chatId: "1" }, { clearSettings: ["chatId"] }).out.setSettings, null);
+  assert.equal(run({ chatId: "1SECRET" }, {}, (t) => t.replaceAll("SECRET", "•")).out.setSettings, null);
+  const many = JSON.parse(manifest({ apiVersion: 6, settings: Array.from({ length: 9 }, (_, i) => ({ key: `k${i}`, label: `K${i}`, type: "text" })) }));
+  const nine = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`k${i}`, "v"]));
+  assert.equal(checkSettingsOutput("action", { setSettings: nine }, many).setSettings, null);
+  // No setSettings: the answer keeps its old shape.
+  assert.deepEqual(checkSettingsOutput("action", { message: "x", setSettings: null }, m), { message: "x", refresh: false, clearSettings: [] });
+});
+
+test("from apiVersion 13 an action's setSettings may fill a password: kept, scrubbed from the message and link, printed masked", () => {
+  const settings = [
+    { key: "syncKey", label: "Clave", type: "password" },
+    { key: "pin", label: "PIN", type: "password", required: true },
+    { key: "chatId", label: "Chat", type: "text" },
+    { key: "create", label: "Crear clave", type: "action" },
+    { key: "confirm", label: "Confirmar", type: "action" },
+  ];
+  const at = (apiVersion) => JSON.parse(manifest({ apiVersion, settings }));
+  const key = "0123456789abcdef".repeat(4);
+  const run = (answer, apiVersion = 13, scrub = (t) => t) => { const drops = []; return { out: checkSettingsOutput("action", answer, at(apiVersion), scrub, (d) => drops.push(d), "create"), drops }; };
+  const ok = run({ message: `Clave creada: ${key}`, setSettings: { syncKey: ` ${key} `, chatId: "42" } }).out;
+  assert.deepEqual(ok, { message: "Clave creada:", refresh: false, clearSettings: [], setSettings: { syncKey: key, chatId: "42" } });
+  // Below apiVersion 13 a password is refused as before.
+  assert.equal(run({ setSettings: { syncKey: key } }, 12).out.setSettings, null);
+  // The typed rules: too long, not a string, a required one emptied, a value holding a secret, set and cleared together.
+  for (const bad of [{ syncKey: "x".repeat(501) }, { syncKey: 42 }, { pin: "  " }, { syncKey: `${key}SECRET` }]) {
+    assert.equal(run({ message: "Listo", setSettings: bad }, 13, (t) => t.replaceAll("SECRET", "•")).out.setSettings, null, JSON.stringify(bad));
+  }
+  assert.equal(run({ setSettings: { syncKey: key }, clearSettings: ["syncKey"] }).out.setSettings, null);
+  // Never echoed: a message that is only the key shows nothing, a link candidate that is the key is refused.
+  assert.equal(run({ message: key, setSettings: { syncKey: key } }).out.message, null);
+  assert.equal(run({ setSettings: { syncKey: key }, link: { candidate: key, confirm: "confirm" } }).out.link, null);
+  // Refused as a whole: the message is still scrubbed of what it tried to set.
+  assert.equal(run({ message: `Clave ${key}`, setSettings: { syncKey: key, ghost: "x" } }).out.message, "Clave");
+  // The kit prints it masked, never the value.
+  const printed = JSON.stringify(maskSetPasswords(ok, at(13)));
+  assert.ok(!printed.includes(key), printed);
+  assert.ok(printed.includes('"chatId":"42"'));
+  assert.deepEqual(settableTypes(12), ["text", "select"]);
+  assert.deepEqual(settableTypes(13), ["text", "select", "password"]);
+});
+
+test("G5: setSettings and hide read the apiVersion of the settings list in effect, an enhancement's when it replaced the list", () => {
+  const own = [
+    { key: "email", label: "Correo", type: "text" },
+    { key: "password", label: "Clave", type: "password" },
+    { key: "nickname", label: "Apodo", type: "text" },
+    { key: "linked", label: "Estado", type: "status" },
+    { key: "create", label: "Crear clave", type: "action" },
+  ];
+  const listAt14 = [
+    ...own,
+    { key: "pin", label: "PIN", type: "password", sync: false },
+    { key: "rating", label: "Clasificación", type: "select", default: "all", unlockWith: "adultCode", options: [{ value: "all", label: "Todo" }, { value: "adult", label: "Adultos" }] },
+  ];
+  const merged = (enhancements) => {
+    const r = validateManifest(manifest({ apiVersion: 8, settings: own, ...(enhancements ? { enhancements } : {}) }));
+    assert.ok(r.ok, JSON.stringify(r));
+    return r.manifest;
+  };
+  const key = "0123456789abcdef".repeat(4);
+  const set = (m, s) => checkSettingsOutput("action", { message: `Clave ${key}`, setSettings: s }, m, (t) => t, () => {}, "create");
+  // The list came from enhancements."14": filled as a 14 plugin's, only passwords that list declares, never echoed.
+  const e = merged({ 14: { settings: listAt14 } });
+  assert.deepEqual(e.enhancementsApplied, [14]);
+  assert.equal(settingsApiVersion(e), 14);
+  assert.deepEqual(set(e, { password: key, pin: "1234" }), { message: "Clave", refresh: false, clearSettings: [], setSettings: { password: key, pin: "1234" } });
+  for (const bad of [{ ghost: "x" }, { linked: "x" }, { create: "x" }, { rating: "adult" }]) assert.equal(set(e, bad).setSettings, null, JSON.stringify(bad));
+  assert.deepEqual(set(e, { rating: "all" }).setSettings, { rating: "all" });
+  assert.deepEqual(statusHide({ hide: ["nickname", "ghost"] }, e), ["nickname"]);
+  // Without an enhancement list: the plugin's own apiVersion 8, exactly as before.
+  const plain = merged(null);
+  assert.equal(settingsApiVersion(plain), 8);
+  assert.equal(set(plain, { password: key }).setSettings, null);
+  assert.deepEqual(set(plain, { nickname: "Ana" }).setSettings, { nickname: "Ana" });
+  assert.deepEqual(statusHide({ hide: ["nickname"] }, plain), []);
+  // The non-enumerable field never shows in the manifest's own keys (the app parity cases compare them).
+  assert.ok(!Object.keys(e).includes("settingsApiVersion"));
+});
+
+// --- link (additive action.link, Kino 0.9.74), as PluginSettingsUi.parseActionResult ---
+
+test("an action's link is kept only with a usable candidate and ANOTHER declared action to confirm it", () => {
+  const m = JSON.parse(manifest({ apiVersion: 6, settings: [
+    { key: "nickname", label: "Apodo", type: "text" },
+    { key: "findMe", label: "Buscar", type: "action" },
+    { key: "linkMe", label: "Vincular", type: "action" },
+    { key: "wipe", label: "Borrar todo", type: "action", confirm: "¿Borrar todo lo guardado?" },
+  ] }));
+  const link = (candidate, confirm = "linkMe") => ({ message: "Te encontré", link: { candidate, confirm } });
+  const ok = checkSettingsOutput("action", link("  @ana  "), m, (t) => t, () => {}, "findMe");
+  assert.deepEqual(ok, { message: "Te encontré", refresh: false, clearSettings: [], link: { candidate: "@ana", confirm: "linkMe" } });
+  assert.equal(contract.settings.ui.link.candidateMaxChars, 64);
+  assert.equal(contract.additiveFromApp["action.link"], contract.additiveFromApp["kino.sync.remoteChanged"]);
+  const max = contract.settings.ui.link.candidateMaxChars;
+  assert.equal(checkSettingsOutput("action", link("a".repeat(max)), m, undefined, undefined, "findMe").link.candidate.length, max);
+  for (const [c, k] of [["", "linkMe"], ["   ", "linkMe"], [7, "linkMe"], ["a".repeat(max + 1), "linkMe"], ["@ana\nx", "linkMe"], ["@ana\u202Eetouq", "linkMe"], ["@a\u200Bna", "linkMe"],
+    ["@ana\u00A0b", "linkMe"], ["@ana\u3000b", "linkMe"], ["\u3164", "linkMe"], ["@a\u2800", "linkMe"], ["\uFFA0", "linkMe"],
+    ["@ana", "findMe"], ["@ana", "nickname"], ["@ana", "ghost"], ["@ana", 3], ["@ana", "wipe"]]) {
+    const drops = [];
+    const out = checkSettingsOutput("action", link(c, k), m, (t) => t, (d) => drops.push(d), "findMe");
+    assert.equal(out.link, null, JSON.stringify([c, k]));
+    assert.equal(out.message, "Te encontré");
+    assert.match(drops[0], /link/);
+  }
+  const notObj = [];
+  assert.equal(checkSettingsOutput("action", { link: "@ana" }, m, undefined, (d) => notObj.push(d), "findMe").link, null);
+  assert.match(notObj[0], /link that is not an object/);
+  // Runs of spaces collapse to one, and the cap counts what is shown.
+  assert.equal(checkSettingsOutput("action", link("  Ana   María  "), m, undefined, undefined, "findMe").link.candidate, "Ana María");
+  assert.equal(checkSettingsOutput("action", link("a" + " ".repeat(100) + "b"), m, undefined, undefined, "findMe").link.candidate, "a b");
+  // Scrubbed like any text the plugin returns.
+  assert.equal(checkSettingsOutput("action", link("@anaSECRET"), m, (t) => t.replaceAll("SECRET", ""), undefined, "findMe").link.candidate, "@ana");
+  // No link in the answer: the answer keeps its old shape.
+  assert.deepEqual(checkSettingsOutput("action", { message: "x" }, m, undefined, undefined, "findMe"), { message: "x", refresh: false, clearSettings: [] });
+  assert.deepEqual(checkSettingsOutput("action", { message: "x", link: null }, m, undefined, undefined, "findMe"), { message: "x", refresh: false, clearSettings: [] });
+});
+
 test("run.mjs prints an action's kept clearSettings and which entries Kino dropped", () => {
   const dir = mkdtempSync(join(tmpdir(), "kino-clear-"));
   try {
@@ -3714,12 +4270,13 @@ test("the guide's kino.fetch limits row names every fetch limit the app enforces
   assert.ok(row.includes(`at most ${contract.fetch.maxRequestsPerCall} requests per call, every hop counted, refused ones included (${contract.fetch.nuvioMaxRequestsPerCall} for a plugin converted from a Nuvio scraper)`), row);
   assert.ok(row.includes(`at most ${contract.fetch.maxInFlight} fetches in flight at once`), row);
   assert.ok(row.includes(`at most ${contract.fetch.maxHostQuestionsPerCall} host questions per call`), row);
+  for (const f of contract.fetch.syncCall.functions) assert.ok(row.includes(`\`${f}\``), `kino.fetch row lacks the sync call ${f}`);
 });
 
 // apiVersion 5 is Kino 0.9.45's (the author's signature, nothing else): a v5 manifest using an apiVersion 6
 // field is refused, or reads it exactly as those apps do (an unknown field, ignored).
 test("apiVersion 5 manifests read as Kino 0.9.45 and 0.9.46 read them: every apiVersion 6 field is refused or ignored", () => {
-  assert.equal(contract.maxApiVersion, 11);
+  assert.equal(contract.maxApiVersion, 14);
   const v5 = (extra) => validateManifest(manifest({ apiVersion: 5, ...extra }));
   const ignored = v5({ debug: true, section: { label: "Mía" }, theme: { accent: "#3D5AFE" } });
   assert.equal(ignored.ok, true);
@@ -3741,7 +4298,7 @@ test("apiVersion 5 manifests read as Kino 0.9.45 and 0.9.46 read them: every api
 // apiVersion 5 shipped in Kino 0.9.45 (signature.fromApp); 6 first ships in 0.9.50 (nothing ships until the built-in source removal is done).
 test("each apiVersion above 4 names the Kino it first ships in, and validate's note reads it", async () => {
   assert.equal(contract.manifest.signature.fromApp, "0.9.45");
-  assert.deepEqual(contract.apiVersionFromApp, { "6": "0.9.50", "7": "0.9.51", "8": "0.9.54", "9": "0.9.55", "10": "0.9.65", "11": "0.9.66" });
+  assert.deepEqual(contract.apiVersionFromApp, { "6": "0.9.50", "7": "0.9.51", "8": "0.9.54", "9": "0.9.55", "10": "0.9.65", "11": "0.9.66", "12": "0.9.74", "13": "0.9.74", "14": "0.9.74" });
   const dir = mkdtempSync(join(tmpdir(), "kino-from-app-"));
   try {
     writeFileSync(join(dir, "plugin.js"), "export async function search(){ return { items: [] } }\nexport async function resolve(){ return { url: 'https://example.com/a.m3u8' } }");
@@ -3749,6 +4306,11 @@ test("each apiVersion above 4 names the Kino it first ships in, and validate's n
     assert.deepEqual((await validate(dir)).notes, ["apiVersion 6: needs Kino 0.9.50 or later; older versions refuse it with \"This plugin needs a newer version of Kino\""]);
     writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: 5 }));
     assert.deepEqual((await validate(dir)).notes, ["apiVersion 5: needs Kino 0.9.45 or later; older versions refuse it with \"This plugin needs a newer version of Kino\""]);
+    // 12 (sync providers), 13 and 14 (plugin screens) all arrive in Kino 0.9.74.
+    for (const v of [12, 13, 14]) {
+      writeFileSync(join(dir, "kino-plugin.json"), manifest({ apiVersion: v }));
+      assert.ok((await validate(dir)).notes.includes(`apiVersion ${v}: needs Kino 0.9.74 or later; older versions refuse it with "This plugin needs a newer version of Kino"`), String(v));
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -4001,8 +4563,8 @@ test("browser pages: its own wider line, true keeps the old one, and page answer
   assert.equal(v({ browser: true }).manifest.browserPages, false);
   assert.equal(v({ browser: "pages" }, 5).manifest.browser, false);
   assert.deepEqual(v({ browser: "page" }), { ok: false, field: "browser", message: contract.manifest.browser.notBooleanMessage });
-  assert.equal(contract.maxApiVersion, 11);
-  assert.equal(v({}, 12).ok, false);
+  assert.equal(contract.maxApiVersion, 14);
+  assert.equal(v({}, 15).ok, false);
   const dir = mkdtempSync(join(tmpdir(), "kino-browser-page-"));
   try {
     writeFileSync(join(dir, "plugin.js"), "export async function search(q){ try { await kino.browser.page('https://example.com/?s=' + q, { waitFor: 'article' }) } catch (e) { return [{ id: e.code, title: e.code, ref: e.code, kind: 'movie' }] } }\nexport async function resolve(){ return { url: 'https://example.com/a.m3u8' } }");
@@ -4542,7 +5104,7 @@ test("catalogOnly: resolve may be left out, one of home/browse/search/meta is ne
   assert.deepEqual(validateManifest(manifest({ capabilities: ["home"] })), { ok: false, field: "capabilities", message: 'The plugin must declare "resolve"' });
   assert.equal(contract.additiveFromApp.catalogOnly, "0.9.54");
   // No apiVersion of its own: catalogOnly is valid at every apiVersion.
-  assert.equal(contract.apiVersion, 11);
+  assert.equal(contract.apiVersion, 14);
 });
 
 test("catalogOnly: validate prints the consent line and what an older Kino does with it", async () => {
@@ -4695,6 +5257,9 @@ test("externalResolver: the package, an apk from a GitHub release, F-Droid and a
   const gh = "https://github.com/acme/resolver/releases/download/v1.0/r.apk";
   assert.equal(ok({ package: "com.example.resolver" }).ok, true);
   assert.equal(ok({ package: "com.example.resolver", fdroid: true }).ok, true);
+  const ia = (url) => ok({ package: "com.example.resolver", apk: { url, sha256: "ab".repeat(32) } }).ok;
+  assert.equal(ia("https://archive.org/download/some-item/r-1.0.apk"), true);
+  for (const url of ["https://archive.org/details/some-item", "https://archive.org/download/some-item", "https://ia800107.us.archive.org/5/items/some-item/r.apk", "https://archive.org/download/some-item/r.apk?x=1"]) assert.equal(ia(url), false, url);
   assert.equal(ok({ package: "com.example.resolver", downloader: { code: "7702264" } }).ok, true);
   assert.equal(ok({ package: "com.example.resolver", apk: { url: gh, sha256: "ab".repeat(32), label: "R" }, fdroid: true, downloader: { code: "123" } }).ok, true);
   for (const bad of [
@@ -4706,6 +5271,23 @@ test("externalResolver: the package, an apk from a GitHub release, F-Droid and a
     { package: "com.example.resolver", apk: { url: "https://example.com/r.apk", sha256: "a".repeat(64) } }, // not GitHub
     { package: "com.example.resolver", apk: { url: "https://github.com/acme/resolver/raw/main/r.apk", sha256: "a".repeat(64) } },
     { package: "com.example.resolver", apk: { url: gh } },
+  ]) {
+    const r = ok(bad);
+    assert.equal(r.ok, false, JSON.stringify(bad));
+    assert.equal(r.field, "externalResolver");
+  }
+  // The same app for a computer, by system, next to the apk.
+  const zip = "https://github.com/acme/resolver/releases/download/v1.0/r-windows.zip";
+  assert.equal(ok({ package: "com.example.resolver", apk: { url: gh, sha256: "ab".repeat(32) }, desktop: { windows: { url: zip, sha256: "cd".repeat(32) }, linux: { url: zip, sha256: "ef".repeat(32) } } }).ok, true);
+  assert.equal(ok({ package: "com.example.resolver", desktop: {} }).ok, true);
+  for (const bad of [
+    { package: "com.example.resolver", desktop: "windows" }, { package: "com.example.resolver", desktop: [] },
+    { package: "com.example.resolver", desktop: { freebsd: { url: zip, sha256: "a".repeat(64) } } }, // an unknown system
+    { package: "com.example.resolver", desktop: { windows: "x" } },
+    { package: "com.example.resolver", desktop: { windows: { url: zip } } },
+    { package: "com.example.resolver", desktop: { windows: { url: zip, sha256: "xyz" } } },
+    { package: "com.example.resolver", desktop: { windows: { url: "https://example.com/r.zip", sha256: "a".repeat(64) } } }, // not GitHub
+    { package: "com.example.resolver", desktop: { windows: { url: "http://github.com/acme/resolver/releases/download/v1.0/r.zip", sha256: "a".repeat(64) } } },
   ]) {
     const r = ok(bad);
     assert.equal(r.ok, false, JSON.stringify(bad));
@@ -4737,6 +5319,39 @@ test("sandbox: Node's globals the engine lacks are undefined inside the plugin, 
     assert.equal(sandboxed, true);
     assert.deepEqual(JSON.parse(JSON.stringify(plugin.probe())), { missing: [], present: [] }); // cross-realm: compare as JSON
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("sandbox: kino.ws.send takes a Uint8Array made inside the plugin realm, and still refuses every other kind with invalid_request", async () => {
+  const sent = [];
+  const RealWebSocket = globalThis.WebSocket;
+  globalThis.WebSocket = class FakeSocket {
+    constructor() { this.readyState = 0; this.listeners = {}; setTimeout(() => { this.readyState = 1; (this.listeners.open || []).forEach((f) => f({})); }, 0); }
+    addEventListener(name, f) { (this.listeners[name] ||= []).push(f); }
+    send(data) { sent.push(Array.from(data)); }
+    close() { this.readyState = 3; }
+  };
+  const dir = sandboxPlugin(`
+    export async function go() {
+      const s = await kino.ws.open("wss://" + kino.__host + "/s");
+      await s.send(new Uint8Array([1, 2, 3]));
+      const codes = {};
+      for (const [k, v] of Object.entries({ array: [1, 2], string: "ab", u16: new Uint16Array(2), view: new DataView(new ArrayBuffer(2)), buf: new ArrayBuffer(2), i8: new Int8Array(2) })) {
+        try { await s.send(v); codes[k] = "accepted"; } catch (e) { codes[k] = e.code; }
+      }
+      return JSON.stringify(codes);
+    }`);
+  try {
+    const m = JSON.parse(manifest({ apiVersion: 13, capabilities: ["search", "resolve", "socket"] }));
+    const { kino } = createKino(m);
+    const wrapped = Object.freeze({ ...kino, __host: m.hosts[0] });
+    const { plugin } = await loadPlugin(join(dir, "plugin.js"), wrapped);
+    const codes = JSON.parse(await plugin.go());
+    assert.deepEqual(sent, [[1, 2, 3]]);
+    assert.deepEqual(codes, { array: "invalid_request", string: "invalid_request", u16: "invalid_request", view: "invalid_request", buf: "invalid_request", i8: "invalid_request" });
+  } finally {
+    globalThis.WebSocket = RealWebSocket;
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -4790,4 +5405,467 @@ test("sandbox: validate() warns about a missing global without refusing the plug
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+
+// --- kino.qr.scan (apiVersion 13, capability "qrScan") and the settings form's qr setting ---
+
+const qrManifest = (extra = {}) => ({ id: "qr-demo", name: "QR Demo", version: "1.0.0", apiVersion: 13, entry: "plugin.js", hosts: ["api.example.com"], capabilities: ["search", "resolve", "qrScan"], ...extra });
+
+test("kino.qr exists only with the qrScan capability, and never in sign()", () => {
+  assert.equal(createKino(qrManifest({ capabilities: ["search", "resolve"] })).kino.qr, undefined);
+  const { kino } = createKino(qrManifest(), { qrScan: async () => "x" });
+  assert.equal(typeof kino.qr.scan, "function");
+  assert.equal(signingLane(kino).qr, undefined);
+});
+
+test("kino.qr.scan in the kit: the fake's text or null, and the app's errors and messages", async () => {
+  // As from a settings action the person pressed: the only calls (with panelAction) that may open the scanner.
+  const inAction = (f) => kitCall.run("action", f);
+  const asked = [];
+  const { kino } = createKino(qrManifest(), { qrScan: async (ask) => { asked.push(ask); return ask.title === "cancel" ? null : "exampleapp://login?token=AbC"; } });
+  assert.equal(await inAction(() => kino.qr.scan({ title: " Vincular ", titleEn: "Link", pluginId: "other" })), "exampleapp://login?token=AbC");
+  assert.deepEqual(asked, [{ title: "Vincular", titleEn: "Link" }]);
+  assert.equal(await inAction(() => kino.qr.scan({ title: "cancel" })), null);
+  assert.equal(await inAction(() => kino.qr.scan()), "exampleapp://login?token=AbC");
+  const code = async (f) => { try { await inAction(f); return "ok"; } catch (e) { return `${e.code}:${e.message}`; } };
+  assert.equal(await code(() => kino.qr.scan({ title: 7 })), "invalid_request:kino.qr.scan: title must be a string");
+  assert.equal(await code(() => kino.qr.scan({ titleEn: "x".repeat(contract.qr.maxTitleChars + 1) })), `invalid_request:kino.qr.scan: titleEn is over ${contract.qr.maxTitleChars} characters`);
+  assert.equal(await code(() => kino.qr.scan("text")), "invalid_request:kino.qr.scan takes { title, titleEn }");
+  assert.equal(await code(() => kino.qr.scan({ title: "x".repeat(contract.qr.maxTitleChars) })), "ok");
+  // A title that could fake a line of Kino's: control, bidi, format and separator characters, as the app refuses them.
+  for (const bad of ["a\nb", "a\tb", "‮evil", "⁦x", "zero​width", "soft­hyphen", "﻿bom", "tag\u{E0001}", "\u0085next", "a b"]) {
+    assert.equal(await code(() => kino.qr.scan({ title: bad })), "invalid_request:kino.qr.scan: title holds a control or formatting character", JSON.stringify(bad));
+  }
+  assert.equal(await code(() => kino.qr.scan({ title: "Vincula tu teléfono 📱 ahora" })), "ok");
+  // No camera (no fake) and a TV: unavailable, as on such a device.
+  assert.equal((await code(() => createKino(qrManifest()).kino.qr.scan())).split(":")[0], "unavailable");
+  assert.equal((await code(() => createKino(qrManifest(), { device: "tv", qrScan: async () => "x" }).kino.qr.scan())).split(":")[0], "unavailable");
+  // A thrown kinoError of the fake (the person refused the camera) reaches the plugin as it is.
+  const denied = createKino(qrManifest(), { qrScan: async () => { throw kinoErrorOf("permission_denied", "kino.qr.scan: the person did not let Kino use the camera"); } }).kino;
+  assert.equal((await code(() => denied.qr.scan())).split(":")[0], "permission_denied");
+  // A code the app would not accept is ignored and the scanner keeps looking: the fake is asked again, told so.
+  const seen = [];
+  const longThenOk = createKino(qrManifest(), { qrScan: async (ask) => { seen.push(ask.invalid === true); return seen.length === 1 ? "x".repeat(contract.qr.maxScanChars + 1) : "ok"; } }).kino;
+  assert.equal(await inAction(() => longThenOk.qr.scan()), "ok");
+  assert.deepEqual(seen, [false, true]);
+  const alwaysLong = createKino(qrManifest(), { qrScan: async () => "x".repeat(contract.qr.maxScanChars + 1) }).kino;
+  assert.equal((await code(() => alwaysLong.qr.scan())).split(":")[0], "timeout");
+  const max = createKino(qrManifest(), { qrScan: async () => "x".repeat(contract.qr.maxScanChars) }).kino;
+  assert.equal((await inAction(() => max.qr.scan())).length, contract.qr.maxScanChars);
+  // One scan at a time: a second one while the first is open is busy.
+  let release;
+  const slow = createKino(qrManifest(), { qrScan: () => new Promise((r) => { release = r; }) }).kino;
+  const first = inAction(() => slow.qr.scan());
+  await new Promise((r) => setImmediate(r));
+  assert.equal((await code(() => slow.qr.scan())).split(":")[0], "busy");
+  release("done");
+  assert.equal(await first, "done");
+  assert.deepEqual(contract.qr.errorCodes, ["busy", "timeout", "unavailable", "permission_denied", "invalid_request", "not_allowed"]);
+});
+
+test("kino.qr.scan in the kit runs only from a loaded plugin's action or panelAction, in the app's order of checks", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "kino-qr-origin-"));
+  try {
+    const exports = ["home", "search", "resolve", "browse", "details", "section", "settingsStatus", "episodes", "panel", "action", "panelAction"];
+    writeFileSync(join(dir, "plugin.js"), exports.map((f) => `export async function ${f}() { try { return { text: await kino.qr.scan({ title: "x" }) }; } catch (e) { return { code: e.code, message: e.message }; } }`).join("\n"));
+    let opened = 0;
+    const { kino } = createKino(qrManifest(), { qrScan: async () => { opened++; return "ok"; } });
+    const { plugin } = await loadPlugin(join(dir, "plugin.js"), kino);
+    for (const f of exports.filter((x) => x !== "action" && x !== "panelAction")) {
+      assert.deepEqual(JSON.parse(JSON.stringify(await plugin[f]())), { code: "not_allowed", message: "kino.qr.scan only runs from a settings action, panelAction or screenEvent the person pressed" }, f);
+    }
+    assert.equal(opened, 0);
+    assert.equal((await plugin.action()).text, "ok");
+    assert.equal((await plugin.panelAction()).text, "ok");
+    // A plain call with no export running at all is refused the same way.
+    await assert.rejects(kino.qr.scan(), (e) => e.code === "not_allowed");
+    // The device comes before the origin, as in the app.
+    const tv = createKino(qrManifest(), { device: "tv", qrScan: async () => "x" }).kino;
+    await assert.rejects(tv.qr.scan(), (e) => e.code === "unavailable");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+const kinoErrorOf = (code, message) => Object.assign(new Error(message), { name: "KinoError_" + code, code });
+
+test("the settings qr setting: apiVersion 13, refreshMs 2000 to 60000 on a qr only, settingsStatus required", () => {
+  const qr = (extra = {}) => ({ key: "login", label: "Escanéalo", type: "qr", ...extra });
+  const v = (api, settings) => validateManifest(JSON.stringify(qrManifest({ apiVersion: api, settings, capabilities: ["search", "resolve"] })));
+  assert.equal(v(12, [qr()]).message, 'The setting "login" is of type qr: it needs apiVersion 13');
+  assert.equal(v(13, [qr()]).ok, true);
+  assert.equal(v(13, [qr({ refreshMs: 5000 })]).ok, true);
+  for (const bad of [1999, 60001, "5000", 2500.5]) assert.equal(v(13, [qr({ refreshMs: bad })]).message, '"refreshMs" of the setting "login" goes from 2000 to 60000');
+  assert.equal(v(13, [{ key: "state", label: "Estado", type: "status", refreshMs: 5000 }]).message, 'Only a setting of type qr has "refreshMs" ("state")');
+  assert.deepEqual(requiredExports(["search", "resolve"], [qr()]), ["search", "resolve", "settingsStatus"]);
+});
+
+test("settingsStatus's qr texts are kept whole by the app's rule, as PluginSettingsUi.parseStatus keeps them", () => {
+  const m = { settings: [{ key: "state", type: "status" }, { key: "login", type: "qr" }] };
+  const token = "tg://login?token=" + "A".repeat(400);
+  assert.deepEqual(checkSettingsOutput("settingsStatus", { state: "Esperando", login: token }, m), { state: "Esperando", login: token });
+  const max = "x".repeat(contract.qr.settingsQr.maxChars);
+  assert.equal(checkSettingsOutput("settingsStatus", { login: max }, m).login, max);
+  const drops = [];
+  for (const bad of [max + "x", "http://example.com/x", "HTTP://example.com/x", "https://192.168.1.10/x", "https://router/x", "https://nas.local/x", "a\nb", 12, "   "]) {
+    assert.equal(checkSettingsOutput("settingsStatus", { login: bad }, m, undefined, (d) => drops.push(d)).login, undefined, String(bad));
+  }
+  assert.ok(drops.length >= 8);
+  assert.equal(checkSettingsOutput("settingsStatus", { login: "https://example.com/link?t=1" }, m).login, "https://example.com/link?t=1");
+  assert.equal(checkSettingsOutput("settingsStatus", { login: "tg://login?token=SECRET" }, m, (t) => t.replace("SECRET", "•••")).login, undefined);
+});
+
+function qrGuideBlocks() {
+  const readme = readFileSync(README_PATH, "utf8");
+  const guide = readme.slice(readme.indexOf("### QR scanning: `kino.qr.scan`"), readme.indexOf("### Channels from any server"));
+  return [...guide.matchAll(/```js\n([\s\S]*?)```/g)].map((m) => m[1]);
+}
+
+// The made-up service of the README's recipe: login tokens a signed-in session accepts.
+function fakeLoginService() {
+  const svc = { tokens: new Map(), calls: [], n: 0, now: Date.now() };
+  const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json" } });
+  svc.fetchImpl = async (url, init = {}) => {
+    const u = new URL(url);
+    svc.calls.push(u.pathname);
+    if (u.pathname === "/login/token") {
+      const token = "tok" + ++svc.n;
+      svc.tokens.set(token, { session: null });
+      return json({ token, expires: Date.now() + 30000 });
+    }
+    if (u.pathname === "/login/status") {
+      const t = svc.tokens.get(u.searchParams.get("token"));
+      return t ? json({ session: t.session }) : json({ error: "unknown token" }, 404);
+    }
+    if (u.pathname === "/login/accept") {
+      const body = JSON.parse(init.body);
+      const t = svc.tokens.get(body.token);
+      if (!t || body.session !== "phone-session") return json({ error: "refused" }, 403);
+      t.session = "session-for-" + body.token;
+      return json({ ok: true });
+    }
+    return json({ error: "not found" }, 404);
+  };
+  return svc;
+}
+
+test("the README's QR login recipe runs as written: the TV shows a refreshable code, the phone scans and accepts it", { skip: NEEDS_KINO_REPO }, async () => {
+  const [recipe] = qrGuideBlocks();
+  const head = recipe.split("\n")[0];
+  assert.ok(head.startsWith("// kino-plugin.json (the parts that matter): "), head);
+  const parts = JSON.parse(head.slice(head.indexOf("{")));
+  const m = { id: "qr-login", name: "QR Login", version: "1.0.0", entry: "plugin.js", ...parts };
+  const checked = validateManifest(JSON.stringify(m));
+  assert.equal(checked.ok, true, checked.message);
+  const svc = fakeLoginService();
+  const dir = mkdtempSync(join(tmpdir(), "kino-qr-login-"));
+  try {
+    writeFileSync(join(dir, "plugin.js"), recipe);
+    // Two devices running the same plugin: a TV that is not signed in, a phone that is.
+    const tv = createKino(m, { device: "tv", fetchImpl: svc.fetchImpl, qrScan: async () => "never used: a TV has no scanner" });
+    const tvPlugin = (await loadPlugin(join(dir, "plugin.js"), tv.kino)).plugin;
+    let shownOnTv = null;
+    const phone = createKino(m, { fetchImpl: svc.fetchImpl, qrScan: async (ask) => { assert.equal(ask.title, "Escanea el código del otro aparato"); return shownOnTv; } });
+    phone.kino.storage.set("session", "phone-session");
+    const phonePlugin = (await loadPlugin(join(dir, "plugin.js"), phone.kino)).plugin;
+    // The TV's form: a status line and a QR, both from settingsStatus, by the app's rules.
+    const first = checkSettingsOutput("settingsStatus", await tvPlugin.settingsStatus(), m);
+    assert.equal(first.state, "Esperando que lo escanees");
+    assert.match(first.login, /^exampleapp:\/\/login\?token=tok1$/);
+    // A refresh before anything was scanned keeps the same code (it is not about to expire).
+    assert.equal(checkSettingsOutput("settingsStatus", await tvPlugin.settingsStatus(), m).login, first.login);
+    // The TV itself cannot scan: the same action answers why.
+    assert.equal((await tvPlugin.action("link")).message, "Primero inicia sesión en este aparato");
+    tv.kino.storage.set("session", "x"); // even signed in, a TV has no scanner
+    assert.equal((await tvPlugin.action("link")).message, "Este aparato no puede escanear: hazlo desde tu teléfono");
+    tv.kino.storage.remove("session");
+    // The phone scans the TV's code and accepts it.
+    shownOnTv = first.login;
+    assert.deepEqual(JSON.parse(JSON.stringify(await phonePlugin.action("link"))), { message: "Listo: el otro aparato ya entró" });
+    // The TV's next refresh keeps the session and draws no QR any more.
+    const after = checkSettingsOutput("settingsStatus", await tvPlugin.settingsStatus(), m);
+    assert.deepEqual(JSON.parse(JSON.stringify(after)), { state: "Vinculado" });
+    assert.equal(tv.kino.storage.get("session"), "session-for-tok1");
+    // A cancelled scan and a foreign code are answered, not thrown.
+    shownOnTv = null;
+    assert.equal((await phonePlugin.action("link")).message, "Cancelado");
+    shownOnTv = "https://example.com/not-a-login";
+    assert.equal((await phonePlugin.action("link")).message, "Ese código no es de inicio de sesión");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("syncCall: a syncProvider's syncPull/syncPush may move its declared blob through kino.fetch; other calls keep 1 MB", async () => {
+  const m = { id: "s", name: "S", version: "1.0.0", apiVersion: 12, entry: "plugin.js", hosts: ["x.example"], capabilities: ["syncProvider"], sync: { maxBlobBytes: 2_000_000 } };
+  const out = [];
+  const ok = async (url, init) => { out.push(init.method); return new Response(new Uint8Array(init.method === "PUT" ? 0 : 3_000_000), { status: 200, headers: { "content-type": "application/octet-stream" } }); };
+  const blob = Buffer.alloc(1_500_000, 1).toString("base64");
+  const put = (kino, b) => kino.fetch("https://x.example/blob", { method: "PUT", body: { base64: b } }).then(() => "sent", (e) => e.code);
+  const sync = createKino(m, { fetchImpl: ok, syncCall: true }).kino;
+  assert.equal(await put(sync, blob), "sent");
+  assert.equal(out.length, 1);
+  assert.equal(await put(sync, Buffer.alloc(2_100_000, 1).toString("base64")), "too_large");
+  const other = createKino(m, { fetchImpl: ok }).kino;
+  assert.equal(await put(other, blob), "too_large");
+  // Both refusals happened before any request went out.
+  assert.deepEqual(out, ["PUT"]);
+  // A 3 MB response: within 5 MB for an ordinary call, over a 2,000,000-byte provider's sync cap.
+  assert.equal(await sync.fetch("https://x.example/blob").then(() => "read", (e) => e.code), "too_large");
+  assert.equal(await other.fetch("https://x.example/blob").then(() => "read", (e) => e.code), "read");
+});
+
+test("the guide's kino.tmdb row keeps the per-route cache Kino applies (it was lost once by a regeneration)", () => {
+  const row = TABLES.limits().split("\n").find((r) => r.startsWith("| `kino.tmdb`"));
+  const h = (ms) => ms / 3600000;
+  const t = contract.kinoTmdb.cacheTtlByRouteMs;
+  assert.ok(row.includes(`cached and shared by all plugins, per route (${h(t.tv)} hours for a series by id and its seasons and episodes; ${h(t.stable) / 24} days for a movie, person or collection by id`), row);
+  assert.ok(row.includes(`${h(t.search)} hours for \`/search\`; ${h(t.lists)} hours for \`/trending\``), row);
+  assert.ok(row.includes(`${contract.kinoTmdb.cacheTtlMs / 60000} minutes for anything else, an empty answer or a 404`), row);
+  assert.ok(row.includes("when TMDB fails (not when it refuses the key) the last copy is served"), row);
+  assert.ok(!row.includes("cached 10 minutes ("), row);
+});
+
+test("checkSyncAnswer: a syncPull answer may exceed 2,000,000 characters up to its cap, and not beyond", () => {
+  const big = { id: "s", capabilities: ["syncProvider"], sync: { maxBlobBytes: 4194304 } };
+  const small = { id: "s", capabilities: ["syncProvider"], sync: { maxBlobBytes: 100000 } };
+  assert.equal(syncCallCap(small), 133334 + 65536);
+  assert.equal(syncCallCap({ capabilities: ["search", "resolve"] }), null);
+  const b64 = (n) => Buffer.alloc(n, 7).toString("base64");
+  assert.equal(checkSyncAnswer("syncPull", { blob: b64(3_000_000), version: "1" }, big).version, "1");
+  assert.throws(() => checkSyncAnswer("syncPull", { blob: b64(150_000), version: "1" }, small), /answer too large/);
+  assert.throws(() => checkSyncAnswer("syncPull", { blob: b64(110_000), version: "1" }, small), /over the 100000 cap/);
+  assert.throws(() => checkSyncAnswer("syncStatus", { ready: true, message: "x".repeat(2_000_001) }, big), /answer too large/);
+  assert.equal(checkSyncAnswer("syncPull", null, big), null);
+  assert.throws(() => checkSyncAnswer("syncPull", { blob: "not base64!", version: "1" }, big), /syncPull must answer/);
+  assert.deepEqual(checkSyncAnswer("syncPush", { version: "2" }, big), { version: "2" });
+});
+
+test("the guide's answer-size row names the sync-call exception", () => {
+  const row = TABLES.limits().split("\n").find((r) => r.startsWith("| What a function returns |"));
+  assert.ok(row.includes(String(contract.output.maxResultChars.toLocaleString("en-US"))), row);
+  for (const f of contract.fetch.syncCall.functions) assert.ok(row.includes(`\`${f}\``), row);
+});
+
+test("the sync field is judged as ManifestParser.parseSync judges it: capability, numbers, keySecret, provision", () => {
+  const S = contract.manifest.sync;
+  const base = (sync, settings = [{ key: "token", label: "Token", type: "password" }, { key: "chat", label: "Chat", type: "text" }, { key: "st", label: "Estado", type: "status" }], caps = ["syncProvider"]) =>
+    validateManifest(JSON.stringify({ id: "sp", name: "S", version: "1.0.0", apiVersion: 12, entry: "plugin.js", hosts: ["x.example"], capabilities: caps, settings, ...(sync === undefined ? {} : { sync }) }));
+  // Every provider derives its key from one of its own password settings: no sync block, or one without keySecret, is refused.
+  assert.equal(S.keySecret.required, true);
+  assert.equal(base(undefined).message, S.keySecret.missingMessage);
+  assert.equal(base({ mode: "poll", provision: ["token"] }).message, S.keySecret.missingMessage);
+  assert.equal(base({}).message, S.keySecret.missingMessage);
+  assert.equal(base({ mode: "realtime", pullEveryMs: 1, pushDebounceMs: 2, maxBlobBytes: S.maxBlobBytes, keySecret: "token", provision: ["token", "chat"] }).ok, true);
+  assert.equal(base({ keySecret: "token", provision: ["token"] }, [{ key: "token", label: "T", type: "password", default: null }]).ok, true);
+  assert.equal(base({}, [], ["search", "resolve"]).message, S.needsCapabilityMessage);
+  for (const bad of [null, [], "x", { mode: "push" }, { mode: null }, { pullEveryMs: 0 }, { pushDebounceMs: 1.5 }, { maxBlobBytes: S.maxBlobBytes + 1 }, { maxBlobBytes: "10" }]) {
+    assert.equal(base(bad).message, S.badMessage, JSON.stringify(bad));
+  }
+  assert.equal(base({ keySecret: "chat", provision: ["chat"] }).message, S.keySecret.badMessage);
+  assert.equal(base({ keySecret: "nope" }).message, S.keySecret.badMessage);
+  assert.equal(base({ keySecret: "token", provision: ["token"] }, [{ key: "token", label: "T", type: "password", default: "abc" }]).message, S.keySecret.noDefaultMessage);
+  for (const bad of ["token", ["token", "token"], ["st"], ["missing"], [1], Array.from({ length: S.provision.maxNames + 1 }, (_, i) => "k" + i)]) {
+    assert.equal(base({ keySecret: "token", provision: bad }).message, S.provision.badMessage, JSON.stringify(bad));
+  }
+  assert.equal(base({ keySecret: "token", provision: ["chat"] }).message, S.provision.needsKeySecretMessage);
+  assert.equal(base({ keySecret: "token" }).message, S.provision.needsKeySecretMessage);
+  // Below apiVersion 12 the field is unknown to the app and ignored.
+  assert.equal(validateManifest(JSON.stringify({ id: "sp", name: "S", version: "1.0.0", apiVersion: 11, entry: "plugin.js", hosts: ["x.example"], capabilities: ["search", "resolve"], sync: "junk" })).ok, true);
+});
+
+test("the consent sheet names a sync provider as the app does: always red, the plugin can read the data", () => {
+  const S = contract.manifest.sync;
+  assert.equal(S.consentLine, "Sincronizará tus datos a través de su servicio: el plugin y su servicio podrán leerlos");
+  assert.equal(S.consentLineReadable, undefined, "one line: every provider can read the data");
+  const keyed = { sync: { keySecret: "token", provision: ["token"] } };
+  const m = (extra) => validateManifest(JSON.stringify({ id: "sp", name: "S", version: "1.0.0", apiVersion: 12, entry: "plugin.js", hosts: ["x.example"], capabilities: ["syncProvider"], settings: [{ key: "token", label: "T", type: "password" }], ...keyed, ...extra })).manifest;
+  const sync = (mm) => consentLines(mm).filter((l) => l.text === S.consentLine);
+  assert.deepEqual(sync(m({})), [{ text: S.consentLine, danger: true }]);
+  assert.deepEqual(sync(m({ fetchHosts: "any" })), [{ text: S.consentLine, danger: true }]);
+});
+
+test("a standalone set may carry socket, storageLarge, catalog and qrScan (apiVersion 13), as ManifestParser.isStandaloneSet", () => {
+  assert.deepEqual(contract.capabilities.standaloneSupplements, ["socket", "storageLarge", "catalog", "qrScan", "room", "schedule", "ai", "shared", "playerControl"]);
+  // Every supplement is declarative but schedule (Task 8q), which exports job.
+  for (const c of contract.capabilities.standaloneSupplements) if (c !== "schedule") assert.ok(contract.capabilities.declarative.includes(c), c);
+  const v = (capabilities, extra = {}) => validateManifest(JSON.stringify({ id: "sp", name: "S", version: "1.0.0", apiVersion: 13, entry: "plugin.js", hosts: ["x.example"], capabilities, ...extra }));
+  const provider = { settings: [{ key: "token", label: "T", type: "password" }], sync: { keySecret: "token", provision: ["token"] } };
+  for (const extra of [["socket"], ["storageLarge"], ["catalog"], ["qrScan"], ["socket", "storageLarge", "catalog", "qrScan"]]) {
+    const r = v(["syncProvider", ...extra], provider);
+    assert.equal(r.ok, true, `${extra}: ${r.message}`);
+  }
+  for (const real of ["subtitles", "tracking", "segments"]) assert.equal(v([real, "socket"]).ok, true, real);
+  for (const alone of [["socket"], ["storageLarge"], ["catalog", "qrScan"]]) {
+    assert.equal(v(alone).message, 'The plugin must declare "resolve"', JSON.stringify(alone));
+  }
+  assert.equal(v(["syncProvider", "socket", "byteSource"], provider).message, 'The plugin must declare "resolve"');
+  assert.equal(v(["syncProvider", "socket", "download"], provider).ok, false);
+});
+
+test("a settings item's devices is judged as the app judges it (apiVersion 12): phone, tv or both; anything else refuses", () => {
+  const D = contract.settings.devices;
+  assert.deepEqual(D.values, ["phone", "tv"]);
+  const v = (devices, apiVersion = 12) => validateManifest(JSON.stringify({ id: "dv", name: "D", version: "1.0.0", apiVersion, entry: "plugin.js", hosts: ["x.example"], capabilities: ["search", "resolve"],
+    settings: [{ key: "token", label: "Token", type: "password", ...(devices === undefined ? {} : { devices }) }] }));
+  for (const ok of [undefined, ["phone"], ["tv"], ["tv", "phone"]]) assert.equal(v(ok).ok, true, JSON.stringify(ok));
+  for (const bad of [["watch"], [], ["phone", "phone"], "phone", [1], true, {}]) {
+    assert.equal(v(bad).message, D.badMessage.replace("{key}", "token"), JSON.stringify(bad));
+  }
+  assert.equal(v("junk", 11).ok, true, "below apiVersion 12 the key is unknown and ignored");
+});
+
+test("an action's linkOnly is judged as the app judges it (apiVersion 12): only on an action, only a boolean", () => {
+  const L = contract.settings.linkOnly;
+  const v = (setting, apiVersion = 12) => validateManifest(JSON.stringify({ id: "lo", name: "L", version: "1.0.0", apiVersion, entry: "plugin.js", hosts: ["x.example"], capabilities: ["search", "resolve"], settings: [setting] }));
+  assert.equal(v({ key: "go", label: "Go", type: "action", linkOnly: true }).ok, true);
+  assert.equal(v({ key: "go", label: "Go", type: "text", linkOnly: true }).message, L.onlyActionMessage.replace("{key}", "go"));
+  assert.equal(v({ key: "go", label: "Go", type: "action", linkOnly: "yes" }).message, L.notBooleanMessage.replace("{key}", "go"));
+  assert.equal(v({ key: "go", label: "Go", type: "text", linkOnly: "x" }, 11).ok, true, "below apiVersion 12 it is ignored");
+});
+
+test("home rows and items take open: { screen } (Task 7g), app parity; anything else is ignored, the item kept", () => {
+  const m = { ...JSON.parse(manifest({ apiVersion: 14 })), capabilities: ["home", "resolve"] };
+  const items = [
+    { id: "a", ref: "r-a", title: "A", kind: "movie", open: { screen: { route: "news", args: { id: "a" } } } },
+    { id: "b", ref: "r-b", title: "B", kind: "movie", open: { url: "https://x.example.com" } },
+    { id: "c", ref: "r-c", title: "C", kind: "movie", open: { screen: { route: "x".repeat(65) } } },
+  ];
+  const home = checkOutput("home", [{ id: "row", title: "Fila", items, open: { screen: {} } }, { id: "two", title: "Dos", items: [items[0]], open: "screen" }], m);
+  assert.deepEqual(home.value[0].open, { screen: {} });
+  assert.equal(home.value[1].open, undefined);
+  assert.deepEqual(home.value[0].items.map((i) => i.id), ["a", "b", "c"]);
+  assert.deepEqual(home.value[0].items[0].open, { screen: { route: "news", args: { id: "a" } } });
+  assert.equal(home.value[0].items[1].open, undefined);
+  assert.equal(home.value[0].items[2].open, undefined);
+  assert.deepEqual(home.drops, [
+    "item b: open must be {screen: {route, args}}, ignored",
+    "item c: open.screen route must be 1 to 64 letters, digits or . _ ~ -, ignored",
+    "home: row two: open must be {screen: {route, args}}, ignored",
+  ]);
+});
+
+
+test("kino.fetch maxBytes never shows the first characters of a sealed value an echo host reflects (Task 7i-1 fix round 1, I1)", async () => {
+  const key = "k1y2v3a4l5u6e7";
+  const fetchImpl = async (url) => {
+    const echoed = new URL(String(url)).searchParams.get("api_key");
+    return new Response(`{"echo":"${echoed}","tail":"${"z".repeat(200)}"}`, { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const { dir } = withSecretsFile({ apiKey: key });
+  const m = JSON.parse(manifest({ apiVersion: 14, hosts: ["api.example.com"], secrets: { apiKey: "x" } }));
+  const { kino } = createKino(m, { secretsFile: join(dir, ".kino-secrets.json"), fetchImpl });
+  const marker = kino.secret("apiKey");
+  const head = '{"echo":"';
+  for (let cut = 1; cut <= head.length + key.length + 10; cut++) {
+    const r = await kino.fetch(`https://api.example.com/x?api_key=${marker}`, { maxBytes: cut });
+    const text = r.text();
+    assert.ok(Buffer.byteLength(text) <= cut, `${cut}: ${text}`);
+    assert.equal(r.truncated, true, String(cut));
+    assert.ok(!text.slice(head.length).startsWith(key[0]), `${cut}: ${text}`);
+    assert.ok(`${head}${marker}","tail":"`.startsWith(text) || text.startsWith(head + marker), `${cut}: ${text}`);
+  }
+});
+
+test("kino.fetch maxBytes never leaks a sealed value when earlier echoes shrink under redaction (Task 7i-1 fix round 2, N1)", async () => {
+  // The re-review's exploit (shift.mjs): k whole echoes before the cut are replaced by a shorter marker, which used to slide
+  // a partly read value inside the cut.
+  const key = "sk_" + "live_9f8e7d6c5b4a39281706f5e4d3c2b1a0ZZYYXXWWVVUUTTSSRRQQPPOONN"; // split: a fake key, kept out of secret scanners
+  const fetchImpl = async (url) => {
+    const u = new URL(String(url));
+    return new Response("E:" + u.searchParams.getAll("v").join(",") + ";" + "z".repeat(400), { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
+  };
+  const { dir } = withSecretsFile({ apiKey: key });
+  const m = JSON.parse(manifest({ apiVersion: 14, hosts: ["api.example.com"], secrets: { apiKey: "x" } }));
+  let worst = 0;
+  for (let k = 1; k <= 4; k++) {
+    for (let cut = 10; cut <= 2 + (k + 1) * 67 + 10; cut++) {
+      const { kino } = createKino(m, { secretsFile: join(dir, ".kino-secrets.json"), fetchImpl });
+      const marker = kino.secret("apiKey");
+      const qs = Array.from({ length: k + 1 }, () => "v=" + marker).join("&");
+      const r = await kino.fetch(`https://api.example.com/x?${qs}`, { maxBytes: cut });
+      const t = r.text();
+      assert.ok(Buffer.byteLength(t) <= cut, `${k}/${cut}: ${t}`);
+      for (let n = key.length; n >= 1; n--) if (t.endsWith(key.slice(0, n))) { worst = Math.max(worst, n); break; }
+      assert.ok(!t.includes(key.slice(0, 4)), `${k}/${cut}: ${t}`);
+    }
+  }
+  assert.equal(worst, 0);
+});
+
+test("kino.fetch maxBytes never leaks a sealed value from a UTF-16 body either (Task 7i-1 fix round 2, N1)", async () => {
+  const key = "sk_" + "live_9f8e7d6c5b4a39281706f5e4d3c2b1a0ZZYYXXWWVVUUTTSSRRQQPPOONN"; // split: a fake key, kept out of secret scanners
+  const fetchImpl = async (url) => {
+    const u = new URL(String(url));
+    const text = "E:" + u.searchParams.getAll("v").join(",") + ";" + "z".repeat(200);
+    return new Response(Buffer.from(text, "utf16le"), { status: 200, headers: { "content-type": "text/plain; charset=utf-16le" } });
+  };
+  const { dir } = withSecretsFile({ apiKey: key });
+  const m = JSON.parse(manifest({ apiVersion: 14, hosts: ["api.example.com"], secrets: { apiKey: "x" } }));
+  for (let k = 1; k <= 3; k++) {
+    for (let cut = 4; cut <= 2 * (2 + (k + 1) * 67) + 20; cut += 3) {
+      const { kino } = createKino(m, { secretsFile: join(dir, ".kino-secrets.json"), fetchImpl });
+      const marker = kino.secret("apiKey");
+      const r = await kino.fetch(`https://api.example.com/x?${Array.from({ length: k + 1 }, () => "v=" + marker).join("&")}`, { maxBytes: cut });
+      const t = r.text();
+      for (let n = key.length; n >= 1; n--) assert.ok(!t.endsWith(key.slice(0, n)), `${k}/${cut}: ${t}`);
+      assert.ok(!t.includes(key.slice(0, 4)), `${k}/${cut}: ${t}`);
+    }
+  }
+});
+
+test("kino.fetch maxBytes with sealed values reads whole, so a stateful charset cannot hide a partly read value (Task 7i-1 fix round 3, R1)", async () => {
+  // The re-review's iso2022.mjs: escape bytes that decode to nothing used to push a value past a partial read.
+  const key = "sk_" + "live_9f8e7d6c5b4a39281706f5e4d3c2b1a0ZZYYXXWWVVUUTTSSRRQQPPOONN"; // split: a fake key, kept out of secret scanners
+  const fetchImpl = async (url) => {
+    const u = new URL(String(url));
+    const body = Buffer.from("E:" + u.searchParams.getAll("v").join(",") + ";" + "z".repeat(4000), "latin1");
+    return new Response(body, { status: 200, headers: { "content-type": "text/plain; charset=iso-2022-jp" } });
+  };
+  const { dir } = withSecretsFile({ apiKey: key });
+  const m = JSON.parse(manifest({ apiVersion: 14, hosts: ["api.example.com"], secrets: { apiKey: "x" } }));
+  for (const maxBytes of [400, 1000, 2000]) {
+    for (let n = 0; n <= 1200; n += 7) {
+      const { kino } = createKino(m, { secretsFile: join(dir, ".kino-secrets.json"), fetchImpl });
+      const r = await kino.fetch(`https://api.example.com/x?v=${"%1B%28B".repeat(n)}${kino.secret("apiKey")}`, { maxBytes });
+      const t = r.text();
+      assert.ok(Buffer.byteLength(t) <= maxBytes, `${maxBytes}/${n}`);
+      assert.ok(!t.includes(key.slice(0, 4)), `${maxBytes}/${n}: ${t.slice(-90)}`);
+    }
+  }
+});
+
+test("kino.fetch maxBytes: without sealed values the read stops early, with them the body is read whole (Task 7i-1 fix round 3)", async () => {
+  let pulled = 0;
+  const fetchImpl = async () => new Response(new ReadableStream({
+    pull(c) { if (pulled >= 100) { c.close(); return; } pulled++; c.enqueue(new Uint8Array(1024).fill(97)); },
+  }), { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
+  const plain = createKino(JSON.parse(manifest({ apiVersion: 14, hosts: ["api.example.com"] })), { fetchImpl }).kino;
+  const a = await plain.fetch("https://api.example.com/x", { maxBytes: 2000 });
+  assert.equal(a.text().length, 2000);
+  assert.equal(a.truncated, true);
+  assert.ok(pulled <= 4, `fast path pulled ${pulled} chunks`);
+  pulled = 0;
+  const { dir } = withSecretsFile({ apiKey: "k-123" });
+  const sealed = createKino(JSON.parse(manifest({ apiVersion: 14, hosts: ["api.example.com"], secrets: { apiKey: "x" } })), { secretsFile: join(dir, ".kino-secrets.json"), fetchImpl }).kino;
+  const b = await sealed.fetch("https://api.example.com/x", { maxBytes: 2000 });
+  assert.equal(b.text().length, 2000);
+  assert.equal(b.truncated, true);
+  assert.equal(pulled, 100, "slow path reads the whole body");
+});
+
+test("redacting a repeated-pattern sealed value over 2 MB stays linear (Task 7i-1 fix round 3, R3)", async () => {
+  const fetchImpl = async () => new Response("0".repeat(2 * 1024 * 1024), { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
+  const { dir } = withSecretsFile({ pin: "0000" });
+  const { kino } = createKino(JSON.parse(manifest({ apiVersion: 14, hosts: ["api.example.com"], secrets: { pin: "x" } })), { secretsFile: join(dir, ".kino-secrets.json"), fetchImpl });
+  const started = Date.now();
+  const r = await kino.fetch("https://api.example.com/x", { maxBytes: 2000000 });
+  const t = r.text();
+  const ms = Date.now() - started;
+  const marker = kino.secret("pin");
+  // What is left once every whole marker is removed is at most a cut marker at the end: never a run of the value.
+  const rest = t.split(marker).join("");
+  assert.ok(marker.startsWith(rest), `left: ${rest.slice(0, 40)}`);
+  assert.ok(ms < 2000, `took ${ms} ms`);
 });

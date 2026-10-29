@@ -11,21 +11,27 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createKino } from "../kino-shim.mjs";
+import { contract } from "../contract.mjs";
 import { loadPlugin } from "../sandbox.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const expected = JSON.parse(readFileSync(join(here, "engine-probes.expected.json"), "utf8"));
 
+// Known differences that depend on the Node version running the kit (a newer V8 stopped overflowing there): they may
+// differ or agree, and either way the test passes.
+const VERSION_DEPENDENT = new Set(["large: nested array depth 5000 JSON"]);
+
 // name -> why the kit's answer differs from the app's. Filled from the first run; see engine-limits.md.
 const KNOWN = JSON.parse(readFileSync(join(here, "engine-probes.known.json"), "utf8"));
 
 test("the kit's sandbox answers the language battery as Kino's engine does, except the known differences", async () => {
-  const { kino } = createKino({ id: "probe", name: "Probe", version: "1.0.0", apiVersion: 11, entry: "plugin.js", hosts: ["example.com"], capabilities: ["search"] });
+  // The newest apiVersion, like the app's probe runtime: every kino.* key that version adds is present.
+  const { kino } = createKino({ id: "probe", name: "Probe", version: "1.0.0", apiVersion: contract.apiVersion, entry: "plugin.js", hosts: ["example.com"], capabilities: ["search"] });
   const { plugin } = await loadPlugin(join(here, "engine-probes.js"), kino);
   const got = JSON.parse(await plugin.home());
   assert.equal(got.length, expected.length, "the battery and the fixture have different sizes: regenerate the fixture");
   const unexpected = [];
-  const stale = new Set(Object.keys(KNOWN));
+  const stale = new Set(Object.keys(KNOWN).filter((n) => !VERSION_DEPENDENT.has(n)));
   for (let i = 0; i < got.length; i++) {
     assert.equal(got[i].name, expected[i].name);
     if (got[i].result === expected[i].result) continue;

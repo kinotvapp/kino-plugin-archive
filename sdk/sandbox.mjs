@@ -11,6 +11,7 @@
 // a namespace object (`toScript`), so no Node flag is needed and `node --test` gets the sandbox too. Line numbers are the
 // entry's (the wrapper starts on line 1). `KINO_SDK_NO_SANDBOX=1` loads it with a plain `import()` instead (to debug with
 // Node's own tools, or if a source form defeats `toScript`).
+import { trackedExports } from "./kit-call.mjs";
 import vm from "node:vm";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -122,7 +123,7 @@ export async function loadPlugin(entryPath, kino, { console: pluginConsole = con
     try {
       const copy = join(scratch, "plugin.mjs");
       writeFileSync(copy, source);
-      return { plugin: await import(pathToFileURL(copy).href), sandboxed: false };
+      return { plugin: trackedExports(await import(pathToFileURL(copy).href)), sandboxed: false };
     } finally {
       rmSync(scratch, { recursive: true, force: true });
     }
@@ -131,7 +132,7 @@ export async function loadPlugin(entryPath, kino, { console: pluginConsole = con
   const context = vm.createContext(provided, { codeGeneration: { strings: true, wasm: false } });
   vm.runInContext(ENGINE_QUIRKS, context);
   const script = new vm.Script(toScript(source), { filename: entryPath });
-  return { plugin: await script.runInContext(context), sandboxed: true };
+  return { plugin: trackedExports(await script.runInContext(context)), sandboxed: true };
 }
 
 /**
@@ -167,7 +168,10 @@ export function toScript(source) {
       const close = text.indexOf("}", at);
       if (close === -1) throw new SyntaxError("export { … } is not closed");
       let end = close + 1;
-      if (/^\s*from\b/.test(text.slice(end))) throw new Error(importRefusal("(export … from)"));
+      if (/^\s*from\b/.test(text.slice(end))) {
+        const spec = /["'`]([^"'`]+)["'`]/.exec(source.slice(end, end + 200));
+        throw new Error(`${importRefusal(spec ? spec[1] : "(export … from)")}; \`export { … } from\` re-exports a second file, so bundle that file into the entry first (the kit's esbuild recipe), then export the names from the bundle`);
+      }
       const list = text.slice(at + 1, close);
       for (const part of list.split(",")) {
         const pm = /^\s*([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*$/.exec(part);

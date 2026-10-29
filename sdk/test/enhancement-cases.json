@@ -1,0 +1,254 @@
+{
+  "$comment": "Manifest `enhancements` (Task 8c): the same manifests through the app's ManifestParser (PluginManifestEnhancementsTest) and the kit's validateManifest (kit.test.mjs). `base` is merged under each case's `manifest`. ok: capabilities (sorted), screen (its label or null), settings (their keys), applied (keys merged, in order), dropped (what was logged, in order). Refused: field and message.",
+  "base": { "id": "latino", "name": "Latino", "version": "2.1.0", "apiVersion": 8, "entry": "plugin.js", "hosts": ["example.com"], "capabilities": ["search", "resolve"] },
+  "cases": [
+    {
+      "name": "a screen and the library added for a Kino that knows them",
+      "manifest": { "enhancements": { "14": { "capabilities": ["screen", "library"], "screen": { "label": "Inicio", "labelEn": "Home" } } } },
+      "ok": true, "capabilities": ["library", "resolve", "screen", "search"], "screen": "Inicio", "settings": [], "applied": [14], "dropped": []
+    },
+    {
+      "name": "a key from a future Kino is ignored without a word",
+      "manifest": { "enhancements": { "99": { "capabilities": ["hologram"] } } },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [], "dropped": []
+    },
+    {
+      "name": "enhancements that is not an object is dropped",
+      "manifest": { "enhancements": [{ "14": {} }] },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [],
+      "dropped": ["enhancements: must be an object keyed by apiVersion"]
+    },
+    {
+      "name": "a null enhancements is dropped too",
+      "manifest": { "enhancements": null },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [],
+      "dropped": ["enhancements: must be an object keyed by apiVersion"]
+    },
+    {
+      "name": "a block that is not an object is dropped",
+      "manifest": { "enhancements": { "14": "screen" } },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [],
+      "dropped": ["enhancements.14: must be an object"]
+    },
+    {
+      "name": "a key that is no apiVersion is dropped",
+      "manifest": { "enhancements": { "next": {}, "013": {} } },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [],
+      "dropped": ["enhancements.013: the key must be an apiVersion (a whole number)", "enhancements.next: the key must be an apiVersion (a whole number)"]
+    },
+    {
+      "name": "an invalid block is dropped and the plugin keeps its base manifest",
+      "manifest": { "enhancements": { "14": { "capabilities": ["screen", "library"] } } },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [],
+      "dropped": ["enhancements.14: screen: The \"screen\" capability needs a \"screen\" field with a \"label\""]
+    },
+    {
+      "name": "a screen label too long drops the block",
+      "manifest": { "enhancements": { "14": { "capabilities": ["screen"], "screen": { "label": "A label far too long for the menu" } } } },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [],
+      "dropped": ["enhancements.14: screen: The \"screen.label\" field must be 1 to 20 characters"]
+    },
+    {
+      "name": "only screen and library may be added",
+      "manifest": { "enhancements": { "14": { "capabilities": ["screen", "download"], "screen": { "label": "Inicio" } } } },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [],
+      "dropped": ["enhancements.14: the \"download\" capability can't be added by an enhancement (only screen, library, playerPanelTab, playerControl, room, schedule, shared and ai)"]
+    },
+    {
+      "name": "capabilities must be a list of names",
+      "manifest": { "enhancements": { "14": { "capabilities": "screen", "screen": { "label": "Inicio" } } } },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [],
+      "dropped": ["enhancements.14: \"capabilities\" must be a list"]
+    },
+    {
+      "name": "a field an enhancement can't carry drops the block",
+      "manifest": { "enhancements": { "14": { "capabilities": ["screen"], "screen": { "label": "Inicio" }, "section": { "label": "Panel" } } } },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [],
+      "dropped": ["enhancements.14: \"section\" can't be enhanced (only capabilities, screen, settings, panel and jobs)"]
+    },
+    {
+      "name": "a tab in the player panel added for a Kino that knows it (Task 8k)",
+      "manifest": { "enhancements": { "14": { "capabilities": ["playerPanelTab"], "panel": { "contributes": true, "icon": "heart" } } } },
+      "ok": true, "capabilities": ["playerPanelTab", "resolve", "search"], "screen": null, "settings": [], "applied": [14], "dropped": [], "panelContributes": true
+    },
+    {
+      "name": "control of the player added for a Kino that knows it (Task 8j)",
+      "manifest": { "enhancements": { "14": { "capabilities": ["playerControl"] } } },
+      "ok": true, "capabilities": ["playerControl", "resolve", "search"], "screen": null, "settings": [], "applied": [14], "dropped": []
+    },
+    {
+      "name": "playerControl added to a plugin that plays nothing, without a panel, drops the block (Task 8t)",
+      "manifest": { "capabilities": ["subtitles"], "enhancements": { "14": { "capabilities": ["playerControl"] } } },
+      "ok": true, "capabilities": ["subtitles"], "screen": null, "settings": [], "applied": [],
+      "dropped": ["enhancements.14: capabilities: The \"playerControl\" capability needs a \"panel\" (its own player panel, or \"panel\": { \"contributes\": true }) in a plugin that plays nothing"]
+    },
+    {
+      "name": "a player-panel tab with playerControl added to a plugin that plays nothing stays standalone (Task 8t)",
+      "manifest": { "capabilities": ["subtitles"], "enhancements": { "14": { "capabilities": ["playerPanelTab", "playerControl"], "panel": { "contributes": true } } } },
+      "ok": true, "capabilities": ["playerControl", "playerPanelTab", "subtitles"], "screen": null, "settings": [], "applied": [14], "dropped": [], "panelContributes": true
+    },
+    {
+      "name": "playerPanelTab without a contributing panel drops the block (Task 8k)",
+      "manifest": { "enhancements": { "14": { "capabilities": ["playerPanelTab"] } } },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [],
+      "dropped": ["enhancements.14: capabilities: The \"playerPanelTab\" capability needs \"panel\": { \"contributes\": true }"]
+    },
+    {
+      "name": "a contributing panel without the capability drops the block (Task 8k)",
+      "manifest": { "panel": { "contributes": true, "label": "Fiesta" }, "enhancements": { "14": { "capabilities": ["screen"], "screen": { "label": "Inicio" } } } },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [],
+      "dropped": ["enhancements.14: panel: The \"panel.contributes\" field needs the \"playerPanelTab\" capability"]
+    },
+    {
+      "name": "a contributing panel's script lacks panel: the block is dropped (Task 8k)",
+      "manifest": { "enhancements": { "14": { "capabilities": ["playerPanelTab"], "panel": { "contributes": true } } } },
+      "exports": ["search", "resolve"],
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [],
+      "dropped": ["enhancements.14: needs the exports panel"]
+    },
+    {
+      "name": "two keys merge in numeric order, not text order",
+      "manifest": {
+        "apiVersion": 6,
+        "settings": [{ "key": "base", "type": "text", "label": "Base" }],
+        "enhancements": {
+          "12": { "settings": [{ "key": "later", "type": "text", "label": "Later" }, { "key": "guide", "type": "link", "label": "Guide", "url": "https://example.com/guide" }] },
+          "9": { "settings": [{ "key": "earlier", "type": "text", "label": "Earlier", "labelEn": "Earlier" }] }
+        }
+      },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": ["later", "guide"], "applied": [9, 12], "dropped": []
+    },
+    {
+      "name": "a later key builds on an earlier one",
+      "manifest": {
+        "apiVersion": 6,
+        "enhancements": {
+          "14": { "capabilities": ["screen"], "screen": { "label": "Ajustes", "opensFrom": ["settings"] } },
+          "12": { "settings": [{ "key": "guide", "type": "link", "label": "Guide", "url": "https://example.com/guide" }] }
+        }
+      },
+      "ok": true, "capabilities": ["resolve", "screen", "search"], "screen": "Ajustes", "settings": ["guide"], "applied": [12, 14], "dropped": []
+    },
+    {
+      "name": "a field the base apiVersion ignores never changes meaning: section read at 14 only",
+      "manifest": {
+        "apiVersion": 5, "section": { "label": "Portada" },
+        "enhancements": { "14": { "capabilities": ["screen"], "screen": { "label": "Inicio" } } }
+      },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [],
+      "dropped": ["enhancements.14: \"section\" is read at apiVersion 14 but not at the plugin's apiVersion"]
+    },
+    {
+      "name": "the same apiVersion as the key drops the block, never the plugin: two truths",
+      "manifest": {
+        "apiVersion": 14, "capabilities": ["search", "resolve", "screen"], "screen": { "label": "Inicio" },
+        "enhancements": { "14": { "capabilities": ["library"] } }
+      },
+      "ok": true, "capabilities": ["resolve", "screen", "search"], "screen": "Inicio", "settings": [], "applied": [],
+      "dropped": ["enhancements.14: the key must be above the plugin's apiVersion (14)"]
+    },
+    {
+      "name": "a key below the apiVersion is dropped too",
+      "manifest": { "apiVersion": 12, "enhancements": { "9": { "settings": [] } } },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [],
+      "dropped": ["enhancements.9: the key must be above the plugin's apiVersion (12)"]
+    },
+    {
+      "name": "a key with control characters is logged scrubbed",
+      "manifest": { "enhancements": { "1\u0007\nx": {} } },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [],
+      "dropped": ["enhancements.1??x: the key must be an apiVersion (a whole number)"]
+    },
+    {
+      "name": "a setting the manifest declares keeps its type",
+      "manifest": {
+        "settings": [{ "key": "token", "type": "text", "label": "Token" }],
+        "enhancements": { "14": { "settings": [{ "key": "token", "type": "password", "label": "Token" }, { "key": "more", "type": "text", "label": "More" }] } }
+      },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": ["token"], "applied": [],
+      "dropped": ["enhancements.14: \"settings\" changes the type of the setting \"token\""]
+    },
+    {
+      "name": "a superset of the manifest's settings is merged",
+      "manifest": {
+        "settings": [{ "key": "token", "type": "text", "label": "Token" }],
+        "enhancements": { "14": { "settings": [{ "key": "token", "type": "text", "label": "Token" }, { "key": "more", "type": "text", "label": "More" }] } }
+      },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": ["token", "more"], "applied": [14], "dropped": []
+    },
+    {
+      "name": "screen.replaces needs Categorias the plugin's own apiVersion has",
+      "manifest": {
+        "apiVersion": 5, "capabilities": ["search", "resolve", "browse"],
+        "enhancements": { "14": { "capabilities": ["screen"], "screen": { "label": "Inicio", "replaces": ["categories"] } } }
+      },
+      "ok": true, "capabilities": ["browse", "resolve", "search"], "screen": null, "settings": [], "applied": [],
+      "dropped": ["enhancements.14: \"screen.replaces\" needs the plugin's categories, which need its own apiVersion to be 6 or more"]
+    },
+    {
+      "name": "with the script's exports known, a block needing exports it lacks is dropped",
+      "exports": ["search", "resolve"],
+      "manifest": { "enhancements": { "14": { "capabilities": ["screen", "library"], "screen": { "label": "Inicio" } } } },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [],
+      "dropped": ["enhancements.14: needs the exports screen, screenEvent"]
+    },
+    {
+      "name": "with the exports there, the same block is merged",
+      "exports": ["search", "resolve", "screen", "screenEvent"],
+      "manifest": { "enhancements": { "14": { "capabilities": ["screen", "library"], "screen": { "label": "Inicio" } } } },
+      "ok": true, "capabilities": ["library", "resolve", "screen", "search"], "screen": "Inicio", "settings": [], "applied": [14], "dropped": []
+    },
+    {
+      "name": "settings needing an export the script lacks drop the block",
+      "exports": ["search", "resolve"],
+      "manifest": { "apiVersion": 6, "enhancements": { "14": { "settings": [{ "key": "state", "type": "status", "label": "Estado" }] } } },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [],
+      "dropped": ["enhancements.14: needs the exports settingsStatus"]
+    },
+    {
+      "name": "Task 18 G1: schedule and its jobs added for a Kino that knows them",
+      "manifest": { "enhancements": { "14": { "capabilities": ["schedule"], "jobs": [{ "id": "seeds", "label": { "es": "Semillas", "en": "Seeds" }, "everyMin": 180, "everyOptions": [60, 180, 360] }] } } },
+      "ok": true, "capabilities": ["resolve", "schedule", "search"], "screen": null, "settings": [], "applied": [14], "dropped": [], "jobs": ["seeds"]
+    },
+    {
+      "name": "Task 18 G1: shared and ai added for a Kino that knows them",
+      "manifest": { "enhancements": { "14": { "capabilities": ["shared", "ai"] } } },
+      "ok": true, "capabilities": ["ai", "resolve", "search", "shared"], "screen": null, "settings": [], "applied": [14], "dropped": []
+    },
+    {
+      "name": "Task 18 G1: schedule without its jobs drops the block",
+      "manifest": { "enhancements": { "14": { "capabilities": ["schedule", "shared"] } } },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [], "dropped": ["enhancements.14: capabilities: The \"schedule\" capability needs a \"jobs\" list with 1 to 3 jobs"]
+    },
+    {
+      "name": "Task 18 G1: jobs without schedule drops the block",
+      "manifest": { "enhancements": { "14": { "capabilities": ["shared"], "jobs": [{ "id": "seeds", "label": { "es": "Semillas", "en": "Seeds" }, "everyMin": 180, "everyOptions": [60, 180, 360] }] } } },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [], "dropped": ["enhancements.14: jobs: The \"jobs\" field needs the \"schedule\" capability"]
+    },
+    {
+      "name": "Task 18 G1: a top-level jobs the plugin's own apiVersion ignores never breaks or feeds a block",
+      "manifest": { "jobs": "not read below apiVersion 14", "enhancements": { "14": { "capabilities": ["shared"] } } },
+      "ok": true, "capabilities": ["resolve", "search", "shared"], "screen": null, "settings": [], "applied": [14], "dropped": [], "jobs": []
+    },
+    {
+      "name": "Task 18 G1: a bad job drops the block, never the plugin",
+      "manifest": { "enhancements": { "14": { "capabilities": ["schedule"], "jobs": [{ "id": "Bad Id", "label": { "es": "x" }, "everyMin": 60, "everyOptions": [60] }] } } },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [], "dropped": ["enhancements.14: jobs: Each job needs an \"id\" of 1 to 24 characters: a-z, 0-9 and -"]
+    },
+    {
+      "name": "Task 18 G13: a block may not change the sync of a setting the manifest declares (a new key may stay on the device)",
+      "manifest": { "apiVersion": 13, "settings": [{ "key": "pw", "type": "password", "label": "P" }, { "key": "pin", "type": "password", "label": "PIN", "sync": false }], "enhancements": { "14": { "settings": [{ "key": "pw", "type": "password", "label": "P", "sync": false }, { "key": "pin", "type": "password", "label": "PIN", "sync": false }] } } },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": ["pw", "pin"], "applied": [], "dropped": ["enhancements.14: \"settings\" changes \"sync\" of the setting \"pw\""]
+    },
+    {
+      "name": "Task 18 G13: a block keeping each key's sync merges, with a new device-only key",
+      "manifest": { "apiVersion": 13, "settings": [{ "key": "pin", "type": "password", "label": "PIN", "sync": false }], "enhancements": { "14": { "settings": [{ "key": "pin", "type": "password", "label": "PIN", "sync": false }, { "key": "otp", "type": "password", "label": "OTP", "sync": false }] } } },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": ["pin", "otp"], "applied": [14], "dropped": []
+    },
+    {
+      "name": "Task 18 G13: below sync's apiVersion every setting syncs, so a block saying sync false for a base key is dropped",
+      "manifest": { "settings": [{ "key": "pw", "type": "password", "label": "P", "sync": false }], "enhancements": { "14": { "settings": [{ "key": "pw", "type": "password", "label": "P", "sync": false }] } } },
+      "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": ["pw"], "applied": [], "dropped": ["enhancements.14: \"settings\" changes \"sync\" of the setting \"pw\""]
+    }
+  ]
+}
