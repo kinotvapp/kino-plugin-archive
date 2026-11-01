@@ -842,6 +842,7 @@ How the pieces connect:
   trimmed, at most 200 characters, ignored on any other kind. The album or podcast page shows it as
   the line under the title (and Kino names it as the artist where it plays the audio). Without it
   there is no such line: Kino never takes one from `overview` or `genres`.
+- `ids` (optional) also names, on a `music` or `podcast` item (apiVersion 19), the ids a lyrics plugin may match the song by: `youtube` (a video id, the most exact for YouTube Music), `isrc`, `musicbrainz`; each a text of 1 to 64 characters, others skipped. Kino keeps them with the item's artist on the device (a cache, relearned the next time the item is listed) and sends them in the `ids` of the `lyrics` query while it plays.
 - `runtimeMinutes` is kept on an audio item (unlike a `live` one). `search` may get `type: "music"`
   or `type: "podcast"` when Kino leans that way; `"any"` includes them, and it stays a hint.
 - The `Stream` is a normal one: progressive audio (MP3, M4A, AAC, OGG) or an HLS/DASH manifest. The

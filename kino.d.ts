@@ -72,7 +72,12 @@ interface KinoItem {
   rating?: number;
   /** 1..1000; ignored on a `live` item. */
   runtimeMinutes?: number;
-  ids?: { tmdb?: number; /** ^tt\d{5,10}$ */ imdb?: string };
+  /**
+   * `tmdb` and `imdb` name the title for Kino's metadata. On a `music` or `podcast` item (apiVersion 19) `isrc`, `musicbrainz` and
+   * `youtube` are the ids a lyrics plugin may match the song by: each a text of 1 to 64 characters (others are skipped). Kino keeps them with
+   * the artist on the device and sends them in the `ids` of the `lyrics` query while that item plays.
+   */
+  ids?: { tmdb?: number; /** ^tt\d{5,10}$ */ imdb?: string; isrc?: string; musicbrainz?: string; youtube?: string };
   lang?: string;
   quality?: string;
   /** At most 3, each at most 20 characters; shown as chips. */

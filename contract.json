@@ -364,6 +364,9 @@
     "audioKindApiVersion": 8,
     "audioKinds": ["music", "podcast"],
     "maxArtistChars": 200,
+    "audioIdsApiVersion": 19,
+    "audioIdKeys": ["isrc", "musicbrainz", "youtube"],
+    "maxAudioIdChars": 64,
     "adultApiVersion": 6,
     "homeLiveApiVersion": 6
   },

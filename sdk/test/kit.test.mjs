@@ -1148,6 +1148,19 @@ test("checkOutput keeps an audio item's artist trimmed and cut, as the app does,
   assert.equal(contract.output.maxArtistChars, 200);
 });
 
+test("checkOutput keeps an audio item's lyrics ids as short texts, as the app does, and never on another kind", () => {
+  const at19 = { ...JSON.parse(manifest({ apiVersion: 19 })), capabilities: ["search", "resolve"] };
+  const r = checkOutput("search", [
+    { id: "al", ref: "a", title: "Una canción", kind: "music", ids: { youtube: " dQw4w9WgXcQ ", isrc: "USRC17607839", musicbrainz: "x", spotify: "no", tmdb: 5 } },
+    { id: "bd", ref: "b", title: "Ids malos", kind: "music", ids: { youtube: 7, isrc: "", musicbrainz: "m".repeat(100) } },
+    { id: "pc", ref: "p", title: "Un podcast", kind: "podcast", ids: { youtube: "abc" } },
+    { id: "m", ref: "r", title: "Una peli", kind: "movie", ids: { youtube: "abc", tmdb: 10 } },
+  ], at19);
+  assert.deepEqual(r.value.items.map((i) => i.audioIds), [{ youtube: "dQw4w9WgXcQ", isrc: "USRC17607839", musicbrainz: "x" }, undefined, { youtube: "abc" }, undefined]);
+  assert.equal(r.value.items[3].tmdb, 10);
+  assert.equal(contract.output.maxAudioIdChars, 64);
+});
+
 test("checkOutput validates a stream's audioTracks like its subtitles", () => {
   const m = JSON.parse(manifest());
   const r = checkOutput("resolve", {

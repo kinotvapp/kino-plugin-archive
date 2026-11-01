@@ -1654,6 +1654,8 @@ function items(list, max, ctx, drop) {
       ...(adult ? { adult: true } : {}),
       // Only an audio item has one (and audio items only exist from apiVersion 8, dropped above below it).
       ...(o().audioKinds.includes(x.kind) && text(x.artist, o().maxArtistChars) ? { artist: text(x.artist, o().maxArtistChars) } : {}),
+      // apiVersion 19: the ids a lyrics plugin may match an audio item by (isrc, musicbrainz, youtube), each 1 to maxAudioIdChars characters.
+      ...(o().audioKinds.includes(x.kind) ? audioIdsField(ids, o()) : {}),
       ...openField(x.open, `item ${id}`, drop),
     });
   }
@@ -2047,6 +2049,16 @@ export function lyricsShown(found, durationMs) {
     }
   }
   return hasPlain ? "plain" : null;
+}
+
+/** An audio item's `audioIds` as the app's PluginOutput.audioIdsOf keeps them: only the lyrics keys, as texts of 1 to maxAudioIdChars characters. */
+function audioIdsField(ids, o) {
+  const out = {};
+  for (const key of o.audioIdKeys) {
+    const v = typeof ids[key] === "string" ? ids[key].trim() : "";
+    if (v && v.length <= o.maxAudioIdChars) out[key] = v;
+  }
+  return Object.keys(out).length ? { audioIds: out } : {};
 }
 
 /** What the app's skip button takes from [segments] (Segments.skipTimes): the opening and the ending's start, or null. */
