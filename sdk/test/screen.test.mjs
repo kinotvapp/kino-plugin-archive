@@ -303,6 +303,7 @@ const task17Node = {
   scaffold: (x) => ({ scaffold: { appBar: x.appBar ? x.appBar.key : null, body: x.body ? x.body.type : null, fab: x.fab ? x.fab.key : null, bottomBar: x.bottomBar ? x.bottomBar.key : null } }),
   appBar: (x) => ({ appBar: { title: x.title, leading: x.leading ? x.leading.key : null, actions: x.actions.length, bottom: x.bottom ? x.bottom.type : null, centerTitle: x.centerTitle, background: x.background, ...(x.titleNode ? { titleNode: x.titleNode.type } : {}) } }),
   navigationBar: (x) => ({ nav: { items: x.items.map((i) => i.key), value: x.value, onChange: x.onChange?.event?.name ?? null } }),
+  pages: (x) => ({ pagesNode: { pages: x.pages.length, page: x.page, onPageChanged: x.onPageChanged?.event?.name ?? null } }),
   pageView: (x) => ({ pager: { pages: x.pages.length, initialPage: x.initialPage, autoPlayMs: x.autoPlayMs, viewportFraction: x.viewportFraction, padEnds: x.padEnds, onPageChanged: x.onPageChanged?.event?.name ?? null } }),
 };
 
@@ -547,6 +548,12 @@ test("text style: h1 to h5 and p parse, the old names alias to them, an unknown 
   assert.deepEqual(r.tree.children.map((c) => c.variant), ["h1", "h2", "h3", "h4", "h5", "p", "h1", "h3", "h4", "p", "caption", "label", "p"]);
   assert.equal(r.dropped.length, 1);
   assert.equal(checkScreenTree({ type: "text", text: "x" }).tree.variant, "p");
+});
+
+test("text style: hero is above h1 and parses as its own variant", () => {
+  const r = checkScreenTree({ type: "col", children: ["hero", "display"].map((style) => ({ type: "text", text: "x", style })) });
+  assert.deepEqual(r.tree.children.map((c) => c.variant), ["hero", "h1"]);
+  assert.equal(r.dropped.length, 0);
 });
 
 test("text bold is a boolean and the colour a role: bold parses, hex is dropped, onPrimary on a surface falls back", () => {

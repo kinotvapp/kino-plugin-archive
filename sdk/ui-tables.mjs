@@ -36,7 +36,7 @@ export const ANCHORS = {
   radioGroup: "radio-group", slider: "slider", chips: "chips", tabs: "tab-bar", emptyState: "empty-state", errorState: "error-state",
   titleCard: "title-card", titleRail: "title-rail", titleGrid: "title-grid", heroCard: "hero-card", popup: "popup", form: "form",
   settings: "settings", banner: "banner", accordion: "accordion", skeleton: "skeleton", qr: "qr", stepper: "number-stepper",
-  table: "table", tr: "table-row", td: "table-cell", steps: "steps",
+  table: "table", tr: "table-row", td: "table-cell", steps: "steps", pages: "pages",
   fab: "floating-action-button", listTile: "list-tile", avatar: "circle-avatar", pageView: "page-view",
   scaffold: "scaffold", appBar: "app-bar", navigationBar: "navigation-bar",
 };
@@ -70,7 +70,7 @@ const ICON_TEXT = {
   filter_list: "filter", calendar: "a date, a calendar", schedule: "a time, scheduled (a clock)",
   send: "send a message (a paper plane)", mood: "a reaction, a feeling (a smiley)",
 };
-const TEXT_STYLES = ["h1", "h2", "h3", "h4", "h5", "p", "caption", "label"];
+const TEXT_STYLES = ["hero", "h1", "h2", "h3", "h4", "h5", "p", "caption", "label"];
 const ACTION = "action";
 const NODE = "node";
 const kids = (what = "nodes") => ["children", `${what}[]`, "none", "its children, drawn in order"];
@@ -311,6 +311,10 @@ export const PROPS = {
     ["viewportFraction", `${S.flutterNodes.viewportFractionMin} to 1`, "`1`", "below 1, Kino's carousel: the neighbouring pages peek"],
     ["padEnds", "boolean", "`true`", "the first and last pages centred in a carousel"],
   ],
+  pages: [
+    kids(`nodes (the pages, ${S.pagesNode.minChildren} to ${S.pagesNode.maxChildren})`),
+    ["onPageChanged", ACTION, "none", "its event's `value` is the settled page's index"],
+  ],
   scaffold: [
     ["appBar", "an `AppBar`", "none", "pinned at the top of your area, under Kino's own title bar (never replacing or covering it)"],
     ["body", NODE, "required", "the bounded height left: a `ListView` or a scroll in it scrolls itself while the bars stay"],
@@ -466,6 +470,8 @@ const ANSWER_TEXT = {
   focus: "the key of the node that takes the focus",
   config: `your settings to write, at most ${L.maxConfigKeys} keys ([bind and config](#bind-and-config))`,
   ui: `local operations (at most ${L.maxUiOps}); an \`open\` waits for the tree the answer asks for`,
+  enableJob: `a job id, apiVersion ${contract.kinoJobs.manifest.enableJobApiVersion}: turns on Kino's own row of that job, only after the person's tap; no answer turns it off`,
+  share: `\`{ key }\`, apiVersion ${S.shareAnswer.fromApiVersion}: that node as an image in the system share sheet ([Sharing an image](#share)); only the answer to the person's tap or submit`,
 };
 
 const GO_FIELDS = {
@@ -481,11 +487,12 @@ const GO_FIELDS = {
   url: `\`{ url: { ${S.goUrl.fields.join(", ")} } }\``,
   copy: `\`{ copy: { ${S.goCopy.fields.join(", ")} } }\``,
   liveChannel: `\`{ liveChannel: { ${S.goLiveChannel.fields.join(", ")} } }\``,
+  syncProvider: "`{ syncProvider: true }`",
 };
 const GO_OPENS = {
   title: "this plugin's title page",
   play: "plays this plugin's title",
-  search: `Kino's search with \`q\` (at most ${L.maxSearchQueryChars} characters), only this plugin as the source`,
+  search: `Kino's search with \`q\` (at most ${L.maxSearchQueryChars} characters), only this plugin as the source (with \`scope: "all"\`, apiVersion 17, Kino's search on every source, only on the person's tap)`,
   browse: "this plugin's «Ver más» list for a `ref`",
   section: "this plugin's section",
   categories: "Kino's Categorías, this plugin's group first",
@@ -495,8 +502,9 @@ const GO_OPENS = {
   url: "an https link in the browser, after Kino's own sheet (a QR code on a TV)",
   copy: `Kino copies \`text\` (at most ${S.goCopy.maxTextChars} characters, ${S.goCopy.maxLines} lines) and shows its own «Copiado» toast; a TV cannot`,
   liveChannel: "tunes the player to an En vivo provider's channel (only for a plugin whose player tab joins live channels)",
+  syncProvider: "Kino's sync-provider settings (Ajustes ▸ Conectar ▸ Proveedor), where the person picks this plugin (only for a plugin with `syncProvider`)",
 };
-const goFrom = (g) => g === "titleByIds" || g === "url" || g === "copy" || g === "liveChannel"
+const goFrom = (g) => g === "titleByIds" || g === "url" || g === "copy" || g === "liveChannel" || g === "syncProvider"
   ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")}`
   : g === "screen" ? "a tap or an answer, `open`'s included" : "a tap or an event's answer (never `open`'s, a timer's or an `onClose`'s)";
 

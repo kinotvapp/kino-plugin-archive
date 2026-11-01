@@ -35,8 +35,8 @@ test("kitPrintsTheConsentLine: the library line is red and is the app's, word fo
   const checked = validateManifest(JSON.stringify(manifest()));
   assert.equal(checked.ok, true, checked.message);
   const line = consentLines(checked.manifest).find((l) => l.text === L.consentLine.es);
-  assert.deepEqual(line, { text: "Podrá leer lo que has visto y guardado en Kino, y enviarlo a sus servicios", danger: true });
-  assert.equal(L.consentLine.en, "Can read what you have watched and saved in Kino, and send it to its services");
+  assert.deepEqual(line, { text: "Podrá leer lo que has visto y guardado en Kino, cuánto lo ves y a qué hora, y enviarlo a sus servicios", danger: true });
+  assert.equal(L.consentLine.en, "Can read what you have watched and saved in Kino, how much and at what time of day, and send it to its services");
   // Without the capability, no line.
   const plain = validateManifest(JSON.stringify(manifest({ capabilities: ["search", "resolve"] })));
   assert.ok(!consentLines(plain.manifest).some((l) => l.text === L.consentLine.es));
@@ -147,7 +147,7 @@ test("the kit refuses reads from exports outside fromFunctions, as the app does"
 });
 
 test("watched series carry the latest season and episode, movies never (contract additiveFromApp kino.library.episode)", async () => {
-  assert.equal(contract.additiveFromApp["kino.library.episode"], "TBD");
+  assert.equal(contract.additiveFromApp["kino.library.episode"], "0.9.77");
   assert.ok(L.answerFields.includes("season") && L.answerFields.includes("episode"));
   const fixture = {
     watched: [
@@ -162,4 +162,97 @@ test("watched series carry the latest season and episode, movies never (contract
   assert.equal(show.episode, 3);
   assert.ok(!("season" in film) && !("episode" in film));
   assert.ok(!("season" in bare) && !("episode" in bare));
+});
+
+// ---- kino.library.stats (apiVersion 17, "Tu mes en Kino", contract.kinoLibrary.stats) ----
+
+const S = L.stats;
+const stats17 = (extra = {}) => manifest({ apiVersion: 17, ...extra });
+const MONTH = {
+  month: "2026-10", estimated: false, seconds: 5400, secondsByKind: { movie: 3600, series: 1800, live: 0 },
+  secondsByBand: { morning: 0, afternoon: 0, night: 5400, lateNight: 0 }, titles: 2, episodes: 3, activeDays: 4, longestStreakDays: 2,
+  top: [{ title: "Dark", year: 2017, kind: "series", ids: { tmdb: 70523 }, poster: "https://img/p.jpg", genres: ["Drama"], seconds: 1800, secret: "x" }],
+};
+
+test("the contract names stats: its apiVersion, month rule, cap and fields", () => {
+  assert.equal(S.apiVersion, 17);
+  assert.equal(contract.apiVersion, 17);
+  assert.equal(S.topMax, 20);
+  assert.ok(L.functions.includes("stats"));
+  assert.deepEqual(S.bands, ["morning", "afternoon", "night", "lateNight"]);
+  assert.deepEqual(S.kinds, ["movie", "series", "live"]);
+  assert.match("2026-10", new RegExp(S.monthPattern));
+  assert.doesNotMatch("2026-13", new RegExp(S.monthPattern));
+});
+
+test("the consent line says how much and at what time of day", () => {
+  assert.match(L.consentLine.es, /cuánto lo ves y a qué hora/);
+  assert.match(L.consentLine.en, /how much and at what time of day/);
+});
+
+test("stats exists only for a plugin that declares apiVersion 17 or later", async () => {
+  const old = createKino(manifest(), { libraryFixture: { stats: { "2026-10": MONTH } }, env: {} }).kino;
+  assert.equal(typeof old.library.watched, "function");
+  assert.equal(old.library.stats, undefined);
+  const now = createKino(stats17(), { libraryFixture: { stats: { "2026-10": MONTH } }, env: {} }).kino;
+  assert.equal(typeof now.library.stats, "function");
+});
+
+test("stats answers the fixture's month with the contract's fields only", async () => {
+  const { kino } = createKino(stats17(), { libraryFixture: { stats: { "2026-10": MONTH } }, env: {} });
+  const s = await kino.library.stats({ month: "2026-10" });
+  assert.deepEqual(Object.keys(s).sort(), [...S.answerFields].sort());
+  assert.equal(s.seconds, 5400);
+  assert.deepEqual(s.top, [{ title: "Dark", year: 2017, kind: "series", ids: { tmdb: 70523 }, poster: "https://img/p.jpg", genres: ["Drama"], seconds: 1800 }]);
+  // A month the fixture does not have is an empty month, not an error.
+  const empty = await kino.library.stats({ month: "2026-09" });
+  assert.equal(empty.month, "2026-09");
+  assert.equal(empty.seconds, 0);
+  assert.deepEqual(empty.top, []);
+  assert.equal(empty.secondsByBand, null);
+});
+
+test("stats keeps a valid imdb id and drops a bad one", async () => {
+  const top = [{ title: "A", kind: "movie", ids: { imdb: "tt0133093" }, seconds: 5 }, { title: "B", kind: "movie", ids: { imdb: "nope" }, seconds: 4 }];
+  const { kino } = createKino(stats17(), { libraryFixture: { stats: { "2026-10": { ...MONTH, top } } }, env: {} });
+  const s = await kino.library.stats({ month: "2026-10" });
+  assert.deepEqual(s.top.map((t) => t.ids), [{ imdb: "tt0133093" }, {}]);
+});
+
+test("stats defaults to the current month and caps and sorts top", async () => {
+  const now = Date.UTC(2026, 9, 31, 12);
+  const top = Array.from({ length: 25 }, (_, i) => ({ title: `T${i}`, kind: "movie", seconds: i + 1 }));
+  top.push({ title: "Hidden", kind: "movie", seconds: 999, adult: true });
+  const { kino } = createKino(stats17(), { libraryFixture: { stats: { "2026-10": { ...MONTH, top } } }, env: {}, now: () => now });
+  const s = await kino.library.stats();
+  assert.equal(s.month, "2026-10");
+  assert.equal(s.top.length, S.topMax);
+  assert.equal(s.top[0].title, "T24");
+  assert.ok(s.top.every((t, i, a) => i === 0 || a[i - 1].seconds >= t.seconds));
+  assert.ok(!s.top.some((t) => t.title === "Hidden"));
+});
+
+test("stats refuses a bad month, other options, and shares the rate limit and the call rules", async () => {
+  const fx = { libraryFixture: { stats: { "2026-10": MONTH } }, env: {} };
+  const { kino } = createKino(stats17(), fx);
+  for (const bad of [{ month: "2026-13" }, { month: "2026-1" }, { month: "" }, { month: 202610 }, { limit: 3 }, { kind: "movie" }, "x", [1]]) {
+    await assert.rejects(kino.library.stats(bad), (e) => e.code === "bad_request", JSON.stringify(bad));
+  }
+  await assert.rejects(kino.library.watched({ month: "2026-10" }), (e) => e.code === "bad_request");
+  // Shared with watched and saved: 30 a minute together.
+  let t = 1_000_000;
+  const shared = createKino(stats17(), { ...fx, now: () => t }).kino;
+  for (let i = 0; i < L.perMinute - 1; i++) await (i % 2 ? shared.library.watched() : shared.library.stats());
+  await shared.library.stats();
+  await assert.rejects(shared.library.saved(), (e) => e.code === "rate_limited");
+  await assert.rejects(shared.library.stats(), (e) => e.code === "rate_limited");
+  // Not declared, switched off, a sync call, a read from resolve: permission_denied, as for the rest.
+  const undeclared = createKino(stats17({ capabilities: ["search", "resolve"] }), fx).kino;
+  await assert.rejects(undeclared.library?.stats?.() ?? Promise.reject(Object.assign(new Error("x"), { code: "permission_denied" })), (e) => e.code === "permission_denied");
+  const revoked = createKino(stats17(), { ...fx, libraryRevoked: true }).kino;
+  await assert.rejects(revoked.library.stats(), (e) => e.code === "permission_denied");
+  const fromResolve = createKino(stats17(), { ...fx, callFunction: "resolve" }).kino;
+  await assert.rejects(fromResolve.library.stats(), (e) => e.code === "permission_denied");
+  const lane = signingLane(createKino(stats17(), fx).kino);
+  await assert.rejects(lane.library.stats(), (e) => e.code === "not_allowed");
 });

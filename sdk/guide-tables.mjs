@@ -49,20 +49,21 @@ const WIDGET_TEXT = {
   appBar: "a Scaffold's top bar: `title`, `leading`, up to four `actions`, a `bottom` TabBar",
   navigationBar: "a Scaffold's bottom bar of 2 to 5 `items` (`value`, `onChanged`)",
   pageView: "pages swiped across with Kino's dots (`initialPage`, `onPageChanged`, `autoPlayMs`); `viewportFraction` < 1 is a carousel",
+  pages: "full-screen pages under Kino's progress bar, swiped or moved with Left and Right; the place is in `state.inputs`; no autoplay",
   steps: "a setup flow in Kino's look: `items` done, current (open, its `children`) or pending; `onStepTap` lets a done step be pressed",
 };
 /** Properties a widget takes besides the ones contract.json lists in layoutProps (the d.ts has the rest). */
 const WIDGET_PROPS = {
   list: ["onEndReached", "loadingMore", "done", S.listHints.field], titleRail: ["onEndReached", "loadingMore", "done"], titleGrid: ["onEndReached", "loadingMore", "done"],
   popup: ["onClose", "buttons", "items", S.declaredPopups.anchor.field], text: [S.textTime.field, S.textTime.formatField],
-  pageView: ["initialPage", "onPageChanged", "autoPlayMs"], avatar: ["backgroundColor"], listTile: ["leading", "trailing", "subtitle"],
+  pages: ["onPageChanged"], pageView: ["initialPage", "onPageChanged", "autoPlayMs"], avatar: ["backgroundColor"], listTile: ["leading", "trailing", "subtitle"],
   // Screen asks.
   textInput: ["obscureText"], settings: [S.screenAsks.onSavedField], qr: S.screenAsks.qr.fields, steps: ["items", S.screenAsks.steps.onStepTapField],
 };
 const GO_TEXT = {
   title: "this plugin's title page (`ref`, `kind`; `id`, `title` and `adult` for a title that is not on the canvas)",
   play: "plays this plugin's title (`ref`, `kind`, as `title`)",
-  search: `Kino's search with \`q\` (at most ${L.maxSearchQueryChars} characters), only this plugin as the source`,
+  search: `Kino's search with \`q\` (at most ${L.maxSearchQueryChars} characters), only this plugin as the source; with \`"scope": "all"\` (apiVersion 17; a lower plugin is refused, logged; any other scope drops the go) Kino's normal search on every source, which needs no \`search\` of yours and gives you nothing back: no results and no list of sources. The 18+ gate works as in Kino's search.`,
   browse: "this plugin's \"Ver más\" list for a `ref`",
   section: "this plugin's section",
   categories: "Kino's Categorías with this plugin's group first (its own screen with `screen.replaces`)",
@@ -72,6 +73,7 @@ const GO_TEXT = {
   url: "an https link in the browser, after Kino's own confirmation sheet (a QR code on a TV)",
   copy: "Kino puts the plugin's text on the clipboard and always shows its own «Copiado» toast (a TV cannot copy)",
   liveChannel: "the player tunes to an En vivo provider's channel (`provider`, `code`), only for a plugin whose player tab declares `\"kinds\": [\"live\"]`",
+  syncProvider: "Kino's sync-provider settings (Ajustes ▸ Conectar ▸ Proveedor), where the person picks this plugin; only for a plugin that declares `syncProvider`",
 };
 const CONSENTS = () => [
   ["screen", null], ["library", c.kinoLibrary], ["playerPanelTab", c.manifest.panel.contributes], ["playerControl", c.kinoPlayerControl],
@@ -135,8 +137,9 @@ export const TABLES = {
     [`\`kino.fetch\` \`maxBytes\` (apiVersion ${c.fetch.maxBytes.apiVersion})`, `${c.fetch.maxBytes.min} to ${n(c.fetch.maxBytes.max)} bytes of the body are read, the answer's \`${c.fetch.maxBytes.field}\` says whether it was cut; out of range: \`invalid_request\``],
     [`Screens (\`screen\`, apiVersion ${S.apiVersion})`, `depth ${L.maxDepth}, ${L.maxNodes} nodes, ${L.maxListItems} items per list, state ${kb(L.maxStateBytes)}, a text ${n(L.maxTextChars)} characters; \`screen\` and \`screenEvent\` ${L.callTimeoutMs / 1000} s each; every number in [Screen limits](#screen-limits)`],
     [`\`kino.library\` (apiVersion ${c.kinoLibrary.apiVersion})`, `\`limit\` default ${c.kinoLibrary.defaultLimit}, at most ${c.kinoLibrary.maxLimit}; at most ${c.kinoLibrary.perMinute} calls a minute per plugin; times rounded to the day, \`progress\` to ${c.kinoLibrary.progressStep}`],
+    [`\`kino.library.stats\` (apiVersion ${c.kinoLibrary.stats.apiVersion})`, `one month's aggregates (\`month\` as \`yyyy-mm\`, the current one by default), nothing finer; \`top\` at most ${c.kinoLibrary.stats.topMax} titles; shares the ${c.kinoLibrary.perMinute} calls a minute of \`watched\` and \`saved\`; never 18+, live channels in the totals and never named`],
     [`\`kino.room\` (apiVersion ${R.apiVersion})`, `a payload at most ${n(R.limits.maxPayloadBytes)} bytes and ${R.limits.maxPayloadDepth} levels; ${R.limits.perSecond} messages a second, ${R.limits.perMinute} and ${kb(R.limits.bytesPerMinute)} a minute per member; ${R.limits.minMembers} to ${R.limits.maxMembers} members; ${R.limits.minTtlMin} to ${R.limits.maxTtlMin} minutes (default ${R.limits.defaultTtlMin}); mailbox ${R.limits.mailboxEvents} events or ${R.limits.mailboxMs / 60000} minutes; ${R.limits.maxJoined} joined and ${R.limits.maxHosted} hosted per device, ${R.limits.maxSlotsPerPlugin} per plugin; ${R.limits.joinFailuresBeforeLock} wrong codes lock joins for ${R.limits.lockMs / 1000} s, doubling up to ${R.limits.maxLockMs / 60000} minutes; closed after ${R.limits.backgroundCloseMinutes} minutes in the background (a hosted room shows Kino's notification meanwhile)`],
-    [`Jobs (\`schedule\`, apiVersion ${J.apiVersion})`, `1 to ${J.manifest.maxJobs} jobs, every ${J.manifest.minEveryMin} to ${n(J.manifest.maxEveryMin)} minutes; one run at most ${J.limits.runTimeoutMs / 1000} s, ${J.limits.maxFetches} requests made one at a time, ${kb(J.limits.maxResponseBytes)} of answers and ${kb(J.limits.maxStorageWriteBytes)} written to \`kino.storage\`; ${J.limits.maxRunsPerDay} runs a day per plugin; a failure waits ${J.limits.backoffBaseMin} minutes, doubling up to ${J.limits.backoffMaxMin / 60} h, and ${J.limits.failuresToPause} in a row pause the job`],
+    [`Jobs (\`schedule\`, apiVersion ${J.apiVersion})`, `1 to ${J.manifest.maxJobs} jobs, every ${J.manifest.minEveryMin} to ${n(J.manifest.maxEveryMin)} minutes; one run at most ${J.limits.runTimeoutMs / 1000} s, ${J.limits.maxFetches} requests made one at a time, ${kb(J.limits.maxResponseBytes)} of answers and ${kb(J.limits.maxStorageWriteBytes)} written to \`kino.storage\`; ${J.limits.maxRunsPerDay} runs a day per plugin; a failure waits ${J.limits.backoffBaseMin} minutes, doubling up to ${J.limits.backoffMaxMin / 60} h, and ${J.limits.failuresToPause} in a row pause the job; from apiVersion ${J.limits.aiApiVersion} a plugin with \`ai\` approved gets ${J.limits.aiRunTimeoutMs / 1000} s and ${J.limits.aiMaxRequests} requests`],
     [`\`kino.ai\` (apiVersion ${A.apiVersion})`, `a prompt at most ${n(A.limits.maxPromptBytes)} bytes, \`system\` ${n(A.limits.maxSystemBytes)}; the reply cut at \`maxChars\` (1 to ${n(A.limits.maxChars)}, default ${n(A.limits.defaultMaxChars)}); ${A.limits.perMinute} asks in any minute, ${A.limits.perDay} a day and ${A.limits.maxInFlight} at a time per plugin; ${A.limits.devicePerDay} a day and ${A.limits.deviceMaxInFlight} at a time for every plugin of the device together; ${A.limits.timeoutMs / 1000} s an ask`],
     [`\`kino.shared\` (apiVersion ${SH.apiVersion})`, `${SH.limits.maxKeys} keys of at most ${SH.limits.maxKeyChars} characters per plugin; a value at most ${kb(SH.limits.maxValueBytes)} and ${SH.limits.maxDepth} levels, ${kb(SH.limits.maxPluginBytes)} in all; ${SH.limits.writesPerMinute} writes a minute; a key's new value travels at most once every ${SH.limits.syncEveryMs / 1000} s`],
   ]),
@@ -180,7 +183,7 @@ export const TABLES = {
   })),
   screenGo: () => table(["`go`", "What opens", "Sent from"], S.goShapes.map((g) => {
     if (!GO_TEXT[g]) throw new Error(`guide-tables: no description for the go shape ${g}`);
-    const from = g === "titleByIds" || g === "url" || g === "copy" || g === "liveChannel"
+    const from = g === "titleByIds" || g === "url" || g === "copy" || g === "liveChannel" || g === "syncProvider"
       ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} (a tap, a submit, the answer to one, a pop-up's button, a panel press)`
       : g === "screen" ? "a tap, or an answer, the answer to the reserved `open` included (never a timer's or a pop-up's `onClose`)" : "a tap, or the answer to an event (never the answer to `open`, to a timer or to a pop-up's `onClose`)";
     return [`\`${g}\``, GO_TEXT[g], from];

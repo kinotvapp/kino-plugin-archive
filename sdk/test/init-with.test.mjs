@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { scaffold, WITH } from "../init.mjs";
 import { validate } from "../validate.mjs";
 import { askImage, askRead } from "../kino-shim.mjs";
@@ -59,7 +59,7 @@ test("the scaffolded read and image answer the way Kino checks them", async () =
       },
       error: (code, m) => Object.assign(new Error(m), { code }),
     };
-    const plugin = await import(join(dir, "plugin.js"));
+    const plugin = await import(pathToFileURL(join(dir, "plugin.js")).href);
     const stream = { source: "plugin", handle: "file-1", size: 9000, mime: "video/mp4" };
     checkOutput("resolve", stream, manifest);
     assert.deepEqual(await askRead(plugin, manifest, stream, 4096, 8192), bytes.subarray(4096));

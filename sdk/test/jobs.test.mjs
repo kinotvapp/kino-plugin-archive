@@ -12,7 +12,7 @@ import { spawnSync } from "node:child_process";
 import { contract, validateManifest } from "../contract.mjs";
 import { createKino } from "../kino-shim.mjs";
 import { consentLines } from "../validate.mjs";
-import { jobBudget, jobContext, jobKino, runJob } from "../job.mjs";
+import { jobBudget, jobCaps, jobContext, jobKino, runJob } from "../job.mjs";
 
 const J = contract.kinoJobs;
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -29,6 +29,7 @@ test("kit parity with the app: manifests and budgets (job-cases.json)", () => {
       assert.deepEqual(r.manifest.jobs.map((j, i) => ({
         id: j.id, everyMin: j.everyMin, everyOptions: j.everyOptions,
         ...(c.jobs[i] && "runOn" in c.jobs[i] ? { runOn: j.runOn } : {}),
+        ...(c.jobs[i] && "perProfile" in c.jobs[i] ? { perProfile: j.perProfile } : {}),
         // Task 18 (G2): enabledBy, where the case names it.
         ...(c.jobs[i] && "enabledBy" in c.jobs[i] ? { enabledBy: j.enabledBy } : {}),
       })), c.jobs, c.name);
@@ -59,12 +60,50 @@ test("kitPrintsTheConsentLine: the schedule line is red and is the app's, word f
   assert.equal(old.manifest.jobs, undefined);
 });
 
+test("tmdbInJob: each call is one of the run's requests", async () => {
+  const budget = jobBudget({ maxFetches: 1 });
+  let calls = 0;
+  const k = jobKino({ tmdb: async () => { calls++; return { id: 603 }; } }, budget);
+  assert.deepEqual(await k.tmdb("/movie/603"), { id: 603 });
+  await assert.rejects(k.tmdb("/movie/604"), (e) => e.code === "rate_limited");
+  assert.equal(calls, 1);
+  assert.equal(budget.exceeded, "cap_fetches");
+  assert.ok(J.availableApis.includes("kino.tmdb"));
+  assert.ok(!J.forbiddenApis.includes("kino.tmdb"));
+});
+
+test("jobCaps: 60 s and 20 requests with ai at apiVersion 17, else 20 s and 10", () => {
+  const base = { apiVersion: 17, capabilities: ["screen", "schedule"] };
+  assert.deepEqual(jobCaps(base), { maxFetches: 10, timeoutMs: 20000 });
+  assert.deepEqual(jobCaps({ ...base, capabilities: ["screen", "schedule", "ai"] }), { maxFetches: 20, timeoutMs: 60000 });
+  assert.deepEqual(jobCaps({ ...base, apiVersion: 16, capabilities: ["screen", "schedule", "ai"] }), { maxFetches: 10, timeoutMs: 20000 });
+});
+
+test("kino.jobOn: a screen reads Kino's row, a job is refused", async () => {
+  const m = validateManifest(JSON.stringify({ ...CASES.base, apiVersion: 17 })).manifest;
+  const { kino } = createKino(m, { callFunction: "screenEvent", jobsOn: ["refresh"] });
+  assert.equal(kino.jobOn("refresh"), true);
+  assert.equal(kino.jobOn("other"), false);
+  assert.throws(() => kino.jobOn(7), (e) => e.code === "bad_request");
+  const home = createKino(m, { callFunction: "home" }).kino;
+  assert.throws(() => home.jobOn("refresh"), (e) => e.code === "not_allowed");
+  const k = jobKino(createKino(m, { callFunction: J.export }).kino, jobBudget());
+  await assert.rejects(k.jobOn("refresh"), (e) => e.code === "not_allowed");
+  assert.equal(createKino({ ...m, apiVersion: 16 }, { callFunction: "screenEvent" }).kino.jobOn, undefined);
+});
+
+test("perProfile consent: the red line says every profile", () => {
+  assert.notEqual(J.consentLinePerProfile.es, J.consentLine.es);
+  assert.ok(J.consentLinePerProfile.es.includes("perfil"));
+  assert.ok(J.consentLinePerProfile.en.includes("profile"));
+});
+
 test("forbiddenApisRefusedInJob: the kit's job kino rejects them with not_allowed and logs the name", async () => {
   const checked = validateManifest(JSON.stringify(CASES.base));
   const { kino } = createKino(checked.manifest, { callFunction: J.export, fetchImpl: async () => new Response("hello", { headers: { "content-type": "text/plain" } }) });
   const logs = [];
   const k = jobKino(kino, jobBudget(), (l) => logs.push(l));
-  for (const [name, call] of [["room", () => k.room.state()], ["meta", () => k.meta({ type: "movie", ids: { imdb: "tt0133093" } })], ["tmdb", () => k.tmdb("/movie/603")]]) {
+  for (const [name, call] of [["room", () => k.room.state()], ["meta", () => k.meta({ type: "movie", ids: { imdb: "tt0133093" } })]]) {
     if (!(name in kino)) continue;
     await assert.rejects(call(), (e) => e.code === "not_allowed", name);
   }

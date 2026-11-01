@@ -34,7 +34,9 @@ test("the kit's sandbox answers the language battery as Kino's engine does, exce
   const stale = new Set(Object.keys(KNOWN).filter((n) => !VERSION_DEPENDENT.has(n)));
   for (let i = 0; i < got.length; i++) {
     assert.equal(got[i].name, expected[i].name);
-    if (got[i].result === expected[i].result) continue;
+    // The kit has no kino.coins yet, the app's probe does: the rest of the key list, kino.jobOn included, is still compared.
+    const app = expected[i].result;
+    if (got[i].result === app) continue;
     if (KNOWN[got[i].name] !== undefined) { stale.delete(got[i].name); continue; }
     unexpected.push(`${got[i].name}\n    kit: ${got[i].result}\n    app: ${expected[i].result}`);
   }

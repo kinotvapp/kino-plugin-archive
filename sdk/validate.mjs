@@ -74,13 +74,18 @@ export function consentLines(m, { authorFingerprint = null } = {}) {
   // apiVersion 14 "room" (PluginConsent.extraLines, Task 8l): people on the Internet reach this device while a room is open: red.
   if (m.capabilities.includes(contract.kinoRoom.capability)) line(contract.kinoRoom.consentLine.es, true);
   // apiVersion 14 "schedule" (PluginConsent.extraLines, Task 8q): it runs by itself in the background, on the person's internet and battery: red.
-  if (m.capabilities.includes(contract.kinoJobs.capability)) line(contract.kinoJobs.consentLine.es, true);
+  if (m.capabilities.includes(contract.kinoJobs.capability)) line(((m.jobs || []).some((j) => j.perProfile) ? contract.kinoJobs.consentLinePerProfile : contract.kinoJobs.consentLine).es, true);
   // apiVersion 14 "ai" (PluginConsent.extraLines, Task 8r): what it sends leaves the device for a third-party AI service: red.
   if (m.capabilities.includes(contract.kinoAi.capability)) line(contract.kinoAi.consentLine.es, true);
   // apiVersion 15 "identity" (PluginConsent.extraLines): who the person is on Telegram may leave the device: red.
   if (m.capabilities.includes(contract.kinoIdentity.capability)) line(contract.kinoIdentity.consentLine.es, true);
   // apiVersion 15 "notifications" (PluginConsent.extraLines): notices in the Home bell: a plain line, not red.
   if (m.capabilities.includes(contract.kinoNotifications.capability)) line(contract.kinoNotifications.consentLine.es);
+  // apiVersion 15 "pluginStore" (PluginConsent.extraLines): a plain line, and a red one for a live store (searches reach its servers).
+  if (m.capabilities.includes(contract.kinoStore.capability)) {
+    line(contract.kinoStore.consentLine.es);
+    if (m.pluginStore?.mode === "live") line(contract.kinoStore.consentLineLive.es, true);
+  }
   // apiVersion 14 "shared" (PluginConsent.extraLines, Task 8q-2): the person's own data between their own devices: a plain line.
   if (m.capabilities.includes(contract.kinoShared.capability)) line(contract.kinoShared.consentLine.es);
   // apiVersion 7 "segments": a plain line, not red (it only learns which title plays): PluginConsent / Segments.CONSENT_LINE.
@@ -357,7 +362,7 @@ export function sharedSecretKeyWarnings(source) {
 export function undeclaredLibraryProblem(m, source) {
   const L = contract.kinoLibrary;
   if ((m.capabilities || []).includes(L.capability)) return null;
-  if (!/\bkino\s*\.\s*library\s*\.\s*(watched|saved)\s*\(/.test(source)) return null;
+  if (!/\bkino\s*\.\s*library\s*\.\s*(watched|saved|stats)\s*\(/.test(source)) return null;
   return `The code calls kino.library but the manifest does not declare the "${L.capability}" capability (apiVersion ${L.apiVersion}): Kino would refuse every call with permission_denied`;
 }
 
@@ -511,6 +516,10 @@ export async function validate(dirArg, { run = null, args = [], config = {}, rep
   }
   if ((m.jobs || []).some((j) => j.runOn === "preferPhone")) {
     notes.push(`runOn "preferPhone": ONE of the person's linked devices runs ${(m.jobs || []).filter((j) => j.runOn === "preferPhone").map((j) => j.id).join(", ")}, a linked phone first; the TV runs it only when no phone can (none linked, or quiet for ${contract.kinoJobs.election.freshPeriods} periods). Write the result with kino.shared so the TV reads it${(m.capabilities || []).includes(contract.kinoShared.capability) ? "" : ' (declare the "shared" capability)'}, and read kino.device in the job to do less on a TV`);
+  }
+  if ((m.jobs || []).some((j) => j.perProfile)) {
+    const J = contract.kinoJobs;
+    notes.push(`perProfile: Kino runs ${(m.jobs || []).filter((j) => j.perProfile).map((j) => j.id).join(", ")} once for each profile of the device with the plugin on, one at a time, oldest result first; ctx never says which: kino.library, kino.shared, kino.storage, kino.config and the cookies are that profile's, and ${J.perProfileRefusedApis.join(", ")} answer not_allowed for a profile that is not in use, so catch it`);
   }
   if ((m.capabilities || []).includes(contract.kinoAi.capability)) {
     // Task 8r: what the AI is and is not, so the author treats the reply as untrusted data and keeps a fallback.

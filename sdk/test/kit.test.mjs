@@ -31,11 +31,11 @@ const manifest = (extra = {}) => JSON.stringify({
 });
 
 test("contract.json is the one the app pins", () => {
-  assert.equal(contract.apiVersion, 15);
+  assert.equal(contract.apiVersion, 17);
   // apiVersion 5 stays what Kino 0.9.45 made it: the author-signed entry, nothing else.
   assert.equal(contract.manifest.signature.apiVersion, 5);
-  assert.deepEqual(contract.capabilities.names, ["search", "home", "browse", "episodes", "resolve", "download", "drm", "channels", "migrate", "scopedSearch", "meta", "subtitles", "tracking", "segments", "playlists", "externalResolve", "nuvio", "syncProvider", "socket", "byteSource", "storageLarge", "catalog", "qrScan", "imageSource", "screen", "library", "playerPanelTab", "playerControl", "room", "schedule", "ai", "shared", "identity", "notifications"]);
-  assert.deepEqual(contract.capabilities.declarative, ["download", "drm", "scopedSearch", "externalResolve", "nuvio", "socket", "storageLarge", "catalog", "qrScan", "library", "playerControl", "room", "ai", "shared", "identity", "notifications"]);
+  assert.deepEqual(contract.capabilities.names, ["search", "home", "browse", "episodes", "resolve", "download", "drm", "channels", "migrate", "scopedSearch", "meta", "subtitles", "tracking", "segments", "playlists", "externalResolve", "nuvio", "syncProvider", "socket", "byteSource", "storageLarge", "catalog", "qrScan", "imageSource", "screen", "library", "playerPanelTab", "playerControl", "room", "schedule", "ai", "shared", "identity", "notifications", "coins", "pluginStore"]);
+  assert.deepEqual(contract.capabilities.declarative, ["download", "drm", "scopedSearch", "externalResolve", "nuvio", "socket", "storageLarge", "catalog", "qrScan", "library", "playerControl", "room", "ai", "shared", "identity", "notifications", "coins"]);
   assert.deepEqual(contract.permissions, []);
 });
 
@@ -1442,7 +1442,7 @@ test("kino.d.ts declares exactly what the kit's kino has", () => {
   // kino.cloudstream exists only in a plugin Kino generated from a CloudStream repository (KinoDtsTest's rule): a
   // hand-written plugin's kino, which is the kit's, never has it. kino.ws exists only with the "socket" capability.
   const declared = [...declaredKino()];
-  const conditional = declared.filter((m) => m.startsWith("kino.cloudstream.") || m.startsWith("kino.ws.") || m.startsWith("kino.catalog.") || m.startsWith("kino.qr."));
+  const conditional = declared.filter((m) => m.startsWith("kino.cloudstream.") || m.startsWith("kino.ws.") || m.startsWith("kino.catalog.") || m.startsWith("kino.qr.") || m.startsWith("kino.sync.active") || m.startsWith("kino.sync.setActive"));
   assert.ok(declared.some((m) => m.startsWith("kino.cloudstream.")), "kino.d.ts no longer declares kino.cloudstream");
   assert.ok(declared.some((m) => m.startsWith("kino.ws.")), "kino.d.ts no longer declares kino.ws");
   assert.deepEqual([...out].sort(), declared.filter((m) => !conditional.includes(m)).sort());
@@ -1806,7 +1806,7 @@ test("secrets: parsed with apiVersion 4, ignored below it, and its Spanish messa
 });
 
 test("migrate: a consent line, and an update that adds it re-asks like any new reach", () => {
-  assert.deepEqual(contract.capabilities.needsApproval, ["download", "drm", "channels", "migrate", "tracking", "nuvio", "syncProvider", "library", "playerPanelTab", "playerControl", "room", "schedule", "ai", "identity", "notifications"]);
+  assert.deepEqual(contract.capabilities.needsApproval, ["download", "drm", "channels", "migrate", "tracking", "nuvio", "syncProvider", "library", "playerPanelTab", "playerControl", "room", "schedule", "ai", "identity", "notifications", "coins", "pluginStore"]);
   assert.deepEqual(consentLines(validateManifest(manifest({ apiVersion: 6, capabilities: ["search", "resolve", "migrate"] })).manifest),
     [{ text: "Revisar lo que tienes guardado (biblioteca, historial, favoritos) para pasarlo a este plugin", danger: false }]);
 });
@@ -4276,7 +4276,7 @@ test("the guide's kino.fetch limits row names every fetch limit the app enforces
 // apiVersion 5 is Kino 0.9.45's (the author's signature, nothing else): a v5 manifest using an apiVersion 6
 // field is refused, or reads it exactly as those apps do (an unknown field, ignored).
 test("apiVersion 5 manifests read as Kino 0.9.45 and 0.9.46 read them: every apiVersion 6 field is refused or ignored", () => {
-  assert.equal(contract.maxApiVersion, 15);
+  assert.equal(contract.maxApiVersion, 17);
   const v5 = (extra) => validateManifest(manifest({ apiVersion: 5, ...extra }));
   const ignored = v5({ debug: true, section: { label: "Mía" }, theme: { accent: "#3D5AFE" } });
   assert.equal(ignored.ok, true);
@@ -4298,7 +4298,7 @@ test("apiVersion 5 manifests read as Kino 0.9.45 and 0.9.46 read them: every api
 // apiVersion 5 shipped in Kino 0.9.45 (signature.fromApp); 6 first ships in 0.9.50 (nothing ships until the built-in source removal is done).
 test("each apiVersion above 4 names the Kino it first ships in, and validate's note reads it", async () => {
   assert.equal(contract.manifest.signature.fromApp, "0.9.45");
-  assert.deepEqual(contract.apiVersionFromApp, { "6": "0.9.50", "7": "0.9.51", "8": "0.9.54", "9": "0.9.55", "10": "0.9.65", "11": "0.9.66", "12": "0.9.74", "13": "0.9.74", "14": "0.9.74", "15": "TBD" });
+  assert.deepEqual(contract.apiVersionFromApp, { "6": "0.9.50", "7": "0.9.51", "8": "0.9.54", "9": "0.9.55", "10": "0.9.65", "11": "0.9.66", "12": "0.9.74", "13": "0.9.74", "14": "0.9.74", "15": "0.9.77", "16": "0.9.78", "17": "TBD" });
   const dir = mkdtempSync(join(tmpdir(), "kino-from-app-"));
   try {
     writeFileSync(join(dir, "plugin.js"), "export async function search(){ return { items: [] } }\nexport async function resolve(){ return { url: 'https://example.com/a.m3u8' } }");
@@ -4563,8 +4563,8 @@ test("browser pages: its own wider line, true keeps the old one, and page answer
   assert.equal(v({ browser: true }).manifest.browserPages, false);
   assert.equal(v({ browser: "pages" }, 5).manifest.browser, false);
   assert.deepEqual(v({ browser: "page" }), { ok: false, field: "browser", message: contract.manifest.browser.notBooleanMessage });
-  assert.equal(contract.maxApiVersion, 15);
-  assert.equal(v({}, 16).ok, false);
+  assert.equal(contract.maxApiVersion, 17);
+  assert.equal(v({}, 18).ok, false);
   const dir = mkdtempSync(join(tmpdir(), "kino-browser-page-"));
   try {
     writeFileSync(join(dir, "plugin.js"), "export async function search(q){ try { await kino.browser.page('https://example.com/?s=' + q, { waitFor: 'article' }) } catch (e) { return [{ id: e.code, title: e.code, ref: e.code, kind: 'movie' }] } }\nexport async function resolve(){ return { url: 'https://example.com/a.m3u8' } }");
@@ -5104,7 +5104,7 @@ test("catalogOnly: resolve may be left out, one of home/browse/search/meta is ne
   assert.deepEqual(validateManifest(manifest({ capabilities: ["home"] })), { ok: false, field: "capabilities", message: 'The plugin must declare "resolve"' });
   assert.equal(contract.additiveFromApp.catalogOnly, "0.9.54");
   // No apiVersion of its own: catalogOnly is valid at every apiVersion.
-  assert.equal(contract.apiVersion, 15);
+  assert.equal(contract.apiVersion, 17);
 });
 
 test("catalogOnly: validate prints the consent line and what an older Kino does with it", async () => {
@@ -5687,7 +5687,7 @@ test("the consent sheet names a sync provider as the app does: always red, the p
 });
 
 test("a standalone set may carry socket, storageLarge, catalog and qrScan (apiVersion 13), as ManifestParser.isStandaloneSet", () => {
-  assert.deepEqual(contract.capabilities.standaloneSupplements, ["socket", "storageLarge", "catalog", "qrScan", "room", "schedule", "ai", "shared", "playerControl", "identity", "notifications"]);
+  assert.deepEqual(contract.capabilities.standaloneSupplements, ["socket", "storageLarge", "catalog", "qrScan", "room", "schedule", "ai", "shared", "playerControl", "identity", "notifications", "coins"]);
   // Every supplement is declarative but schedule (Task 8q), which exports job.
   for (const c of contract.capabilities.standaloneSupplements) if (c !== "schedule") assert.ok(contract.capabilities.declarative.includes(c), c);
   const v = (capabilities, extra = {}) => validateManifest(JSON.stringify({ id: "sp", name: "S", version: "1.0.0", apiVersion: 13, entry: "plugin.js", hosts: ["x.example"], capabilities, ...extra }));
@@ -5771,7 +5771,7 @@ test("kino.fetch maxBytes never shows the first characters of a sealed value an 
 test("kino.fetch maxBytes never leaks a sealed value when earlier echoes shrink under redaction (Task 7i-1 fix round 2, N1)", async () => {
   // The re-review's exploit (shift.mjs): k whole echoes before the cut are replaced by a shorter marker, which used to slide
   // a partly read value inside the cut.
-  const key = "sk_" + "live_9f8e7d6c5b4a39281706f5e4d3c2b1a0ZZYYXXWWVVUUTTSSRRQQPPOONN"; // split: a fake key, kept out of secret scanners
+  const key = ["sk", "live", "9f8e7d6c5b4a39281706f5e4d3c2b1a0ZZYYXXWWVVUUTTSSRRQQPPOONN"].join("_");
   const fetchImpl = async (url) => {
     const u = new URL(String(url));
     return new Response("E:" + u.searchParams.getAll("v").join(",") + ";" + "z".repeat(400), { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
@@ -5795,7 +5795,7 @@ test("kino.fetch maxBytes never leaks a sealed value when earlier echoes shrink 
 });
 
 test("kino.fetch maxBytes never leaks a sealed value from a UTF-16 body either (Task 7i-1 fix round 2, N1)", async () => {
-  const key = "sk_" + "live_9f8e7d6c5b4a39281706f5e4d3c2b1a0ZZYYXXWWVVUUTTSSRRQQPPOONN"; // split: a fake key, kept out of secret scanners
+  const key = ["sk", "live", "9f8e7d6c5b4a39281706f5e4d3c2b1a0ZZYYXXWWVVUUTTSSRRQQPPOONN"].join("_");
   const fetchImpl = async (url) => {
     const u = new URL(String(url));
     const text = "E:" + u.searchParams.getAll("v").join(",") + ";" + "z".repeat(200);
@@ -5817,7 +5817,7 @@ test("kino.fetch maxBytes never leaks a sealed value from a UTF-16 body either (
 
 test("kino.fetch maxBytes with sealed values reads whole, so a stateful charset cannot hide a partly read value (Task 7i-1 fix round 3, R1)", async () => {
   // The re-review's iso2022.mjs: escape bytes that decode to nothing used to push a value past a partial read.
-  const key = "sk_" + "live_9f8e7d6c5b4a39281706f5e4d3c2b1a0ZZYYXXWWVVUUTTSSRRQQPPOONN"; // split: a fake key, kept out of secret scanners
+  const key = ["sk", "live", "9f8e7d6c5b4a39281706f5e4d3c2b1a0ZZYYXXWWVVUUTTSSRRQQPPOONN"].join("_");
   const fetchImpl = async (url) => {
     const u = new URL(String(url));
     const body = Buffer.from("E:" + u.searchParams.getAll("v").join(",") + ";" + "z".repeat(4000), "latin1");

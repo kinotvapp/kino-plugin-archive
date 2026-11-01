@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Scaffolds a new plugin: node sdk/init.mjs <folder> [--id my-plugin] [--name "Mi plugin"] [--host example.com]
 //   [--with byteSource,images,catalog,socket]   (apiVersion 13: each adds its capability and a working, commented example)
+//   [--store local|live]   (apiVersion 15: a plugin STORE, a source of plugins for Kino's store; local = a static list, live = your
+//                           own API too. No search/home/resolve: a store plays nothing. See docs/plugins/examples/store-local and store-live)
 //   [--bundle]   (the source split into src/ and bundled into plugin.js by `npm run build` with esbuild; see the guide's
 //                 "Structure a bigger plugin in files and bundle it")
 // Writes kino-plugin.json, plugin.js (every function, commented), README.md, test/plugin.test.mjs
@@ -13,6 +15,100 @@ import { fileURLToPath } from "node:url";
 /** What `--with` may add (apiVersion 13); `images` is the imageSource capability. */
 export const WITH = ["byteSource", "images", "catalog", "socket"];
 const WITH_CAPABILITY = { byteSource: "byteSource", images: "imageSource", catalog: "catalog", socket: "socket" };
+
+/** What `--store` may be (apiVersion 15): a local store hands Kino its list; a live store also answers while the person browses. */
+export const STORE_MODES = ["local", "live"];
+
+/** The plugin.js of a store scaffold; the same code as docs/plugins/examples/store-local and store-live, shortened. */
+function storePlugin(name, host, mode) {
+  const head = `// ${name}: a Kino plugin STORE (apiVersion 15, "pluginStore"). It is a source of plugins: Kino keeps the entries in its own
+// local index, paints the store from there and installs through its own consent sheet. Every function is async, returns plain
+// JSON and must not throw before its first await.
+const API = "https://${host}/api";
+
+/** One row of your list -> a StoreEntry. Only address (or stremio), id and name are required. */
+function toEntry(p) {
+  return {
+    address: p.repo,            // what Kino installs from: "owner/repo", "owner/repo/path", "owner/repo@ref" or "url:https://.../kino-plugin.json"
+    id: p.id,                   // the plugin's own id
+    name: p.name,
+    description: p.description,
+    categories: p.categories,   // movies, series, anime, live, radio, subtitles, utilities, adult
+    icon: p.icon,               // https only
+    version: p.version,
+    popularity: p.popularity,   // a number: the "popular" sort
+    updatedAt: p.updatedAt,     // ms since 1970: the "recent" sort
+  };
+}
+
+async function get(path, params = {}) {
+  const query = Object.entries(params)
+    .filter(([, v]) => v !== undefined && v !== null && v !== "")
+    .map(([k, v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v))
+    .join("&");
+  const r = await kino.fetch(API + path + (query ? "?" + query : ""));
+  if (r.status === 429) throw kino.error("rate_limited", "demasiadas peticiones");
+  if (!r.ok) throw kino.error("unavailable", "la tienda respondió " + r.status);
+  return r.json();
+}
+
+// storeSync({ reason, since, state }): reason is "schedule" (background, at the person's interval) or "reload"; since is when it
+// last synced (ms); state is what you returned last time (at most 16 KB). full: true means entries is the WHOLE list.
+export async function storeSync({ reason, since, state }) {
+  const data = await get("/plugins");
+  return { full: true, entries: data.plugins.map(toEntry) };
+}
+`;
+  if (mode !== "live") return head;
+  return head + `
+// A live store also answers while the person browses (at most 5 s a call, 20 calls a minute). Kino appends these results to the
+// end of the list as they arrive and skips an address it already shows. Export all three or Kino will not install it.
+export async function storeList({ category, sort, cursor }) {
+  // sort: "popular" | "recent"
+  const data = await get("/plugins", { category, sort, cursor });
+  return { entries: data.plugins.map(toEntry), next: data.next || undefined };
+}
+
+export async function storeSearch({ q, category, cursor }) {
+  const data = await get("/search", { q, category, cursor });
+  return { entries: data.plugins.map(toEntry), next: data.next || undefined };
+}
+`;
+}
+
+/** The files of a store scaffold (replaces the search/home/browse/resolve ones). */
+function storeFiles({ pluginId, name, host, store }) {
+  const title = name || pluginId;
+  return {
+    "kino-plugin.json": JSON.stringify({
+      id: pluginId,
+      name: title,
+      version: "0.1.0",
+      apiVersion: 15,
+      entry: "plugin.js",
+      description: "",
+      hosts: [host],
+      capabilities: ["pluginStore"],
+      pluginStore: { mode: store, name: title.slice(0, 60) },
+    }, null, 2) + "\n",
+    "plugin.js": storePlugin(title, host, store),
+    "README.md": `# ${title}
+
+A plugin store for [Kino](https://github.com/kinotvapp/kino-plugin-sdk) (${store}). Install it in Kino (Ajustes ▸ Plugins) with this repository's \`owner/repo\`.
+
+## Develop
+
+\`\`\`
+node sdk/validate.mjs .
+node sdk/run.mjs . storeSync${store === "live" ? `
+node sdk/run.mjs . storeList popular
+node sdk/run.mjs . storeSearch "algo"` : ""}
+node --test test/plugin.test.mjs
+\`\`\`
+`,
+    "test/plugin.test.mjs": STORE_TEST,
+  };
+}
 
 /** The plugin.js block each `--with` option appends. */
 function withBlock(option, host) {
@@ -74,7 +170,9 @@ async function talk() {
   }
 }
 
-export function scaffold(folder, { id, name, host = "example.com", with: extras = [], bundle = false } = {}) {
+export function scaffold(folder, { id, name, host = "example.com", with: extras = [], bundle = false, store = null } = {}) {
+  if (store !== null && !STORE_MODES.includes(store)) throw new Error(`unknown --store ${store}: ${STORE_MODES.join(", ")}`);
+  if (store && (extras.length || bundle)) throw new Error("--store cannot be combined with --with or --bundle: a store plays nothing and has no catalogue to scaffold");
   for (const x of extras) if (!WITH.includes(x)) throw new Error(`unknown --with ${x}: ${WITH.join(", ")}`);
   const dir = resolve(folder);
   const pluginId = id || basename(dir).toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "mi-plugin";
@@ -102,7 +200,9 @@ function toItem(x) {
     "README.md": `# ${name || pluginId}\n\nA [Kino](https://github.com/kinotvapp/kino-plugin-archive) plugin. Install it in Kino (Ajustes ▸ Plugins) with this repository's \`owner/repo\`.\n\n## Develop\n\n\`\`\`\nnode sdk/validate.mjs .\nnode sdk/run.mjs --record test/fixtures.json . search "algo"\nnode --test test/plugin.test.mjs\n\`\`\`\n`,
     "test/plugin.test.mjs": PLUGIN_TEST,
   };
-  if (bundle) Object.assign(files, bundleFiles({ pluginId, name, host, extras }));
+  if (store) {
+    Object.assign(files, storeFiles({ pluginId, name, host, store }));
+  } else if (bundle) Object.assign(files, bundleFiles({ pluginId, name, host, extras }));
   const written = [];
   for (const [path, content] of Object.entries(files)) {
     if (content === null) continue;
@@ -293,6 +393,22 @@ export const BUNDLE_BUILT_TEST = [
   "});",
 ].join("\n") + "\n";
 
+const STORE_TEST = `// The store's manifest and exports are accepted by the kit. To check its answers offline, serve your list through a fake
+// fetch as docs/plugins/examples/store-local/test/store.test.mjs does.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { validate } from "../sdk/validate.mjs";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+test("Kino accepts the manifest and the exports", async () => {
+  const r = await validate(root);
+  assert.deepEqual(r.problems, []);
+});
+`;
+
 const PLUGIN_TEST = `// Offline test: answers come from test/fixtures.json (record it once with
 //   node sdk/run.mjs --record test/fixtures.json . search "algo").
 import { test } from "node:test";
@@ -321,14 +437,14 @@ test("search answers offline, and Kino drops nothing", { skip: !existsSync(fixtu
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [folder, ...rest] = process.argv.slice(2);
   if (!folder) {
-    console.error('usage: node sdk/init.mjs <folder> [--id my-plugin] [--name "Mi plugin"] [--host example.com] [--with ' + WITH.join(",") + "] [--bundle]");
+    console.error('usage: node sdk/init.mjs <folder> [--id my-plugin] [--name "Mi plugin"] [--host example.com] [--with ' + WITH.join(",") + "] [--bundle] [--store " + STORE_MODES.join("|") + "]");
     process.exitCode = 2;
   } else {
     const opt = (k) => { const i = rest.indexOf(k); return i === -1 ? undefined : rest[i + 1]; };
     const extras = (opt("--with") || "").split(",").map((x) => x.trim()).filter(Boolean);
     let written;
     try {
-      written = scaffold(folder, { id: opt("--id"), name: opt("--name"), host: opt("--host"), with: extras, bundle: rest.includes("--bundle") });
+      written = scaffold(folder, { id: opt("--id"), name: opt("--name"), host: opt("--host"), with: extras, bundle: rest.includes("--bundle"), store: opt("--store") });
     } catch (e) {
       console.error(e.message);
       process.exitCode = 2;

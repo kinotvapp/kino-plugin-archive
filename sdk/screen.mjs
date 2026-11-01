@@ -41,6 +41,8 @@ const SETTINGS = "settings";
 const ACCORDION = "accordion";
 /** Screen asks: Kino's own setup flow (PluginScreenOutput's STEPS). */
 const STEPS = "steps";
+/** apiVersion 17: full-screen pages (PluginScreenOutput's PAGES); its place lives in `state.inputs`, addressed by its key. */
+const PAGES = "pages";
 const STEPPER = "stepper";
 const TABLE = "table";
 /** A table's parts (`tr`, `td`): read only inside one. */
@@ -62,7 +64,7 @@ const TITLE_GRID_COLUMNS = 3;
 // The enums of PluginScreenTree.kt / PluginLayout.kt, by wire name.
 const CARD_VARIANTS = ["plain", "outlined", "filled"];
 const DIRECTIONS = ["vertical", "horizontal"];
-const TEXT_STYLES = ["h1", "h2", "h3", "h4", "h5", "p", "caption", "label"];
+const TEXT_STYLES = ["hero", "h1", "h2", "h3", "h4", "h5", "p", "caption", "label"];
 // The earlier names of the text scale, still accepted (and read as the scale's own) so earlier samples parse.
 const TEXT_STYLE_ALIASES = { display: "h1", title: "h3", subtitle: "h4", body: "p" };
 const BUTTON_VARIANTS = ["primary", "secondary", "text", "icon"];
@@ -438,6 +440,8 @@ class Reader {
     // there is drawn flat. `across`: of those, scrolls that may scroll across, where a rail is drawn flat.
     this.flat = 0;
     this.across = 0;
+    // Inside a `pages`: another one there is dropped.
+    this.inPages = 0;
     this.lang = lang;
     this.widgets = widgets;
     this.log = log;
@@ -601,7 +605,7 @@ class Reader {
     const rawKey = opt(o, "key");
     const given = typeof rawKey === "string" && ID.test(rawKey) && !rawKey.startsWith(AUTO) ? rawKey : null;
     // An input's value, a pop-up's opening and an accordion's open items are addressed by key: all need the plugin's own.
-    if (INPUTS.includes(type) || type === POPUP || type === ACCORDION) {
+    if (INPUTS.includes(type) || type === POPUP || type === ACCORDION || type === PAGES) {
       if (given === null) return drop("needs a valid key");
       if (this.keys.has(given)) return drop(`duplicate key "${given}"`);
     }
@@ -673,7 +677,10 @@ class Reader {
     const byClass = {};
     if (maps !== null) for (const [cls, p] of passes) byClass[cls] = node(type, p.build(false, key), common(p, {}));
     const base = passes[0][1];
-    return node(type, base.build(true, key), common(base, byClass));
+    const built = node(type, base.build(true, key), common(base, byClass));
+    // Its children are read only now: those that were dropped may leave too few pages.
+    if (type === PAGES && built.pages.length < S.pagesNode.minChildren) return drop(`needs ${S.pagesNode.minChildren} to ${S.pagesNode.maxChildren} children`);
+    return built;
   }
 
   /**
@@ -1356,7 +1363,7 @@ class Reader {
       case "pageView": {
         const F = S.flutterNodes;
         // A page view scrolls across: never inside something that already does (a sideways scroll, a table cell).
-        if (this.across > 0) return fail("inside a sideways scroll or a table cell");
+        if (this.across > 0 || this.inCell > 0) return fail("inside a sideways scroll or a table cell");
         const onPageChanged = this.actions(opt(o, "onPageChanged"), o, type, "onPageChanged");
         let autoPlayMs = null;
         if (present(o, "autoPlayMs")) {
@@ -1390,6 +1397,24 @@ class Reader {
             if (k && initialPage !== initial) this.log(`screen: pageView initialPage ${initial} is past its last page, ${pages.length - 1} used`);
           }
           return { pages, initialPage, onPageChanged, autoPlayMs, viewportFraction, padEnds };
+        };
+      }
+      case PAGES: {
+        const P = S.pagesNode;
+        // It scrolls across: never inside something that already does, nor inside itself.
+        if (this.across > 0 || this.inCell > 0) return fail("inside a sideways scroll or a table cell");
+        if (this.inPages > 0) return fail("inside pages");
+        const count = Array.isArray(o.children) ? o.children.length : 0;
+        if (count < P.minChildren || count > P.maxChildren) return fail(`needs ${P.minChildren} to ${P.maxChildren} children`);
+        for (const name of P.notTaken) if (present(o, name)) this.log(`screen: pages takes no ${name}, ignored`);
+        const onPageChanged = this.actions(opt(o, "onPageChanged"), o, type, "onPageChanged");
+        return (k) => {
+          let pages = [];
+          if (k) {
+            this.inPages++;
+            try { pages = this.children(o, depth, "children", P.maxChildren); } finally { this.inPages--; }
+          }
+          return { pages, page: 0, onPageChanged };
         };
       }
       // ---- Task 17 item G ----
@@ -2469,7 +2494,7 @@ class Reader {
     return { [op]: k };
   }
 
-  /** Exactly one of the twelve go shapes, logged under [where] when it is not. */
+  /** Exactly one of the thirteen go shapes, logged under [where] when it is not. */
   goOf(o, where) {
     const keys = Object.keys(o);
     const k = keys.length === 1 && GO_KEYS.includes(keys[0]) ? keys[0] : null;
@@ -2496,11 +2521,17 @@ class Reader {
       const g = liveChannelGoOf(v, (why) => this.log(`${where} go.liveChannel ${why}, dropped`));
       return g === null ? null : { liveChannel: g };
     }
-    if (k === "section" || k === "categories" || k === "close") return v === true ? { [k]: true } : bad("must be true");
+    if (k === "section" || k === "categories" || k === "close" || k === "syncProvider") return v === true ? { [k]: true } : bad("must be true");
     if (!isObj(v)) return bad("is not an object");
     if (k === "search") {
       const q = (typeof opt(v, "q") === "string" ? v.q : "").trim();
-      return q === "" || q.length > LIMITS.maxSearchQueryChars ? bad(`q must be 1 to ${LIMITS.maxSearchQueryChars} characters`) : { search: { q } };
+      if (q === "" || q.length > LIMITS.maxSearchQueryChars) return bad(`q must be 1 to ${LIMITS.maxSearchQueryChars} characters`);
+      // apiVersion 17: scope "all" searches every source; any other value (or a scope that is not text) drops the go.
+      if (Object.prototype.hasOwnProperty.call(v, "scope")) {
+        if (v.scope !== "all") return bad(`scope ${fmt(v.scope)} is not "all"`);
+        return { search: { q, scope: "all" } };
+      }
+      return { search: { q } };
     }
     const ref = opt(v, "ref");
     if (typeof ref !== "string" || ref === "" || ref.length > LIMITS.maxRefChars) return bad(`ref must be 1 to ${LIMITS.maxRefChars} characters`);
@@ -2746,7 +2777,7 @@ export function forDismiss(a, log) {
     return !drop;
   });
   if (fields.length === 0 && ui.length === (a.ui || []).length) return a;
-  return { ...a, dialog: null, sheet: null, menu: null, focus: null, go: null, route: null, ui };
+  return { ...a, dialog: null, sheet: null, menu: null, focus: null, go: null, route: null, share: null, enableJob: null, ui };
 }
 
 /**
@@ -2754,11 +2785,11 @@ export function forDismiss(a, log) {
  * `sheet`, `menu`, `focus`, `go` and `route` dropped, each logged.
  */
 export function forTimer(a, log) {
-  const fields = ["dialog", "sheet", "menu", "focus", "go", "route"].filter((f) => a[f]);
+  const fields = ["dialog", "sheet", "menu", "focus", "go", "route", "share", "enableJob"].filter((f) => a[f]);
   if (a.ui && a.ui.length > 0) fields.push("ui");
   if (fields.length === 0) return a;
   for (const f of fields) log(`screen: a timer's answer.${f} is dropped (a timer's answer keeps only ${S.timerAnswerFields.join(", ")})`);
-  return { ...a, dialog: null, sheet: null, menu: null, focus: null, go: null, route: null, ui: [] };
+  return { ...a, dialog: null, sheet: null, menu: null, focus: null, go: null, route: null, share: null, enableJob: null, ui: [] };
 }
 
 /**
@@ -2832,7 +2863,26 @@ function answerOf(o, lang, log, allowSeries = true, settings = null) {
   const config = configOf(opt(o, "config"), settings, log);
   // Last, so its log lines come after the other fields' (as a panel answer's always did).
   const ui = reader.uiOf(opt(o, "ui"), "screen: answer");
-  return { state, dialog, sheet, menu, toast, go, route, close: opt(o, "close") === true, focus, config, ui };
+  return { state, dialog, sheet, menu, toast, go, route, close: opt(o, "close") === true, focus, config, ui, share: shareOf(opt(o, "share"), log), enableJob: enableJobOf(opt(o, "enableJob"), log) };
+}
+
+/** PluginScreenOutput.enableJobOf: an answer's `enableJob`, a job id; anything else dropped, logged. */
+function enableJobOf(raw, log) {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw === "string" && new RegExp(contract.kinoJobs.manifest.idPattern).test(raw)) return raw;
+  log("screen: answer.enableJob is not a job id, dropped");
+  return null;
+}
+
+/** PluginScreenOutput.shareOf: an answer's `share`, exactly `{ key }` with a node key; anything else dropped, logged. */
+function shareOf(raw, log) {
+  if (absent(raw)) return null;
+  if (!isObj(raw)) { log("screen: answer.share is not an object, dropped"); return null; }
+  const extra = Object.keys(raw).sort().find((k) => !S.shareAnswer.fields.includes(k));
+  if (extra !== undefined) { log(`screen: answer.share has ${extra.slice(0, 40)}, only key is read, dropped`); return null; }
+  const key = opt(raw, "key");
+  if (typeof key !== "string" || !ID.test(key)) { log("screen: answer.share key is not a valid key, dropped"); return null; }
+  return { key };
 }
 
 /** One dialog, or the last of an array of them: one pop-up at a time (maxPopups). */
@@ -3013,6 +3063,7 @@ function resolveNode(n, device, widthClass) {
     for (const k of ["appBar", "body", "fab", "bottomBar"]) out[k] = n[k] ? resolveNode(n[k], device, widthClass) : null;
   }
   if (n.type === "appBar") { out.leading = n.leading ? resolveNode(n.leading, device, widthClass) : null; out.titleNode = n.titleNode ? resolveNode(n.titleNode, device, widthClass) : null; out.actions = kids(n.actions); out.bottom = n.bottom ? resolveNode(n.bottom, device, widthClass) : null; }
+  if (n.type === PAGES) out.pages = kids(n.pages);
   if (n.type === "pageView") { out.pages = kids(n.pages); out.initialPage = Math.min(n.initialPage, Math.max(0, out.pages.length - 1)); }
   // The fallback is read once, with the base node: each class's copy draws it too.
   if (n.type === "image") out.fallback = n.fallback ? resolveNode(n.fallback, device, widthClass) : null;
@@ -3042,7 +3093,7 @@ export function childNodes(n) {
   if (n.type === "list") return n.empty ? [...n.items, n.empty] : n.items;
   if (n.type === "heroCard") return n.buttons;
   if (n.type === "listTile") return [n.leading, n.trailing].filter(Boolean);
-  if (n.type === "pageView") return n.pages;
+  if (n.type === "pageView" || n.type === PAGES) return n.pages;
   if (n.type === "scaffold") return [n.appBar, n.body, n.fab, n.bottomBar].filter(Boolean);
   if (n.type === "appBar") return [n.leading, n.titleNode, ...n.actions, n.bottom].filter(Boolean);
   if (n.type === "image") return n.fallback ? [n.fallback] : [];
@@ -3085,7 +3136,7 @@ export function printScreenTree(n) {
 
 /** The summary of an answer's fields, as the shared case table spells it. */
 export function answerFields(a) {
-  return [a.state && "state", a.dialog && "dialog", a.sheet && "sheet", a.menu && "menu", a.toast && "toast", a.go && "go", a.route && "route", a.close && "close", a.focus && "focus", a.config && "config", a.ui && a.ui.length > 0 && "ui"].filter(Boolean);
+  return [a.state && "state", a.dialog && "dialog", a.sheet && "sheet", a.menu && "menu", a.toast && "toast", a.go && "go", a.route && "route", a.close && "close", a.focus && "focus", a.config && "config", a.ui && a.ui.length > 0 && "ui", a.share && "share"].filter(Boolean);
 }
 
 // ---------- forms (ScreenPatterns, ScreenForms) ----------

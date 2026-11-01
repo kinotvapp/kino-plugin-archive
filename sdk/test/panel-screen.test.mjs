@@ -58,7 +58,7 @@ test("contract: the panel's formats and the screen-format limits are what the ap
   assert.equal(PANEL_SCREEN.maxDepth, 6);
   assert.equal(PANEL_SCREEN.maxNodes, 200);
   assert.equal(PANEL_SCREEN.apiVersion, contract.manifest.screen.apiVersion);
-  assert.deepEqual(PANEL_SCREEN.droppedAnswerFields, ["dialog", "sheet", "menu", "route"]);
+  assert.deepEqual(PANEL_SCREEN.droppedAnswerFields, ["dialog", "sheet", "menu", "route", "share", "enableJob"]);
   assert.ok(PANEL_SCREEN.answerFields.includes("ui") && PANEL_SCREEN.answerFields.includes("config") && PANEL_SCREEN.answerFields.includes("go"));
   // The panel keeps its one periodic call: no `every` in a screen-format panel.
   assert.ok(!PANEL_SCREEN.resultFields.includes("every"));

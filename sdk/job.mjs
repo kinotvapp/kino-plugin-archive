@@ -2,10 +2,16 @@
 // `node sdk/run.mjs <folder> job [id] [scheduled|manual]` and its tests. The plugin gets a `kino` whose fetch and storage count
 // against the run's caps and whose forbidden APIs reject with not_allowed; a cap crossed cuts the run (a failure), and the
 // answer of job(ctx) is never read. Shared cases: test/job-cases.json (run by the app too).
-import { contract } from "./contract.mjs";
+import { contract, featureApiVersion } from "./contract.mjs";
 import { kitJobRequest } from "./kit-call.mjs";
 
 const J = contract.kinoJobs;
+
+/** The caps of one run of [manifest]'s plugin, as PluginJobKernel gives them; the kit takes `ai` as approved. */
+export function jobCaps(manifest) {
+  const roomy = (manifest.capabilities || []).includes(contract.kinoAi.capability) && featureApiVersion(manifest) >= J.limits.aiApiVersion;
+  return roomy ? { maxFetches: J.limits.aiMaxRequests, timeoutMs: J.limits.aiRunTimeoutMs } : { maxFetches: J.limits.maxFetches, timeoutMs: J.limits.runTimeoutMs };
+}
 
 /** JobRunBudget: the first cap crossed stays; every later fetch or write is refused. */
 export function jobBudget({ maxFetches = J.limits.maxFetches, maxBytes = J.limits.maxResponseBytes, maxStorage = J.limits.maxStorageWriteBytes } = {}) {
@@ -17,6 +23,7 @@ export function jobBudget({ maxFetches = J.limits.maxFetches, maxBytes = J.limit
     takeStorage(n) { if (exceeded !== null) return false; if (storage + n > maxStorage) return cross("cap_storage"); storage += n; return true; },
     bytesLeft() { return Math.max(0, maxBytes - bytes); },
     crossBytes() { cross("cap_bytes"); },
+    get maxFetches() { return maxFetches; },
     get exceeded() { return exceeded; },
     get fetches() { return fetches; },
     get bytes() { return bytes; },
@@ -54,7 +61,7 @@ export function jobKino(kino, budget, log = () => {}) {
   const limitError = () => budget.exceeded === "cap_bytes"
     ? kinoError("too_large", `this scheduled job already read ${J.limits.maxResponseBytes / (1024 * 1024)} MB of answers`)
     : budget.exceeded === "cap_storage" ? kinoError("too_large", `this scheduled job already wrote its ${J.limits.maxStorageWriteBytes / 1024} KB`)
-      : kinoError("rate_limited", `a scheduled job makes at most ${J.limits.maxFetches} requests per run`);
+      : kinoError("rate_limited", `a scheduled job makes at most ${budget.maxFetches ?? J.limits.maxFetches} requests per run`);
   const keep = new Set([...J.availableApis, ...J.readOnly].map((a) => a.replace(/^kino\./, "")));
   const out = {};
   for (const [name, value] of Object.entries(kino)) {
@@ -64,6 +71,8 @@ export function jobKino(kino, budget, log = () => {}) {
     else if (value !== null && typeof value === "object") out[name] = new Proxy({}, { get: () => asyncRefused(api) });
     else out[name] = value; // a plain value (a version, a flag) reaches nothing
   }
+  // apiVersion 17: kino.tmdb, each call one of the run's requests (the app's PluginKinoServices.tmdb).
+  if (typeof kino.tmdb === "function") out.tmdb = (...args) => (budget.takeFetch() ? kino.tmdb(...args) : Promise.reject(limitError()));
   let chain = Promise.resolve();
   out.fetch = (url, opts) => {
     if (!budget.takeFetch()) return Promise.reject(limitError());
@@ -94,7 +103,7 @@ export function jobKino(kino, budget, log = () => {}) {
   if (kino.ai) out.ai = Object.freeze({ ask: (options) => kitJobRequest.run(() => budget.takeFetch(), () => kino.ai.ask(options)) });
   // The sync ones throw at once, as the app's prelude does for a synchronous binding. kino.seed (Task 18, G2) is allowed: it
   // keeps the kit's own report of what Kino would send (only with the plugin's telemetry consent).
-  if ("sync" in kino) out.sync = Object.freeze({ remoteChanged: syncRefused("kino.sync") });
+  if ("sync" in kino) out.sync = Object.freeze({ remoteChanged: syncRefused("kino.sync"), ...(kino.sync.setActive ? { active: asyncRefused("kino.sync"), setActive: asyncRefused("kino.sync") } : {}) });
   return Object.freeze(out);
 }
 
