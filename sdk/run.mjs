@@ -41,6 +41,9 @@
 //   node sdk/run.mjs <plugin dir> segments tt0133093 [durationMs]                 (a movie)
 //   node sdk/run.mjs <plugin dir> segments tmdb:1396 1 2 [durationMs]             (an episode: the SHOW's id, season, episode)
 //   node sdk/run.mjs <plugin dir> segments '{"kind":"episode","ids":{"tmdb":62085},"show":{"ids":{"tmdb":1396}},"season":1,"episode":2,"durationMs":2880000}'
+// Lyrics (apiVersion 19, the "lyrics" capability): the query as the app builds it, then what Kino keeps and would draw
+//   node sdk/run.mjs <plugin dir> lyrics "Title" "Artist" ["Album"] [durationMs]
+//   node sdk/run.mjs <plugin dir> lyrics '{"title":"Song","artist":"Artist","durationMs":215000,"ids":{"youtube":"dQw4w9WgXcQ"}}'
 // The player panel (apiVersion 9): the fake context is a movie 10 min in on a TV; --context '<json>' merges over it
 //   node sdk/run.mjs [--context '<json>'] <plugin dir> panel <ref> [tab]
 //   node sdk/run.mjs [--context '<json>'] <plugin dir> panelAction <ref> <key> <press|change|submit|tab|open> ['<value json>'] ['<values json>']
@@ -136,7 +139,7 @@ import { channelLines, download, guideFor, keepStart, loadPlaylist, summarisePla
 import { jobBudget, jobCaps, jobContext, jobKino, runJob } from "./job.mjs";
 import { createSharedDevices } from "./shared.mjs";
 
-const FUNCTIONS = ["search", "home", "browse", "episodes", "resolve", "migrate", "section", "categories", "subtitles", "track", "segments", "meta"];
+const FUNCTIONS = ["search", "home", "browse", "episodes", "resolve", "migrate", "section", "categories", "subtitles", "track", "segments", "lyrics", "meta"];
 // apiVersion 6's settings form: not capabilities, so no capability check; the app runs them even before a required setting is typed.
 const SETTINGS_FUNCTIONS = ["settingsStatus", "action", "validateSettings"];
 // apiVersion 9's player panel: not capabilities either (the manifest's "panel" decides), and Kino calls them with a context.
@@ -162,6 +165,7 @@ const USAGE = "usage: node sdk/run.mjs [--config k=v] [--record f | --replay f] 
   + "       node sdk/run.mjs [--config k=v] <plugin folder> subtitles <ttID | tmdb:ID | JSON> [season episode]\n"
   + "       node sdk/run.mjs [--config k=v] <plugin folder> track <start|progress|stop|watched> [JSON]\n"
   + "       node sdk/run.mjs [--config k=v] <plugin folder> segments <ttID [durationMs] | tmdb:ID season episode [durationMs] | JSON>\n"
+  + "       node sdk/run.mjs [--config k=v] <plugin folder> lyrics <title artist [album] [durationMs] | JSON>\n"
   + "       node sdk/run.mjs [--config k=v] [--raw] <plugin folder> meta <ttID | tmdb:ID | kitsu:ID | mal:ID | anilist:ID | JSON> [movie|series] [more ids] [lang=xx] [id=<source id>]\n"
   + "       node sdk/run.mjs [--context '<json>'] <plugin folder> <panel <ref> [tab] | panelAction <ref> <key> <press|change|submit|tab|open> ['<value json>'] ['<values json>'] | playerEvent <ref> <type> ['<detail json>']>\n"
   + "       node sdk/run.mjs [--context '<json>'] [--state '<json>'] --screen <plugin folder> panelAction <ref> <name> <press|change|submit> ['<value json>'] ['<arg>']\n"
@@ -499,7 +503,7 @@ async function main() {
     }
     let checked;
     try {
-      checked = checkOutput(fn, out, manifest, servers, { liveChannel: fn === "resolve" && opts.live, migrateInput: fn === "migrate" ? JSON.parse(rest[0] || "null") : null, segmentsQuery: fn === "segments" ? segmentsArg(rest) : null });
+      checked = checkOutput(fn, out, manifest, servers, { liveChannel: fn === "resolve" && opts.live, migrateInput: fn === "migrate" ? JSON.parse(rest[0] || "null") : null, segmentsQuery: fn === "segments" ? segmentsArg(rest) : fn === "lyrics" ? lyricsArg(rest) : null });
     } catch (e) {
       // Refused only by host, and a live channel's ref would pass: say how to check it as one.
       if (fn === "resolve" && !opts.live && manifest.liveStreamHostsAny) {
@@ -516,6 +520,7 @@ async function main() {
       const note = unmarkedSearchNote(marked);
       if (note) stderr(`aviso: ${note}`);
     }
+    if (fn === "lyrics") stderr(`Kino shows: ${checked.shown === null ? "nothing (no lyrics Kino can draw for this track)" : checked.shown}`);
     if (fn === "segments") stderr(`Kino's button: ${JSON.stringify(segmentSkip(value))}`);
     adultLines(value).forEach((l) => stderr(l));
     const noSign = fn === "resolve" ? signExportProblem(value, plugin) : null;
@@ -673,6 +678,25 @@ export function segmentsArg(rest) {
   const duration = nums[episode ? 2 : 0];
   const out = episode ? { kind: "episode", ids: {}, show: { ids: id }, season: nums[0], episode: nums[1] } : { kind: "movie", ids: id };
   if (Number.isInteger(duration) && duration > 0) out.durationMs = duration;
+  return out;
+}
+
+/**
+ * `lyrics()`'s argument as the app's Lyrics.query builds it: `{ title, artist, album?, durationMs?, ids? }`. [rest]: the title, the
+ * artist, then optionally the album and a durationMs (a number last); or the whole object as JSON.
+ */
+export function lyricsArg(rest) {
+  const arg = String(rest[0] === undefined ? "" : rest[0]).trim();
+  if (arg.startsWith("{")) {
+    try { return JSON.parse(arg); }
+    catch (e) { throw new Error(`the lyrics argument starts with { but is not valid JSON: ${e.message}`); }
+  }
+  if (!arg) throw new Error("lyrics needs a title and an artist, or a JSON object");
+  const out = { title: arg, artist: String(rest[1] === undefined ? "" : rest[1]).trim() };
+  const more = rest.slice(2).map((v) => String(v).trim()).filter(Boolean);
+  const last = more[more.length - 1];
+  if (last !== undefined && /^\d+$/.test(last) && Number(last) > 0) { out.durationMs = Number(last); more.pop(); }
+  if (more[0]) out.album = more[0];
   return out;
 }
 
@@ -845,6 +869,49 @@ function liveChannelGoLine(go, manifest, trigger) {
 }
 
 /**
+ * apiVersion 18: what the app does with a `go.setExperience` in [go]: refused (said, false) without the person's press; else
+ * Kino asks the person first, in its own words naming the plugin, and changes nothing without their yes.
+ */
+function setExperienceGoLine(go, manifest, event) {
+  if (!go?.setExperience) return false;
+  if (event === null || event.name === "open" || event.trigger === "change") {
+    stderr("· dropped: go.setExperience: only the person's own tap asks for an experience");
+    return false;
+  }
+  const word = go.setExperience.experience === "light" ? "ligera" : "completa";
+  stderr(`· go.setExperience: Kino asks the person ("${manifest?.name ?? "this plugin"} pide la experiencia ${word}. ¿La usamos?") and changes nothing without their yes`);
+  return true;
+}
+
+/**
+ * apiVersion 18: what the app does with a `go.useTheme` in [go] from [manifest]'s plugin for [event] (null: not an event), its
+ * screen's [activeTheme] as the call said it: refused (said, false) without the person's press, for a theme that is not the
+ * plugin's, or going back to Kino's while none of its own is active; else Kino acts, shows its toast and calls `screen` again.
+ */
+function useThemeGoLine(go, manifest, event, activeTheme) {
+  if (!go?.useTheme) return false;
+  if (event === null || event.name === "open" || event.trigger === "change") {
+    stderr("· dropped: go.useTheme: only the person's own tap changes the theme");
+    return false;
+  }
+  const { theme } = go.useTheme;
+  if (theme === null) {
+    if (!activeTheme) {
+      stderr("· dropped: go.useTheme with no theme acts only while one of this plugin's themes is active (--context '{\"activeTheme\":\"<id>\"}' to try it)");
+      return false;
+    }
+    stderr("· go.useTheme: Kino goes back to its own theme, shows its toast \"Volviste al tema de Kino\" and calls screen again with activeTheme null");
+    return true;
+  }
+  if (!(manifest?.appThemes ?? []).some((t) => t.id === theme)) {
+    stderr(`· dropped: go.useTheme: "${theme}" is not one of this plugin's appThemes`);
+    return false;
+  }
+  stderr(`· go.useTheme: Kino activates "${theme}" as Apariencia does, shows its toast "Tema aplicado" and calls screen again with activeTheme "${theme}"`);
+  return true;
+}
+
+/**
  * What the app does with a `go.syncProvider` in [go] from [manifest]'s plugin for an event of [trigger]: refused (said, false)
  * without the person's press or without the syncProvider capability; else Kino opens its provider settings (true).
  */
@@ -891,7 +958,7 @@ export function screenRequest(fn, rest, { context = null, state = null } = {}) {
   if (value !== undefined) {
     try { parsed = JSON.parse(value); } catch (e) { throw new Error(`the value must be JSON: ${e.message}`); }
   }
-  return { context: ctx, event: fakeScreenEvent(String(name), { arg: arg === undefined || arg === "" ? undefined : String(arg), value: parsed, state: ctx.state, route: ctx.route, device: ctx.device, lang: ctx.lang }) };
+  return { context: ctx, event: fakeScreenEvent(String(name), { arg: arg === undefined || arg === "" ? undefined : String(arg), value: parsed, state: ctx.state, route: ctx.route, device: ctx.device, lang: ctx.lang, activeTheme: ctx.activeTheme }) };
 }
 
 /** The plugin's export called with the app's arguments: `screen(context)` or `screenEvent(event)`, within the app's 20 s. */
@@ -915,7 +982,7 @@ export async function callScreen(plugin, fn, { context, event }, timeoutMs = SCR
 function printScreenAnswer(fn, answer, context, manifest, writeConfig = () => {}, event = null) {
   const lang = langOf(context);
   // As the app: a series title is kept only from a plugin that declares episodes; binds and config meet its settings.
-  const opts = { allowSeries: (manifest?.capabilities ?? []).includes("episodes"), settings: manifest?.settings ?? [] };
+  const opts = { allowSeries: (manifest?.capabilities ?? []).includes("episodes"), settings: manifest?.settings ?? [], apiVersion: manifest?.apiVersion };
   if (fn === "screen") {
     const checked = checkScreenTree(answer, lang, undefined, opts);
     checked.dropped.forEach((d) => stderr(`· dropped: ${d}`));
@@ -929,6 +996,8 @@ function printScreenAnswer(fn, answer, context, manifest, writeConfig = () => {}
   // Task 11: a go.liveChannel: honoured only after the person's own tap or submit, for a plugin whose tab joins live channels.
   if (checked.answer.go?.liveChannel && !liveChannelGoLine(checked.answer.go, manifest, event ? (event.trigger === "tap" ? "press" : event.trigger) : "open")) delete checked.answer.go;
   if (checked.answer.go?.syncProvider && !syncProviderGoLine(checked.answer.go, manifest, event ? (event.trigger === "tap" ? "press" : event.trigger) : "open")) delete checked.answer.go;
+  if (checked.answer.go?.useTheme && !useThemeGoLine(checked.answer.go, manifest, event, context?.activeTheme)) delete checked.answer.go;
+  if (checked.answer.go?.setExperience && !setExperienceGoLine(checked.answer.go, manifest, event)) delete checked.answer.go;
   // As the app (Task 8m, 8s): a change's go.titleByIds or go.url is dropped; only the person's own tap opens one.
   const go = checked.answer.go;
   if (event && event.trigger === "change" && go && (go.titleByIds || go.url)) {
@@ -1325,6 +1394,7 @@ export async function call(plugin, fn, rest, opts = {}) {
   if (fn === "subtitles") return plugin.subtitles(subtitlesArg(rest));
   if (fn === "track") return plugin.track(trackArg(rest));
   if (fn === "segments") return plugin.segments(segmentsArg(rest));
+  if (fn === "lyrics") return plugin.lyrics(lyricsArg(rest));
   if (fn === "meta") return callMeta(plugin, metaArg(rest));
   // apiVersion 15's pluginStore: the arguments the app's store sync and live calls send.
   if (fn === "storeSync") return plugin.storeSync({ reason: "reload", ...(opts.since !== undefined ? { since: opts.since } : {}), ...(opts.state ? { state: opts.state } : {}) });

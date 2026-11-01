@@ -5,7 +5,7 @@
 // invalid node, style value, action or field is dropped with a reason. Like panel.mjs it reads the answer the way org.json
 // does (the answer crosses to Kino as JSON), and like the Kotlin it walks a JSON object's keys SORTED wherever the walk
 // can log, so the lines come out in the same order. plugins/sdk/test/screen-cases.json is the case table both sides share.
-import { contract, isUserServer, javaDouble, screenGoOf, screenItems, titleByIdsOf, urlGoOf, copyGoOf, liveChannelGoOf } from "./contract.mjs";
+import { contract, isUserServer, javaDouble, screenGoOf, screenItems, titleByIdsOf, urlGoOf, copyGoOf, liveChannelGoOf, useThemeGoOf, setExperienceGoOf } from "./contract.mjs";
 import { badgeOf, cappedLog, colorHint, httpsImage, panelAccentOf, panelMessageOf, panelPlayerOf, panelRefreshOf, panelTabsOf } from "./panel.mjs";
 
 // ---------- limits and name tables (ScreenLimits, ScreenWidgets; numbers come from the contract file) ----------
@@ -426,7 +426,8 @@ export function fitTableRow(cells, count) {
 class Reader {
   // [limits]: the tree's depth and node limits (the screen's, or the player panel's: Task 8i) and whether it is read for the
   // panel (its notDrawn widgets dropped).
-  constructor(lang, widgets, log, allowSeries = true, settings = null, { maxDepth = LIMITS.maxDepth, maxNodes = LIMITS.maxNodes, inPanel = false } = {}) {
+  constructor(lang, widgets, log, allowSeries = true, settings = null, { maxDepth = LIMITS.maxDepth, maxNodes = LIMITS.maxNodes, inPanel = false, apiVersion = contract.manifest.screen.goUseTheme.apiVersion } = {}) {
+    this.apiVersion = apiVersion;
     this.maxDepth = maxDepth;
     this.maxNodes = maxNodes;
     this.inPanel = inPanel;
@@ -2521,6 +2522,18 @@ class Reader {
       const g = liveChannelGoOf(v, (why) => this.log(`${where} go.liveChannel ${why}, dropped`));
       return g === null ? null : { liveChannel: g };
     }
+    if (k === "useTheme") {
+      const min = contract.manifest.screen.goUseTheme.apiVersion;
+      if (this.apiVersion < min) return bad(`needs apiVersion ${min}`);
+      const g = useThemeGoOf(v, (why) => this.log(`${where} go.useTheme ${why}, dropped`));
+      return g === null ? null : { useTheme: g };
+    }
+    if (k === "setExperience") {
+      const min = contract.manifest.screen.goSetExperience.apiVersion;
+      if (this.apiVersion < min) return bad(`needs apiVersion ${min}`);
+      const g = setExperienceGoOf(v, (why) => this.log(`${where} go.setExperience ${why}, dropped`));
+      return g === null ? null : { setExperience: g };
+    }
     if (k === "section" || k === "categories" || k === "close" || k === "syncProvider") return v === true ? { [k]: true } : bad("must be true");
     if (!isObj(v)) return bad("is not an object");
     if (k === "search") {
@@ -2660,14 +2673,14 @@ function node(type, fields, common) {
  * the widget names this Kino draws (default: all of them). [settings]: the manifest's `settings` (a field's `bind` and a
  * `settings` node's `keys` are checked against them; absent: only their shape is checked).
  */
-export function checkScreenTree(value, lang = "es", widgets = WIDGETS, { allowSeries = true, settings } = {}) {
+export function checkScreenTree(value, lang = "es", widgets = WIDGETS, { allowSeries = true, settings, apiVersion } = {}) {
   const dropped = [];
   const v = wire(value);
   let every = [];
   let layout = SCREEN_LAYOUT.values[0];
   const tree = cappedLog((line) => dropped.push(line), "screen", (capped) => {
     if (!isObj(v)) { capped("screen: the tree is not a JSON object"); return null; }
-    const root = new Reader(lang, new Set(widgets ?? WIDGETS), capped, allowSeries, settingsModel(settings)).node(v, 1);
+    const root = new Reader(lang, new Set(widgets ?? WIDGETS), capped, allowSeries, settingsModel(settings), { apiVersion }).node(v, 1);
     // The root's timers, read after the tree (PluginScreenOutput.frame): their lines come last; then its layout (Task 14).
     if (root !== null) {
       every = timersOf(opt(v, "every"), capped);
@@ -2748,13 +2761,13 @@ export { EMPTY_ANSWER };
  * The app's `PluginScreenOutput.answer`: `{ answer, dropped }`. `null` is the empty answer, anything but an object is null
  * (logged). [settings]: the manifest's `settings`, which the answer's `config` may write (absent: every key dropped).
  */
-export function checkScreenAnswer(value, lang = "es", { allowSeries = true, settings, timer = false, dismiss = false } = {}) {
+export function checkScreenAnswer(value, lang = "es", { allowSeries = true, settings, timer = false, dismiss = false, apiVersion } = {}) {
   const dropped = [];
   const v = wire(value);
   let answer = cappedLog((line) => dropped.push(line), "screen", (capped) => {
     if (v === null) return { ...EMPTY_ANSWER };
     if (!isObj(v)) { capped("screen: the answer is not a JSON object"); return null; }
-    return answerOf(v, lang, capped, allowSeries, settingsModel(settings));
+    return answerOf(v, lang, capped, allowSeries, settingsModel(settings), apiVersion);
   });
   // A timer's tick (PluginScreenOutput.forTimer): its pop-ups, focus, go and route are dropped, each said.
   if (timer && answer !== null) answer = forTimer(answer, (line) => dropped.push(line));
@@ -2816,9 +2829,9 @@ function configOf(raw, settings, log) {
   return any ? out : null;
 }
 
-function answerOf(o, lang, log, allowSeries = true, settings = null) {
+function answerOf(o, lang, log, allowSeries = true, settings = null, apiVersion = undefined) {
   for (const k of Object.keys(o).sort()) if (!ANSWER_KEYS.includes(k)) log(`screen: answer.${k.slice(0, 40)} is not an answer field, ignored`);
-  const reader = new Reader(lang, new Set(WIDGETS), log, allowSeries, settings);
+  const reader = new Reader(lang, new Set(WIDGETS), log, allowSeries, settings, { apiVersion });
   let state = null;
   const s = opt(o, "state");
   if (absent(s)) state = null;
@@ -3004,6 +3017,9 @@ export function checkPanelScreenAnswer(value, lang = "es", { allowSeries = true,
     const model = settingsModel(settings);
     // Its `ui` operations are read with the rest, as every screen answer's (Task 7i-2).
     const a = answerOf(kept, lang, capped, allowSeries, model);
+    // PanelSession.go: a theme changes only from the plugin's own full screen.
+    if (a.go?.useTheme) { capped("panel: go.useTheme is honoured only on the plugin's own screen, dropped"); a.go = null; }
+    if (a.go?.setExperience) { capped("panel: go.setExperience is honoured only on the plugin's own screen, dropped"); a.go = null; }
     let panel = null;
     const p = opt(v, "panel");
     if (isObj(p)) panel = p;
@@ -3601,22 +3617,22 @@ export function checkScreenForm(tree, formKey) {
 /**
  * What the kit hands `screen(context)`: `{ state, route, device, size, lang }`, the shapes the app's PluginScreenSession
  * sends: `route` is `{ name, params }` (`"main"` at the root), `size` is `{ widthClass, heightClass, orientation }`, `lang`
- * is `"es"` or `"en"`. [over] is merged over it key by key. State is Kino's: `inputs` holds the value of every input on
+ * is `"es"` or `"en"`, `activeTheme` the id of this plugin's theme active now, else null. [over] is merged over it key by key. State is Kino's: `inputs` holds the value of every input on
  * screen (what the person or the plugin set, else the value the tree shows: the app fills those in per call and never
  * stores them; the kit has no tree yet, so pass them with --state) and `ui` the local operations' results.
  */
 export function fakeScreenContext(over = {}) {
   return {
     state: { inputs: {}, ui: { hidden: {}, enabled: {}, open: {} } }, route: { name: "main", params: {} }, device: "phone",
-    size: { widthClass: "compact", heightClass: "medium", orientation: "portrait" }, lang: "es", ...over,
+    size: { widthClass: "compact", heightClass: "medium", orientation: "portrait" }, lang: "es", activeTheme: null, ...over,
   };
 }
 
-/** The `screenEvent` argument: `{ name, arg, value, state, route, device, lang }` (arg and value only when given), as the app sends it. */
-export function fakeScreenEvent(name, { arg, value, state, route, device, lang } = {}) {
+/** The `screenEvent` argument: `{ name, arg, value, state, route, device, lang, activeTheme }` (arg and value only when given), as the app sends it. */
+export function fakeScreenEvent(name, { arg, value, state, route, device, lang, activeTheme } = {}) {
   const base = fakeScreenContext();
   return {
     name, ...(arg !== undefined ? { arg } : {}), ...(value !== undefined ? { value } : {}),
-    state: state ?? base.state, route: route ?? base.route, device: device ?? base.device, lang: lang ?? base.lang,
+    state: state ?? base.state, route: route ?? base.route, device: device ?? base.device, lang: lang ?? base.lang, activeTheme: activeTheme ?? base.activeTheme,
   };
 }

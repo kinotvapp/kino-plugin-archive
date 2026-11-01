@@ -488,6 +488,8 @@ const GO_FIELDS = {
   copy: `\`{ copy: { ${S.goCopy.fields.join(", ")} } }\``,
   liveChannel: `\`{ liveChannel: { ${S.goLiveChannel.fields.join(", ")} } }\``,
   syncProvider: "`{ syncProvider: true }`",
+  useTheme: `\`{ useTheme: { ${S.goUseTheme.fields.join(", ")} } }\``,
+  setExperience: `\`{ setExperience: ${S.goSetExperience.words.map((w) => `"${w}"`).join(" | ")} }\``,
 };
 const GO_OPENS = {
   title: "this plugin's title page",
@@ -503,8 +505,12 @@ const GO_OPENS = {
   copy: `Kino copies \`text\` (at most ${S.goCopy.maxTextChars} characters, ${S.goCopy.maxLines} lines) and shows its own «Copiado» toast; a TV cannot`,
   liveChannel: "tunes the player to an En vivo provider's channel (only for a plugin whose player tab joins live channels)",
   syncProvider: "Kino's sync-provider settings (Ajustes ▸ Conectar ▸ Proveedor), where the person picks this plugin (only for a plugin with `syncProvider`)",
+  useTheme: "turns on one of this plugin's own `appThemes` as Apariencia does, or back to Kino's theme with `theme: null`; Kino shows its own toast",
+  setExperience: "asks for the light or the full experience of the whole app; Kino asks the person first and changes nothing without their yes",
 };
-const goFrom = (g) => g === "titleByIds" || g === "url" || g === "copy" || g === "liveChannel" || g === "syncProvider"
+const goFrom = (g) => g === "setExperience" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen, from apiVersion ${S.goSetExperience.apiVersion}`
+  : g === "useTheme" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen, from apiVersion ${S.goUseTheme.apiVersion}`
+  : g === "titleByIds" || g === "url" || g === "copy" || g === "liveChannel" || g === "syncProvider"
   ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")}`
   : g === "screen" ? "a tap or an answer, `open`'s included" : "a tap or an event's answer (never `open`'s, a timer's or an `onClose`'s)";
 

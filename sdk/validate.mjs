@@ -21,6 +21,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { checkOutput, checkSettingsOutput, contract, englishCoverage, fetchAnyHost, isStandaloneSet, kb, maskSetPasswords, statusHide, requiredExports, validateManifest, validateManifestWithoutEnhancements } from "./contract.mjs";
 import { resolvePalette } from "./palette.mjs";
+import { resolveAppTheme } from "./appthemes.mjs";
 import { decodeCipherKey } from "./seal.mjs";
 import { createKino, signingLane } from "./kino-shim.mjs";
 import { loadPlugin, missingGlobalLines, scanMissingGlobals } from "./sandbox.mjs";
@@ -90,6 +91,8 @@ export function consentLines(m, { authorFingerprint = null } = {}) {
   if (m.capabilities.includes(contract.kinoShared.capability)) line(contract.kinoShared.consentLine.es);
   // apiVersion 7 "segments": a plain line, not red (it only learns which title plays): PluginConsent / Segments.CONSENT_LINE.
   if (m.capabilities.includes(contract.segments.capability)) line(contract.segments.consentLine);
+  // apiVersion 19 "lyrics": a plain line, not red (it learns the title and artist of what plays): PluginConsent / Lyrics consent text.
+  if (m.capabilities.includes(contract.lyrics.capability)) line(contract.lyrics.consentLine);
   if (m.secrets && Object.keys(m.secrets).length) line("Usa datos sellados por su autor");
   if (m.telemetry) line(m.telemetry === contract.manifest.telemetry.verbose.value ? contract.manifest.telemetry.verbose.consentLine : contract.manifest.telemetry.consentLine);
   if (authorFingerprint) line(contract.manifest.signature.consentLine);
@@ -414,6 +417,12 @@ export async function validate(dirArg, { run = null, args = [], config = {}, rep
   // "debug": true only turns every person's "Modo debug" switch on by default (Kino 0.9.50): the author is told what that means.
   if (m.debug) notes.push(contract.manifest.debug.defaultOnNote);
   if (m.theme && Object.keys(m.theme).length) for (const w of resolvePalette(m.theme).warnings) notes.push(w);
+  // appThemes: what each theme drops on a phone and on a TV, so the author sees it before publishing.
+  for (const t of m.appThemes ?? []) {
+    for (const [form, tv] of [["phone", false], ["tv", true]]) {
+      for (const w of resolveAppTheme(t, { tv }).warnings) notes.push(`appThemes ${t.id} (${form}): ${w}`);
+    }
+  }
   // Accepted from Kino 0.9.45 on; older apps still refuse the install, so the author is told. They
   // counted the raw entries (duplicates too), so this does as well.
   const legacy = contract.manifest.legacyMaxHosts;

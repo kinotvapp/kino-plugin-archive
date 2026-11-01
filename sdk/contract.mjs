@@ -4,6 +4,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseAppThemes } from "./appthemes.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -230,6 +231,31 @@ export function copyGoOf(v, bad) {
     sensitive = v.sensitive;
   }
   return { text, ...(label !== null ? { label } : {}), ...(sensitive ? { sensitive: true } : {}) };
+}
+
+/**
+ * PluginScreenOutput.useThemeGoOf (apiVersion 18): a `go.useTheme`'s value, exactly `theme`, a theme id or null for Kino's own
+ * theme. Or null with [bad] told the first reason. Returns `{ theme }`.
+ */
+export function useThemeGoOf(v, bad) {
+  const C = contract.manifest.screen.goUseTheme;
+  if (v === null || typeof v !== "object" || Array.isArray(v)) { bad("is not an object"); return null; }
+  if (Object.keys(v).some((k) => !C.fields.includes(k))) { bad(`takes only ${C.fields.join(", ")}`); return null; }
+  const badTheme = "theme must be a theme id or null";
+  if (v.theme === undefined) { bad(badTheme); return null; }
+  if (v.theme === null) return { theme: null };
+  if (typeof v.theme !== "string" || !new RegExp(contract.manifest.appThemes.idPattern).test(v.theme)) { bad(badTheme); return null; }
+  return { theme: v.theme };
+}
+
+/**
+ * PluginScreenOutput.setExperienceGoOf (apiVersion 18): a `go.setExperience`'s value, the word "light" or "full". Or null with
+ * [bad] told the reason. Returns `{ experience }`.
+ */
+export function setExperienceGoOf(v, bad) {
+  const words = contract.manifest.screen.goSetExperience.words;
+  if (typeof v !== "string" || !words.includes(v)) { bad(`must be ${words.map((w) => `"${w}"`).join(" or ")}`); return null; }
+  return { experience: v };
 }
 
 /**
@@ -571,8 +597,10 @@ function validateManifestObject(o, { knownPermissions = contract.permissions } =
   if (wildcardInsecure !== undefined) return bad("hosts", 'A host with "insecureHttp" can\'t have a wildcard ("*.")');
   const hosts = hostEntries.map((e) => e.host);
   const insecureHosts = [...new Set(hostEntries.filter((e) => e.insecure).map((e) => e.host))];
-  if (!Array.isArray(o.capabilities)) return bad("capabilities", 'The "capabilities" field is missing');
-  const caps = [...new Set(o.capabilities.map((c) => (typeof c === "string" ? c : "")))];
+  // apiVersion 18: a plugin that only offers app themes plays nothing and may declare no capabilities at all.
+  const themesOnly = o.apiVersion >= m.appThemes.apiVersion && Array.isArray(o.appThemes) && o.appThemes.length > 0;
+  if (!Array.isArray(o.capabilities) && !themesOnly) return bad("capabilities", 'The "capabilities" field is missing');
+  const caps = [...new Set((Array.isArray(o.capabilities) ? o.capabilities : []).map((c) => (typeof c === "string" ? c : "")))];
   const unknownCap = caps.find((c) => !contract.capabilities.names.includes(c));
   if (unknownCap !== undefined) return bad("capabilities", `Unknown capability: "${unknownCap}"`);
   const tooNewCap = caps.find((c) => (contract.capabilities.apiVersions[c] ?? 1) > o.apiVersion);
@@ -589,7 +617,7 @@ function validateManifestObject(o, { knownPermissions = contract.permissions } =
   } else {
     // Capabilities that play nothing, declared without any other (a subtitle provider, a tracker, or both), maybe with the
     // runtime room they use (apiVersion 13 standaloneSupplements): neither `required` nor `atLeastOneOf` applies.
-    const standalone = isStandaloneSet(caps);
+    const standalone = isStandaloneSet(caps) || (themesOnly && caps.length === 0);
     // Task 8t (ManifestParser): a standalone set may hold playerControl only beside a panel object.
     if (standalone && caps.includes("playerControl") && !(o.apiVersion >= m.panel.apiVersion && o.panel !== null && typeof o.panel === "object" && !Array.isArray(o.panel))) {
       return bad("capabilities", contract.capabilities.playerControlNeedsPanelMessage);
@@ -806,6 +834,13 @@ function validateManifestObject(o, { knownPermissions = contract.permissions } =
       theme[k] = v.toUpperCase();
     }
   }
+  // apiVersion 18: the app themes. Format only; resolveAppTheme applies the guardrails.
+  let appThemes = [];
+  if (o.appThemes !== undefined && o.apiVersion >= m.appThemes.apiVersion) {
+    const parsed = parseAppThemes(o.appThemes);
+    if (!parsed.ok) return bad("appThemes", parsed.message);
+    appThemes = parsed.themes;
+  }
   // Below its apiVersion the field is unknown and ignored like any other (v1/v2/v3 stay as they were).
   let secrets = {};
   const secretKeyEncodings = {};
@@ -845,7 +880,8 @@ function validateManifestObject(o, { knownPermissions = contract.permissions } =
   if (o.settings !== undefined && !Array.isArray(o.settings)) return bad("settings", 'The "settings" field must be a list');
   const settingsError = validateSettings(o.settings || [], o.apiVersion);
   if (settingsError) return bad("settings", settingsError);
-  if (hosts.length === 0 && !(o.settings || []).some((x) => x.type === "url" || (x.type === "list" && Array.isArray(x.fields) && x.fields.some((f) => f.type === "url")))) {
+  // A themes-only plugin (no capabilities) reaches nothing: it needs no host and no url setting.
+  if (hosts.length === 0 && !(themesOnly && caps.every((c) => c === "screen") && (o.settings || []).length === 0) && !(o.settings || []).some((x) => x.type === "url" || (x.type === "list" && Array.isArray(x.fields) && x.fields.some((f) => f.type === "url")))) {
     return bad("hosts", 'The "hosts" field can only be empty if the plugin has a setting of type "url"');
   }
   // apiVersion 11, `externalResolver`: the app a plugin hands its `external` answers to and the ways to get it (ManifestParser.parseExternalResolver).
@@ -890,7 +926,7 @@ function validateManifestObject(o, { knownPermissions = contract.permissions } =
   }
   // Below apiVersion 9 the English keys are unknown: dropped here, so nothing downstream (the form, englishCoverage) sees them.
   const settingsOut = o.apiVersion >= contract.settings.english.apiVersion ? o.settings || [] : withoutEnglish(o.settings || []);
-  const out = { ...o, hosts: [...new Set(hosts)], capabilities: caps, permissions: o.permissions || [], settings: settingsOut, insecureHosts, liveStreamHostsAny, streamHostsAny, fetchHostsAny, discoverable, categories, debug, telemetry, browser, browserPages, section, panel, screen, theme, secrets, secretKeyEncodings, catalogOnly };
+  const out = { ...o, hosts: [...new Set(hosts)], capabilities: caps, permissions: o.permissions || [], settings: settingsOut, insecureHosts, liveStreamHostsAny, streamHostsAny, fetchHostsAny, discoverable, categories, debug, telemetry, browser, browserPages, section, panel, screen, theme, appThemes, secrets, secretKeyEncodings, catalogOnly };
   // Task 8q: the parsed jobs (labels scrubbed, options sorted); none below apiVersion 14 or without `schedule`.
   if (o.apiVersion >= contract.kinoJobs.apiVersion) out.jobs = jobs; else delete out.jobs;
   // apiVersion 15: the parsed `pluginStore` block ({ mode, name }); none without the capability.
@@ -1942,6 +1978,75 @@ export function segmentsAnswer(value, durationMs, drop = () => {}) {
     kept.push(seg);
   }
   return kept;
+}
+
+/** The lyrics answer's control and bidirectional characters, stripped like the app's Lyrics.clean (newlines stay, a tab is a space). */
+const LYRICS_BIDI = new Set(["\u200E", "\u200F", "\u202A", "\u202B", "\u202C", "\u202D", "\u202E", "\u2066", "\u2067", "\u2068", "\u2069"]);
+function lyricsClean(s) {
+  let out = "";
+  for (const c of s.replace(/\r\n?|\r/g, "\n")) {
+    if (c === "\n") out += c;
+    else if (c === "\t") out += " ";
+    else if (/[\x00-\x1F\x7F-\x9F]/.test(c) || LYRICS_BIDI.has(c)) continue;
+    else out += c;
+  }
+  return out;
+}
+
+/**
+ * A `lyrics()` answer as the app's Lyrics.parse keeps it: `{ synced, plain, label, instrumental, matchDurationMs }` or null for
+ * "nothing for this song". Each bad synced line is dropped on its own; lines past maxSyncedLines are not read, long lines and
+ * texts are cut; an answer over maxAnswerChars is dropped whole. [value] is the already parsed JSON.
+ */
+export function lyricsAnswer(value, drop = () => {}) {
+  const c = contract.lyrics;
+  if (value === null || value === undefined) return null;
+  if (JSON.stringify(value).length > c.maxAnswerChars) { drop(`lyrics: the answer is over ${c.maxAnswerChars} characters`); return null; }
+  if (typeof value !== "object" || Array.isArray(value)) {
+    if (!(Array.isArray(value) && value.length === 0)) drop("lyrics: the answer is not an object");
+    return null;
+  }
+  const whole = (v) => typeof v === "number" && Number.isInteger(v) && Math.abs(v) <= 1e15;
+  const lines = [];
+  if (Array.isArray(value.synced)) {
+    let last = -1;
+    for (const [i, e] of value.synced.entries()) {
+      if (lines.length === c.maxSyncedLines) { drop(`lyrics: only the first ${c.maxSyncedLines} lines are kept`); break; }
+      if (e === null || typeof e !== "object" || Array.isArray(e)) { drop(`lyrics: line ${i} is not an object`); continue; }
+      if (!whole(e.ms) || e.ms < 0) { drop(`lyrics: line ${i}: ms must be a whole number of at least 0`); continue; }
+      const text = lyricsClean(typeof e.text === "string" ? e.text : "").replace(/\n/g, " ").trim().slice(0, c.maxLineChars).trim();
+      if (!text) { drop(`lyrics: line ${i}: the text is empty`); continue; }
+      if (e.ms < last) { drop(`lyrics: line ${i} is out of order`); continue; }
+      lines.push({ ms: e.ms, text });
+      last = e.ms;
+    }
+  }
+  const plain = typeof value.plain === "string" ? lyricsClean(value.plain).trim().slice(0, c.maxPlainChars).trim() || null : null;
+  const instrumental = value.instrumental === true;
+  if (!lines.length && plain === null && !instrumental) return null;
+  const label = typeof value.label === "string" ? lyricsClean(value.label).replace(/\n/g, " ").trim().slice(0, 60).trim() || null : null;
+  const match = whole(value.matchDurationMs) && value.matchDurationMs > 0 ? value.matchDurationMs : null;
+  return { synced: lines, plain, label, instrumental, matchDurationMs: match };
+}
+
+/** What Kino draws for [found] on a track of [durationMs] (null unknown): "synced", "plain", "instrumental" or null (Lyrics.shown). */
+export function lyricsShown(found, durationMs) {
+  const c = contract.lyrics;
+  const hasSynced = found.synced.length > 0;
+  const hasPlain = found.plain !== null;
+  if (!hasSynced && !hasPlain) return found.instrumental ? "instrumental" : null;
+  const duration = Number.isInteger(durationMs) && durationMs > 0 ? durationMs : null;
+  if (hasSynced) {
+    if (duration === null) {
+      if (!hasPlain) return "synced";
+    } else {
+      const ok = found.matchDurationMs !== null
+        ? Math.abs(found.matchDurationMs - duration) <= c.plausibleSlackMs
+        : found.synced[found.synced.length - 1].ms <= duration + c.endSlackMs;
+      if (ok) return "synced";
+    }
+  }
+  return hasPlain ? "plain" : null;
 }
 
 /** What the app's skip button takes from [segments] (Segments.skipTimes): the opening and the ending's start, or null. */
@@ -3151,6 +3256,11 @@ export function checkOutput(fn, value, manifest, servers = [], { liveChannel = f
     case "track": return { value: parsed, drops };
     // apiVersion 7's segments: what the app's Segments.parse keeps, judged against the query's durationMs.
     case "segments": return { value: segmentsAnswer(parsed, segmentsQuery?.durationMs, drop), drops };
+    // apiVersion 19's lyrics: what the app's Lyrics.parse keeps, and what it would draw for the query's durationMs.
+    case "lyrics": {
+      const found = lyricsAnswer(parsed, drop);
+      return { value: found, drops, shown: found ? lyricsShown(found, segmentsQuery?.durationMs) : null };
+    }
     // apiVersion 6's meta: what the app's TitleMetaOutput.parse keeps (null = no answer), with a verdict per field.
     case "meta": {
       const r = metaAnswer(parsed, servers);

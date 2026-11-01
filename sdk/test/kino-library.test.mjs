@@ -176,7 +176,7 @@ const MONTH = {
 
 test("the contract names stats: its apiVersion, month rule, cap and fields", () => {
   assert.equal(S.apiVersion, 17);
-  assert.equal(contract.apiVersion, 17);
+  assert.equal(contract.apiVersion, 19);
   assert.equal(S.topMax, 20);
   assert.ok(L.functions.includes("stats"));
   assert.deepEqual(S.bands, ["morning", "afternoon", "night", "lateNight"]);

@@ -710,14 +710,14 @@ test("run.mjs screen --raw prints the plugin's answer untouched", () => {
 
 test("fakeScreenContext: the shape screen(context) gets, overrides merged", () => {
   const c = fakeScreenContext({ device: "tv" });
-  assert.deepEqual(Object.keys(c).sort(), ["device", "lang", "route", "size", "state"]);
+  assert.deepEqual(Object.keys(c).sort(), ["activeTheme", "device", "lang", "route", "size", "state"]);
   assert.equal(c.device, "tv");
   assert.deepEqual(c.state.inputs, {});
   // The shapes PluginScreenSession sends (PluginScreenSessionTest pins the app side).
   assert.deepEqual(c.route, { name: "main", params: {} });
   assert.deepEqual(c.size, { widthClass: "compact", heightClass: "medium", orientation: "portrait" });
   assert.equal(c.lang, "es");
-  assert.deepEqual(Object.keys(fakeScreenEvent("open")).sort(), ["device", "lang", "name", "route", "state"]);
+  assert.deepEqual(Object.keys(fakeScreenEvent("open")).sort(), ["activeTheme", "device", "lang", "name", "route", "state"]);
 });
 
 // ---------- kino.screen ----------
