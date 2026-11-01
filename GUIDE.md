@@ -1125,8 +1125,7 @@ between versions of the same song.
 ```js
 {
   synced?: [{ ms: 12000, text: "First line" }, ...],   // time-synchronized
-  plain?: "First line
-Second line",                   // the text only
+  plain?: "First line\nSecond line",                  // the text only
   label?: "LRCLIB",                                    // 60 characters, names the source
   instrumental?: true,                                 // the song has no lyrics
   matchDurationMs?: 214000                             // the length of the entry you matched
