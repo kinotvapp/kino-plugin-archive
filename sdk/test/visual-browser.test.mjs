@@ -6,7 +6,7 @@ import { contract, validateManifest } from "../contract.mjs";
 import { consentLines } from "../validate.mjs";
 import { createKino } from "../kino-shim.mjs";
 import { kitCall, kitScreenCall } from "../kit-call.mjs";
-import { answerFor, effectiveUserAgent, formatStored, globMatches, navigationAllowed, parseOptions, selectCookies, stripWebViewMarker } from "../visual-browser.mjs";
+import { answerFor, cutForSettings, effectiveUserAgent, formatStored, globMatches, navigationAllowed, parseOptions, selectCookies, stripWebViewMarker } from "../visual-browser.mjs";
 
 const hosts = ["accounts.google.com", "music.youtube.com", "*.example.org"];
 const secrets = ["cookieHeader"];
@@ -55,7 +55,7 @@ test("visualBrowser: title, doneWhen and collect", () => {
   assert.match(bad({ url: "https://music.youtube.com/", collect: { cookies: Array.from({ length: 33 }, (_, i) => `c${i}`) } }), /more than/);
   const c = ok({ url: "https://music.youtube.com/", collect: { cookies: ["SID", "SID", "HSID"], html: true, finalUrl: true, storeAs: { setting: "cookieHeader", format: "json" } } });
   assert.deepEqual(c.collectCookies, ["SID", "HSID"]);
-  assert.deepEqual(c.storeAs, { setting: "cookieHeader", format: "json", thenEvent: null });
+  assert.deepEqual(c.storeAs, { setting: "cookieHeader", format: "json", thenEvent: null, spill: [] });
   assert.match(bad({ url: "https://music.youtube.com/", collect: { cookies: ["SID"], storeAs: { setting: "other", format: "header" } } }), /password setting/);
   assert.match(bad({ url: "https://music.youtube.com/", collect: { cookies: ["SID"], storeAs: { setting: "cookieHeader", format: "csv" } } }), /format/);
   assert.match(bad({ url: "https://music.youtube.com/", collect: { storeAs: { setting: "cookieHeader", format: "header" } } }), /needs collect.cookies/);
@@ -110,10 +110,10 @@ test("visualBrowser: cookies are selected by name, capped and never cut in half"
 test("visualBrowser: with storeAs the answer carries names, never values", () => {
   const o = ok({ url: "https://accounts.google.com/x", collect: { cookies: ["SID", "HSID", "GONE"], storeAs: { setting: "cookieHeader", format: "header" } } });
   const stored = [];
-  const a = answerFor(o, { status: "done", cookies: { SID: "secret-1", HSID: "secret-2", EXTRA: "x" } }, (s, t) => stored.push([s, t]), { cookieHeader: 500 });
+  const a = answerFor(o, { status: "done", cookies: { SID: "secret-1", HSID: "secret-2", EXTRA: "x" } }, (p, t) => stored.push(p), { cookieHeader: 500 });
   assert.deepEqual(a, { status: "done", stored: true, storedNames: ["SID", "HSID"] });
   assert.ok(!JSON.stringify(a).includes("secret"));
-  assert.deepEqual(stored, [["cookieHeader", "SID=secret-1; HSID=secret-2"]]);
+  assert.deepEqual(stored, [{ cookieHeader: "SID=secret-1; HSID=secret-2" }]);
   assert.deepEqual(answerFor(o, { status: "done", cookies: {} }, () => assert.fail("nothing to store"), { cookieHeader: 500 }), { status: "done", stored: false, storedNames: [] });
   assert.equal(answerFor(o, { status: "done", cookies: { SID: "x".repeat(100) } }, () => assert.fail("does not fit"), { cookieHeader: 50 }).error.code, "store_failed");
   // Closing is cancelling: no cookie leaves.
@@ -217,4 +217,72 @@ test("visualBrowser: thenEvent is told to the open screen after the write, names
   await kitCall.run("action", () => kino.visualBrowser.open(req));
   await new Promise((r) => setImmediate(r));
   assert.equal(told.length, 1);
+});
+
+// ---- storeAs.spill ----
+const spillSecrets = ["cookieA", "cookieB", "cookieC", "cookieD", "other"];
+const spillReq = (spill) => ({ url: "https://music.youtube.com/", collect: { cookies: ["SID", "HSID"], storeAs: { setting: "cookieA", format: "header", spill } } });
+const spillOpts = (spill) => parseOptions(spillReq(spill), hosts, spillSecrets);
+const spillMax = { cookieA: 500, cookieB: 500, cookieC: 500, cookieD: 500, other: 50 };
+
+test("visualBrowser: spill is 1 to 3 distinct declared password settings other than setting", () => {
+  assert.deepEqual(spillOpts(["cookieB", "cookieC", "cookieD"]).options.storeAs.spill, ["cookieB", "cookieC", "cookieD"]);
+  assert.deepEqual(spillOpts(undefined).options.storeAs.spill, []);
+  assert.deepEqual(spillOpts(null).options.storeAs.spill, []);
+  assert.equal(contract.visualBrowser.maxSpill, 3);
+  for (const b of [[], ["cookieB", "cookieC", "cookieD", "other"], ["cookieB", "cookieB"], ["cookieA"], ["nope"], [5], "cookieB", {}]) {
+    assert.match(spillOpts(b).error ?? "", /collect\.storeAs\.spill/, JSON.stringify(b));
+  }
+});
+
+test("visualBrowser: the text is cut at each limit and the pieces join back without a separator", () => {
+  const text = "SID=" + "a".repeat(1200);
+  const pieces = cutForSettings(text, [500, 500, 500, 500]);
+  assert.deepEqual(pieces.map((p) => p.length), [500, 500, 204, 0]);
+  assert.equal(pieces.join(""), text);
+  assert.deepEqual(cutForSettings("abcde", [3, 2, 5]), ["abc", "de", ""]);
+  assert.notEqual(cutForSettings("x".repeat(1000), [500, 500]), null);
+  assert.equal(cutForSettings("x".repeat(1001), [500, 500]), null);
+  const pair = "a".repeat(499) + "\u{1F600}" + "b";
+  const cut = cutForSettings(pair, [500, 10]);
+  assert.equal(cut[0].length, 499);
+  assert.equal(cut.join(""), pair);
+});
+
+test("visualBrowser: spill stores a long list in ONE write, all or nothing, and never exposes a value", () => {
+  const o = spillOpts(["cookieB", "cookieC"]).options;
+  const stored = [];
+  const cookies = { SID: "s".repeat(600), HSID: "h".repeat(300) };
+  const a = answerFor(o, { status: "done", cookies }, (p) => stored.push(p), spillMax);
+  assert.deepEqual(a, { status: "done", stored: true, storedNames: ["SID", "HSID"] });
+  assert.ok(!JSON.stringify(a).includes("sss") && !JSON.stringify(a).includes("hhh"));
+  assert.equal(stored.length, 1);
+  assert.deepEqual(Object.keys(stored[0]), ["cookieA", "cookieB", "cookieC"]);
+  assert.equal(Object.values(stored[0]).join(""), formatStored(cookies, "header"));
+  assert.ok(Object.values(stored[0]).every((p) => p.length <= 500));
+  assert.equal(stored[0].cookieC, "");
+  // Too long for (1 + spill) x 500: store_failed and nothing is written.
+  const tooLong = spillOpts(["cookieB"]).options;
+  const e = answerFor(tooLong, { status: "done", cookies: { SID: "s".repeat(1100) } }, () => assert.fail("does not fit"), spillMax);
+  assert.equal(e.error.code, "store_failed");
+  assert.ok(!JSON.stringify(e).includes("ssss"));
+});
+
+test("visualBrowser: in the kit a spilled list lands in kino.config, and an old longer value does not linger", async () => {
+  const m = manifest({ settings: spillSecrets.map((key) => ({ key, label: key, type: "password" })) });
+  const results = [
+    { status: "done", cookies: { SID: "s".repeat(700) } },
+    { status: "done", cookies: { SID: "short" } },
+  ];
+  const { kino } = createKino(m, { visualBrowser: async () => results.shift() });
+  const req = spillReq(["cookieB", "cookieC", "cookieD"]);
+  const joined = () => ["cookieA", "cookieB", "cookieC", "cookieD"].map((k) => kino.config.get(k) ?? "").join("");
+  await kitCall.run("action", () => kino.visualBrowser.open(req));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(joined(), "SID=" + "s".repeat(700));
+  assert.equal(kino.config.get("cookieB").length, 204);
+  await kitCall.run("action", () => kino.visualBrowser.open(req));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(joined(), "SID=short");
+  assert.equal(kino.config.get("cookieB") ?? "", "");
 });

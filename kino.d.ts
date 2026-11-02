@@ -2559,6 +2559,13 @@ interface KinoVisualBrowserOptions {
      * `name=value; name2=value2` (`"header"`) or a JSON object (`"json"`), once your call has ended; you only get `stored` and
      * `storedNames`, never a value. Needs `cookies`. The text must fit the setting (500 characters for a `password`): else `"store_failed"`.
      *
+     * `spill`: a longer cookie list (YouTube Music's needs about 850 characters) goes into up to 3 MORE of your declared `password`
+     * settings (distinct, none equal to `setting`, else `"bad_args"`). Kino cuts the text at 500 characters and fills `setting`, then
+     * each `spill` setting in order (a header text may be cut inside a cookie); settings the text does not reach are emptied, but only
+     * if they hold a value. All of them are saved in ONE save, all or nothing; if `(1 + spill.length) x 500` cannot hold the text:
+     * `"store_failed"` and nothing is stored. To read it back, concatenate the settings' values in that order WITHOUT a separator:
+     * `[kino.config.cookieA, kino.config.cookieB, ...].join("")`.
+     *
      * `thenEvent`: the name of a `screenEvent` Kino sends to THIS plugin's open screen once the setting was written (your call has
      * ended by then, so a screen cannot read the new account from the call itself). Its `arg` is `{ stored: ["SID", ...] }` (cookie
      * names, never a value) and it has no `value`. Same name rules as any event (1 to 128 of `A-Z a-z 0-9 . _ ~ -`, never `"open"`,
@@ -2568,7 +2575,7 @@ interface KinoVisualBrowserOptions {
      * the person's press, not a press: like a change, its answer's `go.url`, `go.copy`, `go.titleByIds` and `go.installPlugin`,
      * `share` and `enableJob` are dropped; it may change `state`, `config` and show a toast.
      */
-    storeAs?: { setting: string; format: "header" | "json"; thenEvent?: string };
+    storeAs?: { setting: string; format: "header" | "json"; spill?: string[]; thenEvent?: string };
   };
   /**
    * `"browser"`: the window identifies itself as the phone's Chrome (one string Kino keeps up to date). Or your own string, 1 to
@@ -2577,7 +2584,12 @@ interface KinoVisualBrowserOptions {
    * the WebView's own. The sheet tells the person which one.
    */
   userAgent?: "browser" | (string & {});
-  /** At most 600,000 (10 minutes, the default); a larger value is brought down to it, a smaller one up to 5,000. */
+  /**
+   * At most 600,000 (10 minutes, the default); a larger value is brought down to it, a smaller one up to 5,000. This is the only
+   * time limit of the window: the call's own time bound (a settings action's, a panelAction's, a screenEvent's) does not run while
+   * the window is up, so a sign-in with 2-step verification can take its time. Once it closes the call has at least 10 seconds
+   * to run the code that follows `open`.
+   */
   timeoutMs?: number;
 }
 

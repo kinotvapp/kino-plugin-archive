@@ -2114,9 +2114,10 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", devic
         const r = (await visualBrowser({ options: parsed.options, hosts: [...(manifest.hosts || [])] })) || { status: "closed" };
         // thenEvent: after the write, the `deliverScreenEvent(name, arg)` option of createKino stands in for the open screen's session.
         const fromScreen = currentQrOrigin().screen;
-        const answer = visualBrowserAnswer(parsed.options, r, (setting, text, then) => {
+        const answer = visualBrowserAnswer(parsed.options, r, (pieces, then) => {
+          // The app writes every piece in ONE save; a setting the text does not reach is emptied only if it holds a value.
           setImmediate(() => {
-            values[setting] = text;
+            for (const [setting, text] of Object.entries(pieces)) if (text !== "" || (values[setting] ?? "") !== "") values[setting] = text;
             if (then && typeof deliverScreenEvent === "function") deliverScreenEvent(then.event, then.arg);
           });
         }, secretMax, fromScreen);

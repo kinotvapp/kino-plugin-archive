@@ -151,7 +151,21 @@ export function parseOptions(o, declared, secretSettings) {
         if (!/^[A-Za-z0-9._~-]{1,128}$/.test(s.thenEvent) || s.thenEvent === "open") return bad('collect.storeAs.thenEvent must be a screenEvent name (1 to 128 letters, digits, . _ ~ -), not "open"');
         thenEvent = s.thenEvent;
       }
-      storeAs = { setting: s.setting, format: s.format, thenEvent };
+      let spill = [];
+      if (s.spill !== undefined && s.spill !== null) {
+        if (!Array.isArray(s.spill)) return bad("collect.storeAs.spill must be a list of setting names");
+        if (s.spill.length < 1 || s.spill.length > C.maxSpill) return bad(`collect.storeAs.spill must list 1 to ${C.maxSpill} password settings`);
+        const seen = new Set();
+        for (const n of s.spill) {
+          if (typeof n !== "string") return bad("collect.storeAs.spill must list setting names");
+          if (n.length > 64 || !secretSettings.includes(n)) return bad("collect.storeAs.spill must name password settings declared in the manifest");
+          if (n === s.setting) return bad('collect.storeAs.spill must not repeat "setting"');
+          if (seen.has(n)) return bad(`collect.storeAs.spill names "${n.slice(0, 40)}" twice`);
+          seen.add(n);
+        }
+        spill = [...s.spill];
+      }
+      storeAs = { setting: s.setting, format: s.format, thenEvent, spill };
     }
   }
   let userAgent = null;
@@ -170,8 +184,26 @@ export function parseOptions(o, declared, secretSettings) {
 }
 
 /**
+ * VisualBrowser.cutForSettings: [text] cut into one piece per entry of [limits] (each setting's longest text, in write order);
+ * the pieces after the text's end are empty, a surrogate pair is never split, and joined with no separator they are [text]
+ * again. null when the text does not fit all of them.
+ */
+export function cutForSettings(text, limits) {
+  const out = [];
+  let at = 0;
+  for (const limit of limits) {
+    let end = Math.min(text.length, at + Math.max(limit, 0));
+    if (end < text.length && end > at) { const c = text.charCodeAt(end - 1); if (c >= 0xD800 && c <= 0xDBFF) end--; }
+    out.push(text.slice(at, end));
+    at = end;
+  }
+  return at === text.length ? out : null;
+}
+
+/**
  * PluginVisualBrowser.answer: what the script gets from the window's result [r] `{ status, finalUrl?, cookies?, html? }`; with
- * storeAs, [store] is called with (setting, text, then) -- the kit's stand-in for the app writing the setting after the call;
+ * storeAs, [store] is called with (pieces, then) -- pieces is `{ setting: text }` for `setting` then each `spill` setting (empty strings
+ * for the ones the text does not reach), the kit's stand-in for the app's ONE save after the call;
  * [then] is `{ event, arg: { stored: [names] } }` when `storeAs.thenEvent` was given and [fromScreen] (the call is a plugin
  * screen's), else null -- and the values never appear in the answer.
  */
@@ -187,13 +219,17 @@ export function answerFor(options, r, store, secretMaxChars, fromScreen = false)
     if (!options.storeAs) out.cookies = cookies;
     else {
       const text = formatStored(cookies, options.storeAs.format);
+      const settings = [options.storeAs.setting, ...(options.storeAs.spill || [])];
+      const pieces = cutForSettings(text, settings.map((k) => secretMaxChars[k] ?? 0));
       if (!Object.keys(cookies).length) { out.stored = false; out.storedNames = []; }
-      else if (text.length > (secretMaxChars[options.storeAs.setting] ?? 0)) {
-        return { error: { code: "store_failed", message: `kino.visualBrowser.open: the cookies do not fit the setting "${options.storeAs.setting}" (at most ${secretMaxChars[options.storeAs.setting] ?? 0} characters); nothing was stored` } };
+      else if (!pieces) {
+        const room = settings.reduce((n, k) => n + (secretMaxChars[k] ?? 0), 0);
+        const where = settings.length === 1 ? `the setting "${settings[0]}" (at most ${room} characters)` : `the settings "${settings.join('", "')}" (at most ${room} characters together)`;
+        return { error: { code: "store_failed", message: `kino.visualBrowser.open: the cookies do not fit ${where}; nothing was stored` } };
       } else {
         // thenEvent: told to the call's own screen only (a settings action or panelAction accepts it and sends nothing); names, never values.
         const then = options.storeAs.thenEvent && fromScreen ? { event: options.storeAs.thenEvent, arg: { stored: Object.keys(cookies) } } : null;
-        store(options.storeAs.setting, text, then);
+        store(Object.fromEntries(settings.map((k, i) => [k, pieces[i]])), then);
         out.stored = true;
         out.storedNames = Object.keys(cookies);
       }

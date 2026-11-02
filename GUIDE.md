@@ -1414,6 +1414,14 @@ The rules:
   your runtime); your script gets `stored` and `storedNames` (the names, never a value). A `password` setting holds 500
   characters: a longer text answers `store_failed` and nothing is stored. Sealed secrets keep their rule: they only travel to
   your declared hosts.
+- **`storeAs.spill`** (optional, for a cookie list longer than 500 characters; YouTube Music's needs about 850): an array of 1 to 3
+  **more** `password` settings of yours (declared, distinct, none equal to `setting`; else `bad_args`). Kino cuts the formatted
+  text at the setting limit (500 characters) and the pieces are the settings' values **in order**: `setting` first, then each
+  `spill` one; a setting the text does not reach is emptied, but only if it holds a value now. All of them are saved in **one**
+  save (sync records one change), all or nothing: if `(1 + spill.length) x 500` cannot hold the text the answer is `store_failed`
+  and nothing is stored. Your script still never sees a value. **To read it back, concatenate the settings' values in that
+  order, with no separator** (with `"header"` a cut may fall inside a cookie, so never split or trim a piece):
+  `[kino.config.cookieA, kino.config.cookieB, kino.config.cookieC, kino.config.cookieD].join("")`.
 - **`storeAs.thenEvent`** (optional): a screen that opened the window cannot see the new account in the same call, because the
   write happens after the call ends. Name a `screenEvent` and Kino sends it to **your open screen** once the setting was written
   successfully, with `arg` = `{ stored: ["SID", ...] }` (cookie names only) and no `value`; handle it by reloading your data.
@@ -1428,6 +1436,10 @@ The rules:
 - **Nothing else.** No script of yours in the page, no keystroke exposed, no pop-ups, downloads, file chooser, camera,
   microphone, location or prompts. One window at a time in the whole app (`busy`), at most 10 minutes (`timeoutMs`, brought
   down to 600,000 or up to 5,000), closed when the app is left in the background for a minute or the screen goes.
+- **The window's time is its own `timeoutMs`.** While the window is up, the time bound of the call that opened it (a settings
+  action's, a `panelAction`'s, a `screenEvent`'s) does not run, so a Google sign-in with 2-step verification can take as long as
+  the person needs, up to `timeoutMs`. When the window closes your call has at least 10 seconds left to run the code after
+  `open` resolves; a hang after that is stopped as usual.
 - **`doneWhen`** closes the window by itself: `cookies` (every named cookie exists) and/or `urlMatches` (the address matches
   the pattern, where `*` is any run of characters and the rest is literal; at most 200 characters).
 - **`userAgent`**: `"browser"` is the phone's Chrome string, kept up to date by Kino; or your own, 1 to 300 printable ASCII
@@ -1469,6 +1481,24 @@ async function action(key) {
   if (r.status !== "done" || !r.stored) return { message: "No se vinculó la cuenta" };
   return { message: "Cuenta vinculada" };   // Kino saves the header once this call returns
 }
+```
+
+The full YouTube Music cookie list is longer than one `password` setting (about 850 characters), so the plugin declares four
+(`cookieA` to `cookieD`) and lets Kino spill the text over them:
+
+```js
+const r = await kino.visualBrowser.open({
+  url: "https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fmusic.youtube.com",
+  title: "YouTube Music",
+  doneWhen: { cookies: ["SAPISID"] },
+  collect: {
+    cookies: ["SID", "HSID", "SSID", "APISID", "SAPISID", "__Secure-3PSID", "__Secure-3PAPISID", "__Secure-3PSIDTS", "LOGIN_INFO", "VISITOR_INFO1_LIVE", "YSC"],
+    storeAs: { setting: "cookieA", spill: ["cookieB", "cookieC", "cookieD"], format: "header", thenEvent: "account_linked" },
+  },
+  userAgent: "browser",
+});
+// Later, in any call: the pieces are the settings' values in order, joined with NO separator.
+const cookieHeader = [kino.config.cookieA, kino.config.cookieB, kino.config.cookieC, kino.config.cookieD].join("");
 ```
 
 The same from a **screen** (a button of your tree whose `screenEvent` opens the window); `thenEvent` tells the screen when the
