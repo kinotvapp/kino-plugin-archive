@@ -1455,7 +1455,7 @@ test("kino.d.ts declares exactly what the kit's kino has", () => {
   // kino.cloudstream exists only in a plugin Kino generated from a CloudStream repository (KinoDtsTest's rule): a
   // hand-written plugin's kino, which is the kit's, never has it. kino.ws exists only with the "socket" capability.
   const declared = [...declaredKino()];
-  const conditional = declared.filter((m) => m.startsWith("kino.cloudstream.") || m.startsWith("kino.ws.") || m.startsWith("kino.catalog.") || m.startsWith("kino.qr.") || m.startsWith("kino.sync.active") || m.startsWith("kino.sync.setActive"));
+  const conditional = declared.filter((m) => m.startsWith("kino.cloudstream.") || m.startsWith("kino.ws.") || m.startsWith("kino.catalog.") || m.startsWith("kino.qr.") || m.startsWith("kino.visualBrowser.") || m.startsWith("kino.sync.active") || m.startsWith("kino.sync.setActive"));
   assert.ok(declared.some((m) => m.startsWith("kino.cloudstream.")), "kino.d.ts no longer declares kino.cloudstream");
   assert.ok(declared.some((m) => m.startsWith("kino.ws.")), "kino.d.ts no longer declares kino.ws");
   assert.deepEqual([...out].sort(), declared.filter((m) => !conditional.includes(m)).sort());
@@ -1468,6 +1468,9 @@ test("kino.d.ts declares exactly what the kit's kino has", () => {
   // And with "qrScan", exactly kino.qr.scan.
   const withQr = createKino(JSON.parse(manifest({ apiVersion: contract.maxApiVersion, capabilities: ["search", "resolve", "qrScan"] }))).kino;
   assert.deepEqual(Object.keys(withQr.qr).map((k) => `kino.qr.${k}=function`), declared.filter((m) => m.startsWith("kino.qr.")));
+  // And with the manifest's "visualBrowser": true (apiVersion 20), exactly open and available.
+  const withVisual = createKino({ ...JSON.parse(manifest({ apiVersion: contract.maxApiVersion })), visualBrowser: true }).kino;
+  assert.deepEqual(Object.keys(withVisual.visualBrowser).sort(), declared.filter((m) => m.startsWith("kino.visualBrowser.")).map((m) => m.slice(19).replace(/=.*/, "")).sort());
 });
 
 test("kino.seed in the kit answers nothing, never throws, and keeps the contract's keys and limits", () => {

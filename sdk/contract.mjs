@@ -540,6 +540,8 @@ function enhance(json, key, block, current, opts, exports) {
   if (has(block, "settings")) candidate.settings = block.settings;
   if (has(block, "panel")) candidate.panel = block.panel;
   if (has(block, "jobs")) candidate.jobs = block.jobs;
+  // apiVersion 20: the web window the person drives, offered to a Kino that has it by a plugin on an older apiVersion.
+  if (has(block, "visualBrowser")) candidate.visualBrowser = block.visualBrowser;
   candidate.apiVersion = key;
   const r = validateManifestObject(candidate, opts);
   if (!r.ok) return `${r.field}: ${r.message}`;
@@ -566,6 +568,7 @@ function enhance(json, key, block, current, opts, exports) {
     panel: has(block, "panel") ? r.manifest.panel : current.panel,
     // Task 18 (G1): the jobs of a `schedule` an enhancement added (the check at [key] makes each need the other).
     jobs: r.manifest.jobs || [],
+    visualBrowser: has(block, "visualBrowser") ? r.manifest.visualBrowser : current.visualBrowser,
     enhancementsApplied: [...current.enhancementsApplied, key],
   };
   // Task 18 (G13): the apiVersion the settings list was read at (the block's key when it carried one); kept out of the manifest's
@@ -737,6 +740,12 @@ function validateManifestObject(o, { knownPermissions = contract.permissions } =
     if (typeof o.browser !== "boolean" && o.browser !== m.browser.pagesValue) return bad("browser", m.browser.notBooleanMessage);
     browser = o.browser === true || o.browser === m.browser.pagesValue;
     browserPages = o.browser === m.browser.pagesValue && o.apiVersion >= m.browser.pageApiVersion;
+  }
+  // apiVersion 20: a web window the person drives (kino.visualBrowser). Below it, unknown and ignored.
+  let visualBrowser = false;
+  if (o.visualBrowser !== undefined && o.apiVersion >= contract.visualBrowser.apiVersion) {
+    if (typeof o.visualBrowser !== "boolean") return bad("visualBrowser", contract.visualBrowser.notBooleanMessage);
+    visualBrowser = o.visualBrowser;
   }
   // apiVersion 6: the plugin's own section entry. Below it, unknown and ignored.
   let section = null;
@@ -981,7 +990,7 @@ function validateManifestObject(o, { knownPermissions = contract.permissions } =
   }
   // Below apiVersion 9 the English keys are unknown: dropped here, so nothing downstream (the form, englishCoverage) sees them.
   const settingsOut = o.apiVersion >= contract.settings.english.apiVersion ? o.settings || [] : withoutEnglish(o.settings || []);
-  const out = { ...o, hosts: [...new Set(hosts)], capabilities: caps, permissions: o.permissions || [], settings: settingsOut, insecureHosts, liveStreamHostsAny, streamHostsAny, fetchHostsAny, discoverable, categories, debug, telemetry, browser, browserPages, section, panel, screen, theme, appThemes, secrets, secretKeyEncodings, catalogOnly };
+  const out = { ...o, hosts: [...new Set(hosts)], capabilities: caps, permissions: o.permissions || [], settings: settingsOut, insecureHosts, liveStreamHostsAny, streamHostsAny, fetchHostsAny, discoverable, categories, debug, telemetry, browser, browserPages, visualBrowser, section, panel, screen, theme, appThemes, secrets, secretKeyEncodings, catalogOnly };
   // The parsed `recommends` (deduplicated, as written); none when it declares none.
   if (recommends.length) out.recommends = recommends; else delete out.recommends;
   // Task 8q: the parsed jobs (labels scrubbed, options sorted); none below apiVersion 14 or without `schedule`.

@@ -64,7 +64,7 @@
       "name": "a field an enhancement can't carry drops the block",
       "manifest": { "enhancements": { "14": { "capabilities": ["screen"], "screen": { "label": "Inicio" }, "section": { "label": "Panel" } } } },
       "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [],
-      "dropped": ["enhancements.14: \"section\" can't be enhanced (only capabilities, screen, settings, panel and jobs)"]
+      "dropped": ["enhancements.14: \"section\" can't be enhanced (only capabilities, screen, settings, panel, jobs and visualBrowser)"]
     },
     {
       "name": "a tab in the player panel added for a Kino that knows it (Task 8k)",

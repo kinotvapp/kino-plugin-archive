@@ -94,6 +94,9 @@ export function consentLines(m, { authorFingerprint = null } = {}) {
   if (m.capabilities.includes(contract.segments.capability)) line(contract.segments.consentLine);
   // apiVersion 19 "lyrics": a plain line, not red (it learns the title and artist of what plays): PluginConsent / Lyrics consent text.
   if (m.capabilities.includes(contract.lyrics.capability)) line(contract.lyrics.consentLine);
+  // apiVersion 20 "visualBrowser": true (kino.visualBrowser): a warning line (contract.visualBrowser.consentLine, StringsEs.pluginConsent.visualBrowser);
+  // Kino also asks in its own sheet at every open.
+  if (m.visualBrowser) line(contract.visualBrowser.consentLine);
   if (m.secrets && Object.keys(m.secrets).length) line("Usa datos sellados por su autor");
   if (m.telemetry) line(m.telemetry === contract.manifest.telemetry.verbose.value ? contract.manifest.telemetry.verbose.consentLine : contract.manifest.telemetry.consentLine);
   if (authorFingerprint) line(contract.manifest.signature.consentLine);
@@ -460,6 +463,9 @@ export async function validate(dirArg, { run = null, args = [], config = {}, rep
     notes.push(m.browserPages
       ? "kino.browser.capture and kino.browser.page only work in the app (a hidden WebView); here they answer browser_unavailable, so test on a device. Kino never solves captchas: a page that asks to confirm a human is there answers blocked"
       : "kino.browser.capture only works in the app (a hidden WebView); here it answers browser_unavailable, so test resolve on a device. To read pages with kino.browser.page declare \"browser\": \"pages\"");
+  }
+  if (m.visualBrowser) {
+    notes.push("kino.visualBrowser.open needs a window the person drives, which the Node kit does not have: it answers unavailable unless a test passes createKino a `visualBrowser` option (the person). Test the real window on a phone or a TV (experimental there); `kino.visualBrowser.available` is false on a device without a WebView, so keep another way (pasting the cookies into a password setting)");
   }
   // Kino 0.9.55's English texts (labelEn, hintEn, confirmEn, section.labelEn): only said once the plugin uses them.
   const en = englishCoverage(m);

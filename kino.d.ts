@@ -1,4 +1,4 @@
-// TypeScript declarations for Kino plugins (apiVersion 1 to 20; 20 adds the plugin protocol (the manifest's provides and consumes blocks and kino.plugins.call: one plugin uses the doors another opens, through Kino); 19 adds the lyrics capability (the lyrics(query) export: a song's time-synced or plain lyrics for the music player's overlay); 18 adds the app themes (go.useTheme, go.setExperience, appThemes with price, experience and logo); 17 adds the stats operation of the library capability (kino.library.stats, a month's totals and top titles); 16 adds the coins capability (kino.coins: the person's Kino coins balance, and giving one coin for a post); 15 adds the identity capability (kino.identity.telegram: a per-plugin pseudonym of the person and the signed token that proves it), the notifications capability (kino.notifications: notices in the Home bell), library episodes (the latest season and episode of a watched series) and the pluginStore capability (the plugin is a source of plugins for Kino's store: storeSync, and storeList and storeSearch for a live store); 14 adds the screen capability (screen, screenEvent and the manifest's screen block: a full-screen canvas the plugin builds), library, playerPanelTab, playerControl, room (kino.room, a mailbox hosted on the person's device over the Internet), schedule (background jobs: the manifest's jobs and the job export) and the manifest's enhancements; 13 adds the socket capability (kino.ws, outbound WebSockets) and the byteSource capability (a stream whose bytes the plugin serves through its read export) and the storageLarge capability (a 16 MiB kino.storage for a plugin that keeps a catalog) and the catalog capability (kino.catalog, a searchable SQLite catalog of up to 100,000 items per plugin in a 64 MiB file) and the qrScan capability (kino.qr.scan, the phone's camera scanner for a QR code) and the settings form's qr setting (a QR whose text settingsStatus gives, refreshed every refreshMs) and the kino.crypto operations aesIge, modPow, gunzip, convert and aesIgeVerify and the imageSource capability (a poster, backdrop, still or hero image the plugin serves through its image export, KinoImageRef); 12 adds the syncProvider capability (syncPull, syncPush, syncStatus and the manifest's sync block); 11 adds the externalResolve capability (a stream's `external` hand-off to a resolver app, the manifest's externalResolver) and, from Kino 0.9.66, a stream's advisory `media` and its `portable` universal copy; 10 adds the playlists capability; 9 adds the player panel (panel, panelAction, playerEvent, the manifest's panel and settingsLayout), fetchHosts "any" for hand-written plugins, English setting texts and kino.meta by title; 8 adds the audio item kinds music and podcast; 7 adds tracking and segments; apiVersion 5 only adds the manifest's signature, 6 the plain-plugin SDK: typed and larger secrets, migrate, signed streams, the settings form, debug, telemetry, section, categories, theme and scopedSearch). Reference them from plugin.js
+// TypeScript declarations for Kino plugins (apiVersion 1 to 20; 20 adds the visualBrowser manifest key (kino.visualBrowser.open: a web window the person sees and drives, on the plugin's own hosts, to sign in or finish a step) and the plugin protocol (the manifest's provides and consumes blocks and kino.plugins.call: one plugin uses the doors another opens, through Kino); 19 adds the lyrics capability (the lyrics(query) export: a song's time-synced or plain lyrics for the music player's overlay); 18 adds the app themes (go.useTheme, go.setExperience, appThemes with price, experience and logo); 17 adds the stats operation of the library capability (kino.library.stats, a month's totals and top titles); 16 adds the coins capability (kino.coins: the person's Kino coins balance, and giving one coin for a post); 15 adds the identity capability (kino.identity.telegram: a per-plugin pseudonym of the person and the signed token that proves it), the notifications capability (kino.notifications: notices in the Home bell), library episodes (the latest season and episode of a watched series) and the pluginStore capability (the plugin is a source of plugins for Kino's store: storeSync, and storeList and storeSearch for a live store); 14 adds the screen capability (screen, screenEvent and the manifest's screen block: a full-screen canvas the plugin builds), library, playerPanelTab, playerControl, room (kino.room, a mailbox hosted on the person's device over the Internet), schedule (background jobs: the manifest's jobs and the job export) and the manifest's enhancements; 13 adds the socket capability (kino.ws, outbound WebSockets) and the byteSource capability (a stream whose bytes the plugin serves through its read export) and the storageLarge capability (a 16 MiB kino.storage for a plugin that keeps a catalog) and the catalog capability (kino.catalog, a searchable SQLite catalog of up to 100,000 items per plugin in a 64 MiB file) and the qrScan capability (kino.qr.scan, the phone's camera scanner for a QR code) and the settings form's qr setting (a QR whose text settingsStatus gives, refreshed every refreshMs) and the kino.crypto operations aesIge, modPow, gunzip, convert and aesIgeVerify and the imageSource capability (a poster, backdrop, still or hero image the plugin serves through its image export, KinoImageRef); 12 adds the syncProvider capability (syncPull, syncPush, syncStatus and the manifest's sync block); 11 adds the externalResolve capability (a stream's `external` hand-off to a resolver app, the manifest's externalResolver) and, from Kino 0.9.66, a stream's advisory `media` and its `portable` universal copy; 10 adds the playlists capability; 9 adds the player panel (panel, panelAction, playerEvent, the manifest's panel and settingsLayout), fetchHosts "any" for hand-written plugins, English setting texts and kino.meta by title; 8 adds the audio item kinds music and podcast; 7 adds tracking and segments; apiVersion 5 only adds the manifest's signature, 6 the plain-plugin SDK: typed and larger secrets, migrate, signed streams, the settings form, debug, telemetry, section, categories, theme and scopedSearch). Reference them from plugin.js
 // with `/// <reference path="./kino.d.ts" />` for editor help; Kino itself runs plain JavaScript.
 // The numbers in the comments come from contract.json, which is authoritative. The app checks that
 // every `kino` member declared here exists in its runtime and nothing else does (KinoDtsTest).
@@ -2534,6 +2534,70 @@ type KinoCipher =
   | "aes-128-gcm" | "aes-192-gcm" | "aes-256-gcm"
   | "des-ede3-cbc" | "des-ede3-ecb";
 
+/** apiVersion 20: `kino.visualBrowser.open` options. */
+interface KinoVisualBrowserOptions {
+  /** Where the window starts: https, the default port, on a host of the manifest's `hosts` (at most 2,048 characters). */
+  url: string;
+  /** A short line after your plugin's name in Kino's bar (at most 60 characters, no control character). */
+  title?: string;
+  /**
+   * When to close by itself. With it Kino draws no Listo button. `cookies`: every named cookie exists for the hosts the window
+   * was on (at most 32 names; checked about every 0.7 s, HttpOnly ones included). `urlMatches`: the window's address matches
+   * this pattern, where `*` is any run of characters (also none) and the rest is literal, against the whole address (at most
+   * 200 characters). Either one is enough.
+   */
+  doneWhen?: { cookies?: string[]; urlMatches?: string };
+  /** What to hand back when the status is `"done"` (a closed or timed-out window returns nothing but `finalUrl`). */
+  collect?: {
+    /** Cookie NAMES (at most 32), read from the hosts the window was on and that your manifest declares; at most 64 cookies and 16,384 characters of names and values together. */
+    cookies?: string[];
+    /** The page's HTML as it stands, at most 2,000,000 characters (as `kino.browser.page`). */
+    html?: boolean;
+    finalUrl?: boolean;
+    /**
+     * Kino writes the collected cookies itself into YOUR `password` setting named `setting` (declared in the manifest), as
+     * `name=value; name2=value2` (`"header"`) or a JSON object (`"json"`), once your call has ended; you only get `stored` and
+     * `storedNames`, never a value. Needs `cookies`. The text must fit the setting (500 characters for a `password`): else `"store_failed"`.
+     *
+     * `thenEvent`: the name of a `screenEvent` Kino sends to THIS plugin's open screen once the setting was written (your call has
+     * ended by then, so a screen cannot read the new account from the call itself). Its `arg` is `{ stored: ["SID", ...] }` (cookie
+     * names, never a value) and it has no `value`. Same name rules as any event (1 to 128 of `A-Z a-z 0-9 . _ ~ -`, never `"open"`,
+     * else `"bad_args"`). Sent only when the call came from a screen's `screenEvent` (from a settings action or a panelAction the
+     * option is accepted and nothing is sent), only after a successful write (never if it failed or the window was not `"done"`),
+     * dropped silently when your screen is no longer open or its event queue is full, at most once per call. It is a follow-up of
+     * the person's press, not a press: like a change, its answer's `go.url`, `go.copy`, `go.titleByIds` and `go.installPlugin`,
+     * `share` and `enableJob` are dropped; it may change `state`, `config` and show a toast.
+     */
+    storeAs?: { setting: string; format: "header" | "json"; thenEvent?: string };
+  };
+  /**
+   * `"browser"`: the window identifies itself as the phone's Chrome (one string Kino keeps up to date). Or your own string, 1 to
+   * 300 printable ASCII characters (a site that changes what it accepts is fixed by a plugin update, not a Kino release). Either
+   * way the WebView marker (`; wv`) is removed and `X-Requested-With` is not sent (on a WebView that lets Kino remove it). Absent:
+   * the WebView's own. The sheet tells the person which one.
+   */
+  userAgent?: "browser" | (string & {});
+  /** At most 600,000 (10 minutes, the default); a larger value is brought down to it, a smaller one up to 5,000. */
+  timeoutMs?: number;
+}
+
+/** apiVersion 20: what `kino.visualBrowser.open` answers. */
+interface KinoVisualBrowserResult {
+  /** `"done"`: the person pressed Listo or your `doneWhen` was met. `"closed"`: they closed the window (or said No to the sheet). `"timeout"`: `timeoutMs` passed. */
+  status: "done" | "closed" | "timeout";
+  /** The window's last address, when `collect.finalUrl` was true and it is still on your hosts. */
+  finalUrl?: string;
+  /** The cookies asked for in `collect.cookies` (name to value), only with `"done"` and without `storeAs`. */
+  cookies?: Record<string, string>;
+  html?: string;
+  /** With `storeAs`: true when Kino keeps the cookies for you (false when none of the named ones existed: nothing was stored). */
+  stored?: boolean;
+  /** With `storeAs`: the NAMES of the cookies Kino keeps, never their values. */
+  storedNames?: string[];
+  /** The user agent the window used, when you chose one (`userAgent`). */
+  userAgent?: string;
+}
+
 /** apiVersion 6: `kino.browser.capture` options. */
 interface KinoBrowserCaptureOptions {
   /** 1..25000 ms; default 18000. */
@@ -3665,6 +3729,51 @@ declare namespace kino {
      *   return { message: "Listo: el otro aparato ya entró" };
      */
     function scan(options?: { title?: string; titleEn?: string }): Promise<string | null>;
+  }
+
+  /**
+   * `kino.visualBrowser` (apiVersion 20, manifest `"visualBrowser": true`): a browser WINDOW THE PERSON SEES AND DRIVES, to sign in,
+   * solve a challenge or accept a site's terms. `kino.browser` is hidden and nobody can type in it; this is the same idea with a
+   * window. It exists only for a plugin whose manifest declares the key (otherwise `kino.visualBrowser` is undefined, as on a Kino
+   * before it: write `kino.visualBrowser?.available`), and `available` is false on the desktop and on a device without a WebView (a TV has one: it works there with the remote, experimental, and a page with pointer-only controls may be hard to reach): keep your other way
+   * (pasting the cookies into a `password` setting, say).
+   *
+   * What the person sees: Kino's own sheet first, EVERY time, naming your plugin, the sites (your manifest `hosts`), the cookie
+   * NAMES you asked for, whether the window will identify itself as a regular browser or with your own string, and whether Kino
+   * keeps the cookies itself; only after Continuar does the window open. The window has Kino's bar (your plugin's name and your
+   * `title`, the site's host with a lock, Cerrar, and Listo when you gave no `doneWhen`). You cannot change the bar.
+   *
+   * Rules: only from the person's own press -- a settings `action`, a `panelAction` or a `screenEvent` that follows the person's
+   * tap or submit (the scanner's gate: `kino.qr.scan` above); from anything else (a search, Home, a timer, a job, a screen's
+   * open or load-more, a background call) it throws `"forbidden"`. The first address and every page the window moves to must be
+   * https, on the default port, on a host of your manifest `hosts` (wildcards as there; a sign-in that goes through
+   * `accounts.google.com` needs it declared); anything else is stopped and Kino says so on the window. Never the local network.
+   * One window at a time in the whole app. No script of yours runs in the page, you never see what is typed, and the page cannot
+   * open pop-ups, download, pick files or use the camera, microphone or location. The window starts with the cookies of your hosts
+   * cleared and clears them again when it closes (Android keeps one cookie jar for the app: a cookie scoped to another path than
+   * `/` survives, and your own `kino.fetch` jar is separate). A window the person leaves in the background closes after a
+   * minute.
+   *
+   * Throws a typed error: `"bad_args"` (the options are wrong: fix the call), `"forbidden"`, `"unavailable"` (a TV, or no screen
+   * to show it on), `"busy"` (a window is already open: yours or another plugin's) and `"store_failed"` (`storeAs` and the text
+   * does not fit the setting). Saying No to the sheet, Cerrar and Back are not errors: you get `{ status: "closed" }`.
+   * @example
+   *   // In action("link"): the person pressed "Vincular cuenta" in your settings.
+   *   if (!kino.visualBrowser?.available) return { message: "Pega tus cookies en los ajustes" };
+   *   const r = await kino.visualBrowser.open({
+   *     url: "https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fmusic.youtube.com",
+   *     title: "YouTube Music",
+   *     doneWhen: { cookies: ["SAPISID"] },
+   *     collect: { cookies: ["SID", "HSID", "SSID", "APISID", "SAPISID"], storeAs: { setting: "cookieHeader", format: "header" } },
+   *     userAgent: "browser",
+   *   });
+   *   if (r.status !== "done" || !r.stored) return { message: "No se vinculó la cuenta" };
+   *   return { message: "Cuenta vinculada" }; // r.storedNames lists the cookies Kino kept; you never saw their values
+   */
+  namespace visualBrowser {
+    /** True on a phone or tablet running a Kino with the capability; false on a TV and on the desktop. */
+    const available: boolean;
+    function open(options: KinoVisualBrowserOptions): Promise<KinoVisualBrowserResult>;
   }
 
   namespace cookies {

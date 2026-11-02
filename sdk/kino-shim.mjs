@@ -14,6 +14,7 @@
 // development; `seal.mjs` only ever produces the sealed string that goes in the manifest) and
 // simulates the app's marker, substitution, declared-host-and-https and redaction rules on top of that.
 import { aiOriginAllowed, currentQrOrigin, kitCall, kitJobRequest, qrScanOriginAllowed } from "./kit-call.mjs";
+import { answerFor as visualBrowserAnswer, parseOptions as visualBrowserOptions, VISUAL_BROWSER_ONLY_FROM } from "./visual-browser.mjs";
 import { gunzipSync } from "node:zlib";
 import { createCipheriv, createDecipheriv, createHash, createHmac, createPublicKey, diffieHellman, generateKeyPairSync, pbkdf2Sync, randomBytes, randomUUID, timingSafeEqual, sign as nodeSign, verify as nodeVerify } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -856,7 +857,7 @@ function deviceFor(device, env) {
  * kino.device (Kino 0.9.55, contract.kinoDevice): [device] ("phone" or "tv", run.mjs --device), else env KINO_DEVICE,
  * else "phone". Anything else throws: a typo must not silently test the other UI.
  */
-export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", device = undefined, storageFile = null, cookiesFile = null, secretsFile = null, config = {}, record = null, replay = null, fetchImpl = globalThis.fetch, metaFixture = undefined, tmdbKey = undefined, tmdbFixture = undefined, nuvioFixture = undefined, libraryFixture = undefined, libraryRevoked = false, callFunction = null, env = process.env, now = Date.now, syncCall = false, qrScan = undefined, room = undefined, roomRevoked = false, ai = undefined, aiRevoked = false, identityRevoked = false, entryFile = null, noticesFile = null, notificationsRevoked = false, coinsRevoked = false, shared = undefined, jobsOn = [], protocol = undefined } = {}) {
+export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", device = undefined, storageFile = null, cookiesFile = null, secretsFile = null, config = {}, record = null, replay = null, fetchImpl = globalThis.fetch, metaFixture = undefined, tmdbKey = undefined, tmdbFixture = undefined, nuvioFixture = undefined, libraryFixture = undefined, libraryRevoked = false, callFunction = null, env = process.env, now = Date.now, syncCall = false, qrScan = undefined, visualBrowser = undefined, deliverScreenEvent = undefined, room = undefined, roomRevoked = false, ai = undefined, aiRevoked = false, identityRevoked = false, entryFile = null, noticesFile = null, notificationsRevoked = false, coinsRevoked = false, shared = undefined, jobsOn = [], protocol = undefined } = {}) {
   const f = contract.fetch;
   // [syncCall]: this kino runs a syncProvider's syncPull/syncPush (contract.fetch.syncCall): its requests and responses may
   // carry the declared blob, ceil(sync.maxBlobBytes * 4/3) + envelopeChars, like the app; every other call keeps the defaults.
@@ -2088,6 +2089,46 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", devic
     return Object.freeze({ scan });
   })();
 
+  // --- kino.visualBrowser (apiVersion 20, manifest "visualBrowser": true): the app's PluginVisualBrowser behind its prelude wrapper.
+  // Node has no window: the `visualBrowser` option of createKino is the person, `async (ask) =>` the window's result
+  // `{ status, finalUrl?, cookies?, html? }` (or null for a closed window; it may throw). `ask` is what Kino's sheet would show: { options, hosts }.
+  // Without the option, and on a TV, `available` is false and open() throws unavailable. Everything else (the request's rules, the
+  // cookie caps, storeAs and what the script may see) is visual-browser.mjs. With storeAs the app writes the setting once the call has
+  // ended; the kit does it on the next turn of the event loop. Undefined without the manifest key or below apiVersion 20, like the app. ---
+  const visualBrowserApi = (() => {
+    const VB = contract.visualBrowser;
+    if (manifest.visualBrowser !== true || !(manifest.apiVersion >= VB.apiVersion)) return null;
+    const passwords = (manifest.settings || []).filter((x) => x.type === "password");
+    const secretMax = Object.fromEntries(passwords.map((x) => [x.key, contract.settings.types.password.maxChars]));
+    const available = typeof visualBrowser === "function";
+    let open = false;
+    const openWindow = async (options) => {
+      await null;
+      const parsed = visualBrowserOptions(options, manifest.hosts || [], passwords.map((x) => x.key));
+      if (parsed.error) throw kinoError("bad_args", parsed.error);
+      if (!available) throw kinoError("unavailable", "kino.visualBrowser.open: this device can't open a browser window for the person (without a WebView to show it on)");
+      if (!qrScanOriginAllowed(currentQrOrigin())) throw kinoError("forbidden", VISUAL_BROWSER_ONLY_FROM);
+      if (open) throw kinoError("busy", "kino.visualBrowser.open: a window is already open");
+      open = true;
+      try {
+        const r = (await visualBrowser({ options: parsed.options, hosts: [...(manifest.hosts || [])] })) || { status: "closed" };
+        // thenEvent: after the write, the `deliverScreenEvent(name, arg)` option of createKino stands in for the open screen's session.
+        const fromScreen = currentQrOrigin().screen;
+        const answer = visualBrowserAnswer(parsed.options, r, (setting, text, then) => {
+          setImmediate(() => {
+            values[setting] = text;
+            if (then && typeof deliverScreenEvent === "function") deliverScreenEvent(then.event, then.arg);
+          });
+        }, secretMax, fromScreen);
+        if (answer.error) throw kinoError(answer.error.code, answer.error.message);
+        return answer;
+      } finally {
+        open = false;
+      }
+    };
+    return Object.freeze({ open: Object.freeze(openWindow), available });
+  })();
+
   const kino = Object.freeze({
     apiVersion: contract.apiVersion,
     appVersion,
@@ -2161,6 +2202,8 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", devic
     ...(catalogApi ? { catalog: catalogApi } : {}),
     // apiVersion 13, capability "qrScan": undefined without it, like the app.
     ...(qrApi ? { qr: qrApi } : {}),
+    // apiVersion 20, manifest "visualBrowser": undefined without it, like the app.
+    ...(visualBrowserApi ? { visualBrowser: visualBrowserApi } : {}),
     cookies: Object.freeze({
       get(url, name) {
         let u;
@@ -2314,7 +2357,7 @@ export function signingLane(kino) {
   const refused = (api) => () => { throw why(api); };
   const methods = (names, api) => Object.freeze(Object.fromEntries(names.map((n) => [n, refused(api)])));
   // The app's lane host is no catalog or QR host: sign() has no kino.catalog and no kino.qr at all.
-  const { catalog: _noCatalog, qr: _noQr, ...laneKino } = kino;
+  const { catalog: _noCatalog, qr: _noQr, visualBrowser: _noVisualBrowser, ...laneKino } = kino;
   return Object.freeze({
     ...laneKino,
     fetch: async () => { throw kinoError("host_not_allowed", "sign can't use the network"); },
