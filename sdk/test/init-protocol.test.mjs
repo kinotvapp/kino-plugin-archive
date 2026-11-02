@@ -4,11 +4,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { KINDS, scaffold } from "../init.mjs";
-import { validate } from "../validate.mjs";
+import { isPlaceholderHost, placeholderHostWarnings, validate } from "../validate.mjs";
 
 const SDK = join(dirname(fileURLToPath(import.meta.url)), "..");
 const INIT = join(SDK, "init.mjs");
@@ -105,14 +105,124 @@ test("--kind consumer: a screen with the install gate, recommends = consumes' re
     assert.ok(existsSync(join(dir, "test", "provider", "kino-plugin.json")), "a stand-in provider for the tests");
     const r = await validate(dir);
     assert.deepEqual(r.problems, []);
-    assert.deepEqual(r.warnings, []);
+    // The default host is a placeholder: accepted, with validate's loud warning (and a todo in the scaffold's own test).
+    assert.equal(r.warnings.length, 1);
+    assert.match(r.warnings[0], /"example\.com" is a placeholder host; declare a host the plugin really loads from, or see https:\/\/\S+#text-only-consumer for a text-only consumer/);
     withKit(dir);
     const t = node(["--test", "--test-reporter=tap", "test/plugin.test.mjs"], dir);
     assert.equal(t.status, 0, t.stdout + t.stderr);
     assert.match(t.stdout, /# fail 0/);
     assert.match(t.stdout, /# pass [1-9]/);
+    assert.match(t.stdout, /# todo 1/, "the placeholder host is a visible todo");
     const provider = await validate(join(dir, "test", "provider"));
     assert.deepEqual(provider.problems, []);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("--kind consumer follows the screen rules: one compact bar with a real exit, a detail route, English labelEn, Spanish TODO description", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "kino-init-consumer-bar-"));
+  try {
+    scaffold(dir, { kind: "consumer", name: "Visor de recetas", door: "recipes", host: "images.example-recipes.org" });
+    const m = JSON.parse(readFileSync(join(dir, "kino-plugin.json"), "utf8"));
+    assert.equal(m.screen.label, "Visor de recetas");
+    assert.equal(m.screen.labelEn, "Recipes", "labelEn is English, not the Spanish label again");
+    assert.match(m.description, /^TODO: en español/);
+    const src = readFileSync(join(dir, "plugin.js"), "utf8");
+    assert.match(src, /mergeWithKinoBar: true, dense: true, leading/);
+    assert.match(src, /onPressed: \{ close: true \}/);
+    assert.match(src, /route: \{ push: "detail"/);
+    assert.match(src, /route: \{ pop: true \}/);
+    assert.match(src, /name === "open"/);
+    // The drawn tree: the bar is merged and its leading closes on the front page, goes back on the detail route.
+    withKit(dir);
+    const repo = m.recommends[0];
+    const front = node([join(dir, "sdk", "run.mjs"), "--context", JSON.stringify({ installed: { [repo]: true } }), "--provider", "test/provider", "--raw", ".", "screen"], dir);
+    assert.equal(front.status, 0, front.stderr);
+    assert.doesNotMatch(front.stderr, /dropped|✗/, front.stderr);
+    const tree = JSON.stringify(JSON.parse(front.stdout));
+    assert.match(tree, /"mergeWithKinoBar":true/);
+    const detail = node([join(dir, "sdk", "run.mjs"), "--context", JSON.stringify({ installed: { [repo]: true }, route: { name: "detail", params: { id: 1 } } }), "--state", '{"item":{"id":1,"text":"Uno"}}', ".", "screen"], dir);
+    assert.equal(detail.status, 0, detail.stderr);
+    assert.doesNotMatch(detail.stderr, /dropped|✗/, detail.stderr);
+    assert.match(detail.stdout, /Atrás|arrow_back/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("--kind consumer --door/--call/--stream: the consumer and its stand-in use the real door's names, a README says it is a stand-in", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "kino-init-consumer-door-"));
+  try {
+    const r0 = node([INIT, dir, "--kind", "consumer", "--door", "recipes", "--call", "random", "--stream", "fresh", "--repo", "ana/kino-plugin-recipes", "--host", "img.recetas.co"]);
+    assert.equal(r0.status ?? 0, 0, r0.stderr);
+    assert.match(r0.stderr, /STAND-IN/);
+    const m = JSON.parse(readFileSync(join(dir, "kino-plugin.json"), "utf8"));
+    assert.deepEqual(m.consumes, { recipes: { repo: "ana/kino-plugin-recipes", door: "recipes", calls: ["random"], streams: ["fresh"] } });
+    assert.deepEqual(m.hosts, ["img.recetas.co"]);
+    const p = JSON.parse(readFileSync(join(dir, "test", "provider", "kino-plugin.json"), "utf8"));
+    assert.deepEqual(Object.keys(p.provides), ["recipes"]);
+    assert.deepEqual(Object.keys(p.provides.recipes.calls), ["random"]);
+    assert.deepEqual(Object.keys(p.provides.recipes.streams), ["fresh"]);
+    assert.match(readFileSync(join(dir, "plugin.js"), "utf8"), /kino\.plugins\.call\("recipes", "random"/);
+    assert.match(readFileSync(join(dir, "test", "provider", "plugin.js"), "utf8"), /^\/\/ STAND-IN PROVIDER/);
+    const readme = readFileSync(join(dir, "test", "provider", "README.md"), "utf8");
+    assert.match(readme, /STAND-IN/);
+    assert.match(readme, /copy of the real provider/);
+    assert.match(readme, /`recipes`.*`random`.*`fresh`/s);
+    const r = await validate(dir);
+    assert.deepEqual(r.problems, []);
+    assert.deepEqual(r.warnings, [], "a real host: no warning");
+    withKit(dir);
+    const t = node(["--test", "--test-reporter=tap", "test/plugin.test.mjs"], dir);
+    assert.equal(t.status, 0, t.stdout + t.stderr);
+    assert.match(t.stdout, /# fail 0/);
+    assert.match(t.stdout, /# todo 0/);
+    // The provider scaffold takes the same names, so the two sides agree.
+    const prov = join(dir, "..", `${basename(dir)}-provider`);
+    scaffold(prov, { kind: "provider", door: "recipes", call: "random", stream: "fresh" });
+    try {
+      const pm = JSON.parse(readFileSync(join(prov, "kino-plugin.json"), "utf8"));
+      assert.deepEqual(Object.keys(pm.provides.recipes.calls), ["random"]);
+      assert.match(pm.description, /^TODO: en español/);
+      const pv = await validate(prov);
+      assert.deepEqual(pv.problems, []);
+      assert.deepEqual(pv.warnings, []);
+      withKit(prov);
+      const pt = node(["--test", "--test-reporter=tap", "test/plugin.test.mjs"], prov);
+      assert.equal(pt.status, 0, pt.stdout + pt.stderr);
+      assert.match(pt.stdout, /# fail 0/);
+    } finally { rmSync(prov, { recursive: true, force: true }); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("--door, --call and --stream are checked like the app's names, and need --kind", () => {
+  const dir = mkdtempSync(join(tmpdir(), "kino-init-door-bad-"));
+  try {
+    assert.throws(() => scaffold(join(dir, "a"), { kind: "consumer", door: "my_door" }), /--door needs a name/);
+    assert.throws(() => scaffold(join(dir, "b"), { kind: "provider", call: "by-id" }), /--call needs a name/);
+    assert.throws(() => scaffold(join(dir, "c"), { kind: "provider", call: "same", stream: "same" }), /must differ/);
+    assert.throws(() => scaffold(join(dir, "d"), { door: "recipes" }), /need --kind/);
+    assert.equal(node([INIT, join(dir, "e"), "--kind", "consumer", "--door", "9x"]).status, 2);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("validate warns (and still accepts) on a placeholder host: example.com, *.example.com, example.org, .test, .invalid, .example", async () => {
+  for (const h of ["example.com", "*.example.com", "cdn.example.com", "example.org", "example.net", "images.recipes.test", "example.invalid", "api.example", "EXAMPLE.COM."]) {
+    assert.equal(isPlaceholderHost(h), true, h);
+  }
+  for (const h of ["image.tmdb.org", "myexample.com", "example.com.co", "test.org", "invalidator.io", "api.testing"]) {
+    assert.equal(isPlaceholderHost(h), false, h);
+  }
+  assert.equal(placeholderHostWarnings(["image.tmdb.org", { host: "cdn.example.org", insecureHttp: true }]).length, 1);
+  assert.match(placeholderHostWarnings(["x.invalid"])[0], /never lists it/);
+  const dir = mkdtempSync(join(tmpdir(), "kino-validate-placeholder-"));
+  try {
+    scaffold(dir, { host: "images.recipes.test" });
+    const r = await validate(dir);
+    assert.deepEqual(r.problems, [], "still accepted");
+    assert.equal(r.warnings.filter((w) => /placeholder host/.test(w)).length, 1);
+    const cli = node([join(SDK, "validate.mjs"), dir]);
+    assert.equal(cli.status, 0, cli.stderr);
+    assert.match(cli.stderr, /^! hosts: "images\.recipes\.test" is a placeholder host/m);
+    assert.match(cli.stderr, /✓ Kino would accept this plugin/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
