@@ -3899,21 +3899,24 @@ export async function screenEvent({ name, value }) {
 
 ```js
 const page = (it, i) => ({ type: "Card", key: "car-" + i, variant: "filled", radius: "large", margin: 8,
-  onTap: { event: "open", arg: it.url },
+  onTap: { event: "series", arg: it.url },
   children: [{ type: "Row", gap: 16, padding: 16, crossAxisAlignment: "center", children: [
     { type: "Card", flush: true, radius: "medium", elevation: 6, children: [
       { type: "Image", url: it.poster, width: 120, aspect: "2:3", alt: it.title } ] },
     { type: "Column", gap: 8, flex: 1, crossAxisAlignment: "start", children: [
       { type: "Badge", text: "#" + (i + 1), color: "primary" },
       { type: "Text", text: it.title, style: "h3", maxLines: 3 },
-      { type: "ElevatedButton", icon: "play", radius: "full", labelText: "Ver", labelTextEn: "See", onPressed: { event: "open", arg: it.url } },
+      { type: "ElevatedButton", icon: "play", radius: "full", labelText: "Ver", labelTextEn: "See", onPressed: { event: "series", arg: it.url } },
     ] } ] }] });
+
+// placeholders until your data loads: a PageView with no pages draws nothing
+const DEMO = [{ url: "/a", title: "Uno", poster: "https://example.com/a.jpg" }, { url: "/b", title: "Dos", poster: "https://example.com/b.jpg" }];
 
 export async function screen({ state }) {
   return { type: "SingleChildScrollView", children: [
     { type: "Text", text: "Tendencias", textEn: "Trending", style: "h3", padding: 16 },
     { type: "PageView", key: "carousel", viewportFraction: { compact: 0.9, medium: 0.6, expanded: 0.42 }, padEnds: false,
-      autoPlayMs: 5000, children: (state.trending ?? []).slice(0, 6).map(page) } ] };
+      autoPlayMs: 5000, children: (state.trending ?? DEMO).slice(0, 6).map(page) } ] };
 }
 ```
 
@@ -3957,6 +3960,7 @@ sits frozen while your `screenEvent` fetches.
 
 ```js
 const SEARCH = { ui: [{ show: "loading" }, { hide: "results" }], event: "search" };
+const card = (r) => ({ type: "Card", key: "r-" + r.id, onTap: { event: "series", arg: r.id }, children: [{ type: "Text", text: r.title, padding: 8 }] });
 
 export async function screen({ state }) {
   return { type: "SingleChildScrollView", children: [{ type: "Column", children: [
