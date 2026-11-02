@@ -1,0 +1,20 @@
+{
+  "id": "cine-trivia-example",
+  "name": "Cine Trivia (example consumer)",
+  "version": "1.0.0",
+  "apiVersion": 20,
+  "description": "An example consumer of the plugin protocol: a trivia that builds its questions from the movies another plugin provides.",
+  "entry": "plugin.js",
+  "hosts": ["example.com"],
+  "capabilities": ["screen"],
+  "screen": { "label": "Trivia", "labelEn": "Trivia" },
+  "recommends": ["kinotvapp/kino-plugin-tmdb"],
+  "consumes": {
+    "tmdb": {
+      "repo": "kinotvapp/kino-plugin-tmdb",
+      "door": "movies",
+      "calls": ["random", "byId"],
+      "streams": ["trending"]
+    }
+  }
+}

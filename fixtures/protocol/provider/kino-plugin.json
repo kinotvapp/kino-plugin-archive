@@ -1,0 +1,26 @@
+{
+  "id": "tmdb-movies-example",
+  "name": "TMDB movies (example provider)",
+  "version": "1.0.0",
+  "apiVersion": 20,
+  "description": "An example provider of the plugin protocol: it opens the door \"movies\" so other plugins can ask for movie records.",
+  "entry": "plugin.js",
+  "hosts": ["example.com"],
+  "capabilities": ["search", "resolve"],
+  "provides": {
+    "movies": {
+      "summary": "Movie records from TMDB",
+      "calls": {
+        "byId": { "in": { "id": "number" }, "out": "Movie" },
+        "random": { "in": { "fromYear": "number?", "toYear": "number?" }, "out": "Movie" },
+        "search": { "in": { "q": "string" }, "out": "Movie[]" }
+      },
+      "streams": {
+        "trending": { "out": "Movie", "everySeconds": 60 }
+      },
+      "types": {
+        "Movie": { "id": "number", "title": "string", "year": "number", "director": "string?", "overview": "string?", "posterUrl": "string?" }
+      }
+    }
+  }
+}

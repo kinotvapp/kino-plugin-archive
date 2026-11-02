@@ -5,7 +5,7 @@
 // invalid node, style value, action or field is dropped with a reason. Like panel.mjs it reads the answer the way org.json
 // does (the answer crosses to Kino as JSON), and like the Kotlin it walks a JSON object's keys SORTED wherever the walk
 // can log, so the lines come out in the same order. plugins/sdk/test/screen-cases.json is the case table both sides share.
-import { contract, isUserServer, javaDouble, screenGoOf, screenItems, titleByIdsOf, urlGoOf, copyGoOf, liveChannelGoOf, useThemeGoOf, setExperienceGoOf } from "./contract.mjs";
+import { contract, isUserServer, javaDouble, screenGoOf, screenItems, titleByIdsOf, urlGoOf, copyGoOf, liveChannelGoOf, useThemeGoOf, setExperienceGoOf, installPluginGoOf } from "./contract.mjs";
 import { badgeOf, cappedLog, colorHint, httpsImage, panelAccentOf, panelMessageOf, panelPlayerOf, panelRefreshOf, panelTabsOf } from "./panel.mjs";
 
 // ---------- limits and name tables (ScreenLimits, ScreenWidgets; numbers come from the contract file) ----------
@@ -41,6 +41,10 @@ const SETTINGS = "settings";
 const ACCORDION = "accordion";
 /** Screen asks: Kino's own setup flow (PluginScreenOutput's STEPS). */
 const STEPS = "steps";
+/** apiVersion 19: a Scaffold's `onBack` and an AppBar's `mergeWithKinoBar` (ScreenLimits.SCAFFOLD_ON_BACK, APP_BAR_MERGE). */
+const SCAFFOLD_ON_BACK = contract.manifest.screen.scaffold.onBackField;
+const APP_BAR_MERGE = contract.manifest.screen.scaffold.mergeField;
+
 /** apiVersion 17: full-screen pages (PluginScreenOutput's PAGES); its place lives in `state.inputs`, addressed by its key. */
 const PAGES = "pages";
 const STEPPER = "stepper";
@@ -426,7 +430,7 @@ export function fitTableRow(cells, count) {
 class Reader {
   // [limits]: the tree's depth and node limits (the screen's, or the player panel's: Task 8i) and whether it is read for the
   // panel (its notDrawn widgets dropped).
-  constructor(lang, widgets, log, allowSeries = true, settings = null, { maxDepth = LIMITS.maxDepth, maxNodes = LIMITS.maxNodes, inPanel = false, apiVersion = contract.manifest.screen.goUseTheme.apiVersion } = {}) {
+  constructor(lang, widgets, log, allowSeries = true, settings = null, { maxDepth = LIMITS.maxDepth, maxNodes = LIMITS.maxNodes, inPanel = false, apiVersion = contract.manifest.screen.goInstallPlugin.apiVersion } = {}) {
     this.apiVersion = apiVersion;
     this.maxDepth = maxDepth;
     this.maxNodes = maxNodes;
@@ -931,8 +935,11 @@ class Reader {
         }
         let aspect = null;
         if (present(o, "aspect")) {
+          const free = typeof o.aspect === "string" ? /^(\d{1,5}(?:\.\d{1,3})?):(\d{1,5}(?:\.\d{1,3})?)$/.exec(o.aspect) : null;
+          const r = free ? Number(free[1]) / Number(free[2]) : NaN;
           if (ASPECTS.includes(o.aspect)) aspect = o.aspect;
-          else this.log(`screen: image aspect ${fmt(o.aspect)} is not 16:9, 2:3, 1:1 or banner, dropped`);
+          else if (Number.isFinite(r) && r >= 0.2 && r <= 5) aspect = o.aspect;
+          else this.log(`screen: image aspect ${fmt(o.aspect)} is not 16:9, 2:3, 1:1, banner or w:h between 0.2 and 5, dropped`);
         }
         const alt = t("alt");
         return (k) => {
@@ -1423,21 +1430,23 @@ class Reader {
         if (depth !== 1 || this.answerBody > 0) return fail("only as the root of a screen or a panel");
         if (!isObj(opt(o, "body"))) return fail("needs a body");
         if (has(o, "children")) this.log("screen: scaffold takes body, not children, ignored");
+        const onBack = this.scaffoldOnBack(o);
         return (k) => (k
-          ? { appBar: this.scaffoldSlot(o, "appBar", depth), body: this.scaffoldSlot(o, "body", depth), fab: this.scaffoldSlot(o, "floatingActionButton", depth), bottomBar: this.scaffoldSlot(o, "bottomNavigationBar", depth) }
-          : { appBar: null, body: null, fab: null, bottomBar: null });
+          ? { appBar: this.scaffoldSlot(o, "appBar", depth), body: this.scaffoldSlot(o, "body", depth), fab: this.scaffoldSlot(o, "floatingActionButton", depth), bottomBar: this.scaffoldSlot(o, "bottomNavigationBar", depth), onBack }
+          : { appBar: null, body: null, fab: null, bottomBar: null, onBack });
       }
       case "appBar": {
         if (this.mySlot !== "appBar") return fail("only as a Scaffold's appBar");
         const title = t("title");
         const centerTitle = this.flag(o, type, "centerTitle");
+        const merge = this.appBarMerge(o);
         let background = null;
         if (present(o, "backgroundColor")) {
           if (typeof o.backgroundColor === "string" && S.colorRoles.includes(o.backgroundColor)) background = o.backgroundColor;
           else this.log(`screen: appBar backgroundColor ${fmt(o.backgroundColor)} is not a color role${colorHint(o.backgroundColor)}, the default used`);
         }
         return (k) => {
-          if (!k) return { title, leading: null, actions: [], bottom: null, centerTitle, background, titleNode: null };
+          if (!k) return { title, leading: null, actions: [], bottom: null, centerTitle, background, titleNode: null, mergeWithKinoBar: false };
           const leading = this.barButton(opt(o, "leading"), "leading", depth);
           const actions = [];
           const raw = opt(o, "actions");
@@ -1468,7 +1477,8 @@ class Reader {
               else this.log(`screen: appBar title holds ${size} nodes, more than ${S.scaffold.maxAppBarTitleNodes}, dropped`);
             }
           }
-          return { title, leading, actions, bottom, centerTitle, background, titleNode };
+          if (merge && leading === null) this.log(`screen: appBar ${APP_BAR_MERGE} needs a leading IconButton, ignored`);
+          return { title, leading, actions, bottom, centerTitle, background, titleNode, mergeWithKinoBar: merge && leading !== null };
         };
       }
       case "navigationBar": {
@@ -2415,6 +2425,30 @@ class Reader {
     return ui.length === 0 && a.event === null ? null : { ...a, go: null, ui };
   }
 
+  /**
+   * A Scaffold's `onBack` (PluginScreenOutput.scaffoldOnBack, apiVersion 19): read as an action, its `go` dropped, logged (Back never
+   * navigates by itself). Null when absent, invalid, left empty, or the plugin's apiVersion is below the gate (logged).
+   */
+  scaffoldOnBack(o) {
+    const raw = opt(o, SCAFFOLD_ON_BACK);
+    if (absent(raw)) return null;
+    const min = contract.manifest.screen.scaffold.backApiVersion;
+    if (this.apiVersion < min) { this.log(`screen: scaffold ${SCAFFOLD_ON_BACK} needs apiVersion ${min}, dropped`); return null; }
+    const a = this.actions(raw, o, "scaffold", SCAFFOLD_ON_BACK);
+    if (a === null) return null;
+    if (a.go === null) return a;
+    this.log(`screen: scaffold ${SCAFFOLD_ON_BACK} go is not allowed (Back never navigates by itself), dropped`);
+    return a.ui.length === 0 && a.event === null ? null : { ...a, go: null };
+  }
+
+  /** An AppBar's `mergeWithKinoBar` (PluginScreenOutput.appBarMerge, apiVersion 19): true only as the boolean true at that apiVersion. */
+  appBarMerge(o) {
+    if (absent(opt(o, APP_BAR_MERGE))) return false;
+    const min = contract.manifest.screen.scaffold.backApiVersion;
+    if (this.apiVersion < min) { this.log(`screen: appBar ${APP_BAR_MERGE} needs apiVersion ${min}, dropped`); return false; }
+    return this.flag(o, "appBar", APP_BAR_MERGE);
+  }
+
   /** The event's arg: absent, or a string of at most maxRefChars; null (logged) drops the action. */
   argOf(raw, where) {
     if (absent(raw)) return { value: null };
@@ -2533,6 +2567,12 @@ class Reader {
       if (this.apiVersion < min) return bad(`needs apiVersion ${min}`);
       const g = setExperienceGoOf(v, (why) => this.log(`${where} go.setExperience ${why}, dropped`));
       return g === null ? null : { setExperience: g };
+    }
+    if (k === "installPlugin") {
+      const min = contract.manifest.screen.goInstallPlugin.apiVersion;
+      if (this.apiVersion < min) return bad(`needs apiVersion ${min}`);
+      const g = installPluginGoOf(v, (why) => this.log(`${where} go.installPlugin ${why}, dropped`));
+      return g === null ? null : { installPlugin: g };
     }
     if (k === "section" || k === "categories" || k === "close" || k === "syncProvider") return v === true ? { [k]: true } : bad("must be true");
     if (!isObj(v)) return bad("is not an object");
@@ -2986,6 +3026,9 @@ export function checkPanelScreen(value, lang = "es", { allowSeries = true, setti
     if (has(raw, SCREEN_LAYOUT.field)) capped(LAYOUT_ON_ROOT);
     const root = new Reader(lang, new Set(WIDGETS), capped, allowSeries, settingsModel(settings), { maxDepth: PANEL_SCREEN.maxDepth, maxNodes: PANEL_SCREEN.maxNodes, inPanel: true }).node(raw, 1);
     if (root === null) return null;
+    // apiVersion 19: a panel has no Back to hold and no Kino bar to merge with (PluginScreenSession.take logs both).
+    if (root.type === "scaffold" && root.onBack) capped("screen: scaffold onBack works only on a screen, ignored in a player panel");
+    if (root.type === "scaffold" && root.appBar?.mergeWithKinoBar) capped("screen: appBar mergeWithKinoBar works only on a screen, ignored in a player panel");
     // Task 8j: the result's own player (a refreshMs tick's): honoured only with the playerControl capability.
     const player = panelPlayerOf(opt(v, "player"), capped);
     // Task 17 item G: a Scaffold root is always drawn in the fill layout.
@@ -3020,6 +3063,8 @@ export function checkPanelScreenAnswer(value, lang = "es", { allowSeries = true,
     // PanelSession.go: a theme changes only from the plugin's own full screen.
     if (a.go?.useTheme) { capped("panel: go.useTheme is honoured only on the plugin's own screen, dropped"); a.go = null; }
     if (a.go?.setExperience) { capped("panel: go.setExperience is honoured only on the plugin's own screen, dropped"); a.go = null; }
+    // apiVersion 19: the plugin store is reached only from the plugin's own full screen, never from the player.
+    if (a.go?.installPlugin) { capped("panel: go.installPlugin is honoured only on the plugin's own screen, dropped"); a.go = null; }
     let panel = null;
     const p = opt(v, "panel");
     if (isObj(p)) panel = p;
@@ -3617,22 +3662,22 @@ export function checkScreenForm(tree, formKey) {
 /**
  * What the kit hands `screen(context)`: `{ state, route, device, size, lang }`, the shapes the app's PluginScreenSession
  * sends: `route` is `{ name, params }` (`"main"` at the root), `size` is `{ widthClass, heightClass, orientation }`, `lang`
- * is `"es"` or `"en"`, `activeTheme` the id of this plugin's theme active now, else null. [over] is merged over it key by key. State is Kino's: `inputs` holds the value of every input on
+ * is `"es"` or `"en"`, `activeTheme` the id of this plugin's theme active now, else null, `installed` (Kino 0.9.81) `{ "<repo in the manifest's recommends>": true | false }`, `{}` here (run.mjs fills it from the manifest). [over] is merged over it key by key. State is Kino's: `inputs` holds the value of every input on
  * screen (what the person or the plugin set, else the value the tree shows: the app fills those in per call and never
  * stores them; the kit has no tree yet, so pass them with --state) and `ui` the local operations' results.
  */
 export function fakeScreenContext(over = {}) {
   return {
     state: { inputs: {}, ui: { hidden: {}, enabled: {}, open: {} } }, route: { name: "main", params: {} }, device: "phone",
-    size: { widthClass: "compact", heightClass: "medium", orientation: "portrait" }, lang: "es", activeTheme: null, ...over,
+    size: { widthClass: "compact", heightClass: "medium", orientation: "portrait" }, lang: "es", activeTheme: null, installed: {}, ...over,
   };
 }
 
-/** The `screenEvent` argument: `{ name, arg, value, state, route, device, lang, activeTheme }` (arg and value only when given), as the app sends it. */
-export function fakeScreenEvent(name, { arg, value, state, route, device, lang, activeTheme } = {}) {
+/** The `screenEvent` argument: `{ name, arg, value, state, route, device, lang, activeTheme, installed }` (arg and value only when given), as the app sends it. */
+export function fakeScreenEvent(name, { arg, value, state, route, device, lang, activeTheme, installed } = {}) {
   const base = fakeScreenContext();
   return {
     name, ...(arg !== undefined ? { arg } : {}), ...(value !== undefined ? { value } : {}),
-    state: state ?? base.state, route: route ?? base.route, device: device ?? base.device, lang: lang ?? base.lang, activeTheme: activeTheme ?? base.activeTheme,
+    state: state ?? base.state, route: route ?? base.route, device: device ?? base.device, lang: lang ?? base.lang, activeTheme: activeTheme ?? base.activeTheme, installed: installed ?? base.installed,
   };
 }

@@ -101,7 +101,9 @@ export const PROPS = {
   ],
   spacer: [["(none)", "", "", "`SizedBox` is an empty box of its `width`/`height`; `Spacer` takes its `flex` share of a `Row` or `Column`"]],
   divider: [["(none)", "", "", "a thin rule across its parent"]],
-  scroll: [kids(), ["direction", "`vertical` \\| `horizontal`", "`vertical`", "a `ListView` or rail inside a scroll of the same direction is drawn all at once"]],
+  scroll: [kids(), ["direction", "`vertical` \\| `horizontal`", "`vertical`", "a `ListView` or rail inside a scroll of the same direction is drawn all at once"],
+    ["zoom", "`true` \\| `{ max }`", "none", "a vertical scroll the person can pinch or double-tap to zoom (to 4x, or `max` from 1.5 to 8) and drag once zoomed; the content is laid out wider, so a `fit: \"width\"` picture stays sharp; ignored on a sideways scroll"],
+    ["onScroll", ACTION, "none", "its event's `value` is the settled position from 0 (top) to 1 (end), sent 0.3 s after the person stops scrolling; a vertical scroll that scrolls itself"]],
   grid: [kids(), ["columns", `1 to ${L.maxGridColumns}`, "`2`", "equal columns, filled row by row"]],
   text: [
     ["text", "string", "required (optional with `time`)", `1 to ${n(L.maxTextChars)} characters, plain (no markup, no links); newlines kept; with a \`time\` it is its prefix`],
@@ -115,7 +117,9 @@ export const PROPS = {
   image: [
     ["url", "https URL", "required without `fallback`", "a public https host (no declaration needed); with a `fallback`, no `url` draws the fallback (an empty or refused one too, logged)"],
     ["alt", "string", "none", "what a screen reader says (`altEn` the English one)"],
-    ["aspect", "`16:9` \\| `2:3` \\| `1:1` \\| `banner`", "the picture's own", "the box's shape"],
+    ["aspect", "`16:9` \\| `2:3` \\| `1:1` \\| `banner` \\| `w:h`", "the picture's own", "the box's shape; `w:h` is any width over height from 0.2 to 5, like `1.4:1` or `900:1300`"],
+    ["fit", "`cover` \\| `contain` \\| `width`", "`cover`", "how the picture sits in its box: `cover` fills and crops, `contain` shows all of it, `width` takes the width and the picture's own height (the `aspect`, or 2:3, holds its place until it loads)"],
+    ["focus", "`top` \\| `center` \\| `bottom`", "`center`", "the part of the picture that stays when `cover` crops it"],
     ["fallback", NODE, "none", `drawn in the image's box when the picture fails or there is no \`url\`: only ${codes(S.fallbackWidgets.widgets.map((w) => namesOf(w)[0]))}, at any depth, never pressed`],
   ],
   icon: [["name", ICONS.length + " names", "required", `one of Kino's icons (the [icon table](#icon-names)): ${codes(ICONS)}; the last ${EXTRA_ICONS.names.length} from apiVersion ${EXTRA_ICONS.apiVersion}`]],
@@ -314,12 +318,15 @@ export const PROPS = {
   pages: [
     kids(`nodes (the pages, ${S.pagesNode.minChildren} to ${S.pagesNode.maxChildren})`),
     ["onPageChanged", ACTION, "none", "its event's `value` is the settled page's index"],
+    ["progress", "`segments` \| `bar` \| `none`", "`segments`", `Kino's bar over the pages: one segment a page (up to ${S.pagesNode.maxChildren} pages), one thin bar or none (up to ${S.pagesNode.longMaxChildren} pages: a chapter, not a story)`],
+    ["reverse", "boolean", "`false`", "right to left, page 0 at the right: a swipe to the left turns to the next page, and on a TV so does Left (manga)"],
   ],
   scaffold: [
     ["appBar", "an `AppBar`", "none", "pinned at the top of your area, under Kino's own title bar (never replacing or covering it)"],
     ["body", NODE, "required", "the bounded height left: a `ListView` or a scroll in it scrolls itself while the bars stay"],
     ["floatingActionButton", "a `FloatingActionButton`", "none", "above the bottom bar"],
     ["bottomNavigationBar", "a `NavigationBar`", "none", "at the bottom"],
+    ["onBack", ACTION, "none", `apiVersion ${S.scaffold.backApiVersion}: Back sends this to you instead of leaving (Flutter's \`PopScope\` with \`canPop: false\`); no \`go\`; a failed or timed-out call, or a second Back meanwhile, closes the screen`],
   ],
   appBar: [
     ["title", "string or a node", "none", `a string (\`titleEn\` its twin) is read as a heading; or, Flutter's way, any node (a \`TabBar\`, a \`Row\` of buttons...; at most ${S.scaffold.maxAppBarTitleNodes} nodes) in the room left of the actions`],
@@ -328,6 +335,7 @@ export const PROPS = {
     ["bottom", "a `TabBar`", "none", "under the row"],
     ["centerTitle", "boolean", "`false`", "the title centred"],
     ["backgroundColor", "a colour role", "Kino's surface", "its text and icons in the role's readable colour"],
+    ["mergeWithKinoBar", "boolean", "`false`", `apiVersion ${S.scaffold.backApiVersion}, the root Scaffold's only: with a \`leading\`, Kino draws one bar, your \`leading\` in Close's place and your \`title\` in your plugin's name's`],
   ],
   navigationBar: [
     ["items", "`{ key, icon, label, labelEn?, badge? }[]`", "required", `${S.scaffold.minNavItems} to ${S.scaffold.maxNavItems}, keys distinct`],
@@ -489,6 +497,7 @@ const GO_FIELDS = {
   liveChannel: `\`{ liveChannel: { ${S.goLiveChannel.fields.join(", ")} } }\``,
   syncProvider: "`{ syncProvider: true }`",
   useTheme: `\`{ useTheme: { ${S.goUseTheme.fields.join(", ")} } }\``,
+  installPlugin: `\`{ installPlugin: { ${S.goInstallPlugin.fields.join(", ")} } }\``,
   setExperience: `\`{ setExperience: ${S.goSetExperience.words.map((w) => `"${w}"`).join(" | ")} }\``,
 };
 const GO_OPENS = {
@@ -507,8 +516,10 @@ const GO_OPENS = {
   syncProvider: "Kino's sync-provider settings (Ajustes ▸ Conectar ▸ Proveedor), where the person picks this plugin (only for a plugin with `syncProvider`)",
   useTheme: "turns on one of this plugin's own `appThemes` as Apariencia does, or back to Kino's theme with `theme: null`; Kino shows its own toast",
   setExperience: "asks for the light or the full experience of the whole app; Kino asks the person first and changes nothing without their yes",
+  installPlugin: "Kino's own install sheet for `repo` (a plain `owner/name`); nothing installs without the person's own Instalar",
 };
-const goFrom = (g) => g === "setExperience" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen, from apiVersion ${S.goSetExperience.apiVersion}`
+const goFrom = (g) => g === "installPlugin" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen, from apiVersion ${S.goInstallPlugin.apiVersion}`
+  : g === "setExperience" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen, from apiVersion ${S.goSetExperience.apiVersion}`
   : g === "useTheme" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen, from apiVersion ${S.goUseTheme.apiVersion}`
   : g === "titleByIds" || g === "url" || g === "copy" || g === "liveChannel" || g === "syncProvider"
   ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")}`

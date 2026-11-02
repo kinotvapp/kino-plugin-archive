@@ -21,6 +21,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { checkOutput, checkSettingsOutput, contract, englishCoverage, fetchAnyHost, isStandaloneSet, kb, maskSetPasswords, statusHide, requiredExports, validateManifest, validateManifestWithoutEnhancements } from "./contract.mjs";
 import { resolvePalette } from "./palette.mjs";
+import { protocolBlocks } from "./protocol.mjs";
 import { resolveAppTheme } from "./appthemes.mjs";
 import { decodeCipherKey } from "./seal.mjs";
 import { createKino, signingLane } from "./kino-shim.mjs";
@@ -496,6 +497,11 @@ export async function validate(dirArg, { run = null, args = [], config = {}, rep
     }
   }
   const consent = consentLines(m, { authorFingerprint });
+  // apiVersion 20, the plugin protocol: what the app would refuse or drop in provides / consumes, and what each side must do.
+  const protocol = protocolBlocks(JSON.parse(manifestText));
+  for (const why of protocol.problems) problems.push(`kino-plugin.json: ${why}`);
+  if (protocol.provides.length) notes.push(`provides: this plugin opens ${protocol.provides.map((d) => `"${d.name}" (${[...Object.keys(d.calls), ...Object.keys(d.streams)].map((n) => `proto_${d.name}_${n}`).join(", ") || "no calls"})`).join(", ")}: each call or stream is an export of that name; Kino validates its argument against "in" and its answer against "out"`);
+  if (protocol.consumes.length) notes.push(`consumes: kino.plugins.call(${protocol.consumes.map((u) => `"${u.alias}"`).join(" | ")}, call, arg) asks ${protocol.consumes.map((u) => u.repo).join(", ")} through Kino; it rejects with an error whose code is ${contract.protocol.errorCodes.join(", ")}: handle provider_missing (the person may not have installed it; see recommends and go.installPlugin). Try it: node sdk/run.mjs --provider <provider folder> <this folder> screenEvent <name>`);
   // apiVersion 9's player panel button and settings layout: below it Kino ignores both fields, so the author is told.
   const layoutDrops = [];
   const declared = JSON.parse(manifestText);
@@ -632,6 +638,9 @@ export async function validate(dirArg, { run = null, args = [], config = {}, rep
     // Only the plugin's OWN manifest refuses the install (an enhancement's missing exports drop that block, as the app does: the
     // block's exports are checked below, against what the entry really exports).
     const own = validateManifestWithoutEnhancements(manifestText).manifest;
+    for (const d of protocol.provides) for (const n of [...Object.keys(d.calls), ...Object.keys(d.streams)]) {
+      if (typeof plugin[`proto_${d.name}_${n}`] !== "function") notes.push(`provides "${d.name}": the plugin does not export proto_${d.name}_${n}(): a consumer's call answers provider_failed`);
+    }
     const missing = requiredExports(own.capabilities, own.settings, own).filter((f) => typeof plugin[f] !== "function");
     if (missing.length) problems.push(`the plugin doesn't export ${missing.join(", ")}: Kino refuses the install ("le falta ${missing.sort().join(", ")}")`);
     else {

@@ -71,6 +71,8 @@
 //   the export (the first call of a real session is the reserved event `open`) and prints the validated answer. --trigger
 //   says what set the event off in the app (tap by default, change, submit): a tap or submit is the person's press (what
 //   kino.qr.scan needs); a change is not, and its go.titleByIds / go.url is dropped
+//   Both calls get `installed` (Kino 0.9.81): one key per entry of the manifest's "recommends", all false; mark some installed with
+//   --context '{"installed":{"owner/name":true}}' (only declared repos: Kino tells a plugin about no other)
 //   node sdk/run.mjs [--context '<json>'] [--state '<json>'] <plugin dir> screen
 //   node sdk/run.mjs [--context '<json>'] [--state '<json>'] <plugin dir> screenEvent <name> [arg] ['<value json>'] [--trigger tap|change|submit]
 // Describing other titles (apiVersion 6, the "meta" capability): the query as the app builds it, Kino's verdict field by
@@ -119,6 +121,9 @@
 //                          conflict:1:409 also passes the origin's HTTP status (401, 403 or 409)
 //   --live                 resolve only: the ref is a live channel's (liveStreamHosts "any" applies)
 //   --within <browse ref>  search only: Kino's scoped search ({ q, type: "any", within, cursor }); null = "can't search there"
+//   --provider <folder>    a plugin of the plugin protocol (apiVersion 20) that answers the consumer's kino.plugins.call: its
+//                          `provides` door is served by the folder's proto_<door>_<call> exports, through the app's validation (repeatable).
+//                          `screenEvent protocol <alias>.<stream>` then polls that stream once and sends { alias, stream, items }.
 //   --device tv|phone      what kino.device says (default KINO_DEVICE, else phone): test the TV side of your plugin
 // The first argument is the plugin's entry file or the folder that holds kino-plugin.json. The
 // result goes to stdout as JSON; everything else (kino.log, console.*, dropped entries, errors)
@@ -132,6 +137,7 @@ import { checkOutput, checkSettingsOutput, contract, featureApiVersion, liveChan
 import { contrast, formatRatio, resolvePalette } from "./palette.mjs";
 import { askImage, askRead, createKino, errorReport, signingLane } from "./kino-shim.mjs";
 import { loadPlugin, missingGlobalLines, scanMissingGlobals } from "./sandbox.mjs";
+import { createProtocolCaller, protocolBlocks } from "./protocol.mjs";
 import { kitScreenCall } from "./kit-call.mjs";
 import { actionEvent, checkPanelOutput, contributesLive, contributesPanel, fakeContext, foreignAnswerDrops, foreignContext, foreignEventDetail, gatePlayer, langOf, liveAnswerDrops, liveContext, panelPlayerOf, PLAYER_EVENTS, playerNotice, siftPlayer, TRIGGERS } from "./panel.mjs";
 import { answerFields, checkPanelScreen, checkPanelScreenAnswer, checkScreenAnswer, checkScreenTree, fakePanelScreenContext, fakeScreenContext, fakeScreenEvent, isPanelScreen, LIMITS as SCREEN_LIMITS, PANEL_SCREEN, panelAnswerFields, printScreenTree } from "./screen.mjs";
@@ -237,7 +243,7 @@ function fail(message) {
 }
 
 export function parseArgs(argv) {
-  const opts = { config: {}, record: null, replay: null, raw: false, epg: null, live: false, retry: null, within: null, context: null, state: null, device: null, size: null, out: null, screen: false, foreign: null, liveChannel: null, trigger: null };
+  const opts = { config: {}, record: null, replay: null, raw: false, epg: null, live: false, retry: null, within: null, context: null, state: null, device: null, size: null, out: null, screen: false, foreign: null, liveChannel: null, trigger: null, providers: [] };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -248,6 +254,7 @@ export function parseArgs(argv) {
       opts.config[kv.slice(0, eq)] = kv.slice(eq + 1);
     } else if (a === "--record") opts.record = argv[++i];
     else if (a === "--replay") opts.replay = argv[++i];
+    else if (a === "--provider") opts.providers.push(argv[++i] || "");
     else if (a === "--raw") opts.raw = true;
     else if (a === "--screen") opts.screen = true;
     else if (a === "--foreign") {
@@ -384,8 +391,11 @@ async function main() {
 
   const configFile = join(here, "config.json");
   const config = { ...(existsSync(configFile) ? JSON.parse(readFileSync(configFile, "utf8")) : {}), ...opts.config };
+  let protocol;
+  try { protocol = await protocolFromProviders(opts.providers, manifestOf(dir), stderr); } catch (e) { return fail(e.message); }
   const sharedDevices = kitSharedDevices(dir);
   const { kino, servers, resetBudget, saveTape, writeConfig } = createKino(manifest, {
+    protocol: protocol?.caller,
     shared: sharedDevices.of(kitDevice(opts)),
     storageFile: join(dir, ".kino-storage.json"),
     cookiesFile: join(dir, ".kino-cookies.json"),
@@ -474,7 +484,10 @@ async function main() {
       // Built before the call: a bad argument is the command's fault (exit 2), not the plugin's.
       let request;
       if (opts.trigger !== null && fn !== "screenEvent") return fail("--trigger only applies to screenEvent");
-      try { request = screenRequest(fn, rest, opts); } catch (e) { return fail(e.message); }
+      try { request = screenRequest(fn, rest, { ...opts, recommends: manifest.recommends ?? [] }); } catch (e) { return fail(e.message); }
+      if (fn === "screenEvent" && request.event.name === "protocol") {
+        try { request.event.arg = await protocolEventArg(protocol, request.event.arg); } catch (e) { return fail(e.message); }
+      }
       if (opts.trigger !== null && request.event.name === "open") return fail("--trigger does not apply to open: Kino sends it itself, never as a press");
       const trigger = opts.trigger ?? "tap";
       // Task 8p: a screen's call as the app marks it: the person's press for a tap or a submit, never open or a change.
@@ -884,6 +897,20 @@ function setExperienceGoLine(go, manifest, event) {
 }
 
 /**
+ * apiVersion 19: what the app does with a `go.installPlugin` in [go]: refused (said, false) without the person's own press;
+ * else Kino opens its own install sheet for the repo, and nothing installs until the person taps Instalar there.
+ */
+function installPluginGoLine(go, event) {
+  if (!go?.installPlugin) return false;
+  if (event === null || event.name === "open" || event.trigger === "change") {
+    stderr("· dropped: go.installPlugin: only the person's own tap goes to install a plugin");
+    return false;
+  }
+  stderr(`· go.installPlugin: Kino opens its install sheet over the screen for ${go.installPlugin.repo} (nothing installs until the person taps Instalar), or, when that plugin is already installed (see installed), opens nothing and shows its toast \"That plugin is already installed\"`);
+  return true;
+}
+
+/**
  * apiVersion 18: what the app does with a `go.useTheme` in [go] from [manifest]'s plugin for [event] (null: not an event), its
  * screen's [activeTheme] as the call said it: refused (said, false) without the person's press, for a theme that is not the
  * plugin's, or going back to Kino's while none of its own is active; else Kino acts, shows its toast and calls `screen` again.
@@ -943,13 +970,61 @@ function urlGoLine(go, answer = null) {
   for (const op of answer.ui || []) if (op && op.open !== undefined) stderr(`· dropped: screen: answer.ui open "${String(op.open).slice(0, 40)}" beside a go.url is dropped (nothing covers Kino's link sheet)`);
 }
 
+/** The raw kino-plugin.json of [dir] (the protocol blocks are read from it, enhancements["20"] included). */
+function manifestOf(dir) {
+  return JSON.parse(readFileSync(join(dir, "kino-plugin.json"), "utf8"));
+}
+
+/**
+ * The protocol caller for the consumer in [dir]: each --provider folder is loaded (its own sandbox and kino) and must provide
+ * a door. null without --provider. The kit has no repositories to match: a consumer's entry is served by the first provider
+ * that has its door (the app matches the entry's repo, and never a fork).
+ */
+export async function protocolFromProviders(folders, consumerManifest, say = () => {}) {
+  if (!folders.length) return null;
+  const providers = [];
+  for (const folder of folders) {
+    const dir = resolve(folder);
+    let raw;
+    try { raw = manifestOf(dir); } catch (e) { throw new Error(`--provider ${folder}: cannot read kino-plugin.json: ${e.message}`); }
+    const checked = validateManifest(JSON.stringify(raw));
+    if (!checked.ok) throw new Error(`--provider ${folder}: kino-plugin.json: ${checked.field}: ${checked.message}`);
+    const blocks = protocolBlocks(raw);
+    if (blocks.problems.length) throw new Error(`--provider ${folder}: kino-plugin.json: ${blocks.problems[0]}`);
+    if (!blocks.provides.length) throw new Error(`--provider ${folder}: its manifest declares no "provides" (apiVersion ${contract.protocol.apiVersion}): it opens no door`);
+    const { kino } = createKino(checked.manifest, { storageFile: join(dir, ".kino-storage.json"), config: {}, env: process.env });
+    providers.push({ id: checked.manifest.id, doors: blocks.provides, plugin: (await loadPlugin(resolve(dir, checked.manifest.entry), kino)).plugin });
+  }
+  const blocks = protocolBlocks(consumerManifest);
+  blocks.problems.forEach((p) => say(`! ${p}`));
+  return { caller: createProtocolCaller({ consumes: blocks.consumes, providers, log: (line) => say(`· ${line}`) }), uses: blocks.consumes };
+}
+
+/** `screenEvent protocol <alias>.<stream>`: the arg Kino sends, `{ alias, stream, items }`, from one poll of the provider's stream. */
+export async function protocolEventArg(protocol, text) {
+  if (!protocol) throw new Error("the protocol event needs --provider <folder>: the kit polls the provider's stream");
+  const m = /^([^.]+)\.([^.]+)$/.exec(text ?? "");
+  if (!m) throw new Error('screenEvent protocol takes "<alias>.<stream>" as its argument, e.g. screenEvent protocol tmdb.trending');
+  const { items } = await protocol.caller.poll(m[1], m[2], null);
+  return { alias: m[1], stream: m[2], items };
+}
+
 /**
  * One screen call as the app makes it: `{ context }` for `screen`, `{ context, event }` for `screenEvent`. [opts] carries
  * `--context` (merged over the fake context) and `--state` (merged over its state). [rest] for screenEvent:
  * `<name> [arg] [value json]`. Throws on a bad argument.
  */
-export function screenRequest(fn, rest, { context = null, state = null } = {}) {
+export function screenRequest(fn, rest, { context = null, state = null, recommends = [] } = {}) {
   const ctx = fakeScreenContext(context || {});
+  // Kino 0.9.81: `installed` has one key per entry of the manifest's `recommends` (as written), false until `--context` says
+  // otherwise; Kino never adds a key of its own, so a key the manifest does not declare is the command's fault.
+  const given = ctx.installed;
+  if (given === null || typeof given !== "object" || Array.isArray(given)) throw new Error("--context installed must be an object of owner/name to true or false");
+  for (const [repo, yes] of Object.entries(given)) {
+    if (!recommends.includes(repo)) throw new Error(`--context installed names "${repo}", which is not in the manifest's "recommends": Kino tells a plugin only about those`);
+    if (typeof yes !== "boolean") throw new Error(`--context installed "${repo}" must be true or false`);
+  }
+  ctx.installed = Object.fromEntries(recommends.map((repo) => [repo, given[repo] === true]));
   if (state) ctx.state = { ...ctx.state, ...state };
   if (fn === "screen") return { context: ctx };
   const [name, arg, value] = rest;
@@ -958,7 +1033,7 @@ export function screenRequest(fn, rest, { context = null, state = null } = {}) {
   if (value !== undefined) {
     try { parsed = JSON.parse(value); } catch (e) { throw new Error(`the value must be JSON: ${e.message}`); }
   }
-  return { context: ctx, event: fakeScreenEvent(String(name), { arg: arg === undefined || arg === "" ? undefined : String(arg), value: parsed, state: ctx.state, route: ctx.route, device: ctx.device, lang: ctx.lang, activeTheme: ctx.activeTheme }) };
+  return { context: ctx, event: fakeScreenEvent(String(name), { arg: arg === undefined || arg === "" ? undefined : String(arg), value: parsed, state: ctx.state, route: ctx.route, device: ctx.device, lang: ctx.lang, activeTheme: ctx.activeTheme, installed: ctx.installed }) };
 }
 
 /** The plugin's export called with the app's arguments: `screen(context)` or `screenEvent(event)`, within the app's 20 s. */
@@ -987,6 +1062,9 @@ function printScreenAnswer(fn, answer, context, manifest, writeConfig = () => {}
     const checked = checkScreenTree(answer, lang, undefined, opts);
     checked.dropped.forEach((d) => stderr(`· dropped: ${d}`));
     if (!checked.tree) { stderr("✗ the whole screen is invalid: Kino shows its error state with a close button"); return 1; }
+    // apiVersion 19: what Kino does with the two Scaffold properties that change its own Back and title bar.
+    if (checked.tree.type === "scaffold" && checked.tree.onBack) stderr("· Scaffold.onBack: Kino's Back sends it to you instead of leaving (a failed or timed-out call, or a second Back meanwhile, closes the screen)");
+    if (checked.tree.type === "scaffold" && checked.tree.appBar?.mergeWithKinoBar) stderr("· AppBar.mergeWithKinoBar: Kino draws one bar, your leading in Close's place and your title in your plugin's name's");
     process.stdout.write(JSON.stringify(printScreenTree(checked.tree), null, 2) + "\n");
     return 0;
   }
@@ -998,6 +1076,7 @@ function printScreenAnswer(fn, answer, context, manifest, writeConfig = () => {}
   if (checked.answer.go?.syncProvider && !syncProviderGoLine(checked.answer.go, manifest, event ? (event.trigger === "tap" ? "press" : event.trigger) : "open")) delete checked.answer.go;
   if (checked.answer.go?.useTheme && !useThemeGoLine(checked.answer.go, manifest, event, context?.activeTheme)) delete checked.answer.go;
   if (checked.answer.go?.setExperience && !setExperienceGoLine(checked.answer.go, manifest, event)) delete checked.answer.go;
+  if (checked.answer.go?.installPlugin && !installPluginGoLine(checked.answer.go, event)) delete checked.answer.go;
   // As the app (Task 8m, 8s): a change's go.titleByIds or go.url is dropped; only the person's own tap opens one.
   const go = checked.answer.go;
   if (event && event.trigger === "change" && go && (go.titleByIds || go.url)) {

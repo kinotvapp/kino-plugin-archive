@@ -1,4 +1,4 @@
-// TypeScript declarations for Kino plugins (apiVersion 1 to 19; 19 adds the lyrics capability (the lyrics(query) export: a song's time-synced or plain lyrics for the music player's overlay); 18 adds the app themes (go.useTheme, go.setExperience, appThemes with price, experience and logo); 17 adds the stats operation of the library capability (kino.library.stats, a month's totals and top titles); 16 adds the coins capability (kino.coins: the person's Kino coins balance, and giving one coin for a post); 15 adds the identity capability (kino.identity.telegram: a per-plugin pseudonym of the person and the signed token that proves it), the notifications capability (kino.notifications: notices in the Home bell), library episodes (the latest season and episode of a watched series) and the pluginStore capability (the plugin is a source of plugins for Kino's store: storeSync, and storeList and storeSearch for a live store); 14 adds the screen capability (screen, screenEvent and the manifest's screen block: a full-screen canvas the plugin builds), library, playerPanelTab, playerControl, room (kino.room, a mailbox hosted on the person's device over the Internet), schedule (background jobs: the manifest's jobs and the job export) and the manifest's enhancements; 13 adds the socket capability (kino.ws, outbound WebSockets) and the byteSource capability (a stream whose bytes the plugin serves through its read export) and the storageLarge capability (a 16 MiB kino.storage for a plugin that keeps a catalog) and the catalog capability (kino.catalog, a searchable SQLite catalog of up to 100,000 items per plugin in a 64 MiB file) and the qrScan capability (kino.qr.scan, the phone's camera scanner for a QR code) and the settings form's qr setting (a QR whose text settingsStatus gives, refreshed every refreshMs) and the kino.crypto operations aesIge, modPow, gunzip, convert and aesIgeVerify and the imageSource capability (a poster, backdrop, still or hero image the plugin serves through its image export, KinoImageRef); 12 adds the syncProvider capability (syncPull, syncPush, syncStatus and the manifest's sync block); 11 adds the externalResolve capability (a stream's `external` hand-off to a resolver app, the manifest's externalResolver) and, from Kino 0.9.66, a stream's advisory `media` and its `portable` universal copy; 10 adds the playlists capability; 9 adds the player panel (panel, panelAction, playerEvent, the manifest's panel and settingsLayout), fetchHosts "any" for hand-written plugins, English setting texts and kino.meta by title; 8 adds the audio item kinds music and podcast; 7 adds tracking and segments; apiVersion 5 only adds the manifest's signature, 6 the plain-plugin SDK: typed and larger secrets, migrate, signed streams, the settings form, debug, telemetry, section, categories, theme and scopedSearch). Reference them from plugin.js
+// TypeScript declarations for Kino plugins (apiVersion 1 to 20; 20 adds the plugin protocol (the manifest's provides and consumes blocks and kino.plugins.call: one plugin uses the doors another opens, through Kino); 19 adds the lyrics capability (the lyrics(query) export: a song's time-synced or plain lyrics for the music player's overlay); 18 adds the app themes (go.useTheme, go.setExperience, appThemes with price, experience and logo); 17 adds the stats operation of the library capability (kino.library.stats, a month's totals and top titles); 16 adds the coins capability (kino.coins: the person's Kino coins balance, and giving one coin for a post); 15 adds the identity capability (kino.identity.telegram: a per-plugin pseudonym of the person and the signed token that proves it), the notifications capability (kino.notifications: notices in the Home bell), library episodes (the latest season and episode of a watched series) and the pluginStore capability (the plugin is a source of plugins for Kino's store: storeSync, and storeList and storeSearch for a live store); 14 adds the screen capability (screen, screenEvent and the manifest's screen block: a full-screen canvas the plugin builds), library, playerPanelTab, playerControl, room (kino.room, a mailbox hosted on the person's device over the Internet), schedule (background jobs: the manifest's jobs and the job export) and the manifest's enhancements; 13 adds the socket capability (kino.ws, outbound WebSockets) and the byteSource capability (a stream whose bytes the plugin serves through its read export) and the storageLarge capability (a 16 MiB kino.storage for a plugin that keeps a catalog) and the catalog capability (kino.catalog, a searchable SQLite catalog of up to 100,000 items per plugin in a 64 MiB file) and the qrScan capability (kino.qr.scan, the phone's camera scanner for a QR code) and the settings form's qr setting (a QR whose text settingsStatus gives, refreshed every refreshMs) and the kino.crypto operations aesIge, modPow, gunzip, convert and aesIgeVerify and the imageSource capability (a poster, backdrop, still or hero image the plugin serves through its image export, KinoImageRef); 12 adds the syncProvider capability (syncPull, syncPush, syncStatus and the manifest's sync block); 11 adds the externalResolve capability (a stream's `external` hand-off to a resolver app, the manifest's externalResolver) and, from Kino 0.9.66, a stream's advisory `media` and its `portable` universal copy; 10 adds the playlists capability; 9 adds the player panel (panel, panelAction, playerEvent, the manifest's panel and settingsLayout), fetchHosts "any" for hand-written plugins, English setting texts and kino.meta by title; 8 adds the audio item kinds music and podcast; 7 adds tracking and segments; apiVersion 5 only adds the manifest's signature, 6 the plain-plugin SDK: typed and larger secrets, migrate, signed streams, the settings form, debug, telemetry, section, categories, theme and scopedSearch). Reference them from plugin.js
 // with `/// <reference path="./kino.d.ts" />` for editor help; Kino itself runs plain JavaScript.
 // The numbers in the comments come from contract.json, which is authoritative. The app checks that
 // every `kino` member declared here exists in its runtime and nothing else does (KinoDtsTest).
@@ -879,8 +879,54 @@ interface KinoManifestScreen {
  * every block the app would drop as a problem.
  */
 interface KinoManifestEnhancements {
-  [apiVersion: string]: { capabilities?: ("screen" | "library" | "playerPanelTab" | "playerControl" | "room" | "schedule" | "shared" | "ai")[]; screen?: KinoManifestScreen; settings?: unknown[]; panel?: KinoManifestPanel; jobs?: unknown[] };
+  [apiVersion: string]: { provides?: KinoManifestProvides; consumes?: KinoManifestConsumes; capabilities?: ("screen" | "library" | "playerPanelTab" | "playerControl" | "room" | "schedule" | "shared" | "ai")[]; screen?: KinoManifestScreen; settings?: unknown[]; panel?: KinoManifestPanel; jobs?: unknown[] };
 }
+
+// ---------- the plugin protocol (apiVersion 20, contract.json `protocol`) ----------
+
+/**
+ * A type of the plugin protocol's closed language: `"string"`, `"number"`, `"boolean"`, `"T?"` (optional: absent or null),
+ * `"T[]"` (an array), the name of a type declared by the same door (capitalised, e.g. `"Movie"`), or an inline object of field
+ * to type. A request is checked strictly (an extra or missing field, or a wrong type, is `bad_input`; nothing is coerced), an
+ * answer loosely (undeclared fields are dropped; a missing or wrong one is `bad_output`). JSON only, at most 64 KB.
+ */
+type KinoProtocolType = string | { [field: string]: KinoProtocolType };
+
+/** One call of a door: your export `proto_<door>_<call>(arg)` answers it. `in` may be left out (no arguments). */
+interface KinoProtocolCall { in?: KinoProtocolType; out: KinoProtocolType }
+
+/** One stream of a door: your export `proto_<door>_<stream>(cursor)` answers `{ items, cursor }`. `everySeconds` 30 to 86400 (60 when omitted). */
+interface KinoProtocolStream { out: KinoProtocolType; everySeconds?: number }
+
+/** A door a provider opens. `summary` (at most 120 characters) is the person's "Uses data from <provider> (<summary>)" line. */
+interface KinoProtocolDoor {
+  summary?: string;
+  /** At most 16. */
+  calls?: Record<string, KinoProtocolCall>;
+  /** At most 8. */
+  streams?: Record<string, KinoProtocolStream>;
+  /** Named object types of this door only; names start with a capital letter. */
+  types?: Record<string, Record<string, KinoProtocolType>>;
+}
+
+/** The manifest's `provides` (apiVersion 20, or `enhancements["20"]`): at most 4 doors; names are letters and digits starting with a letter, at most 32. */
+type KinoManifestProvides = Record<string, KinoProtocolDoor>;
+
+/** One entry of the manifest's `consumes`: `repo` is the provider's plain GitHub `owner/name` (a fork does not stand in), `door` its door, `calls` (at most 16) and `streams` (at most 8) the names you use. */
+interface KinoManifestConsumesEntry { repo: string; door: string; calls?: string[]; streams?: string[] }
+
+/** The manifest's `consumes` (apiVersion 20, or `enhancements["20"]`): at most 8 entries keyed by the alias `kino.plugins.call` takes. */
+type KinoManifestConsumes = Record<string, KinoManifestConsumesEntry>;
+
+/** Why `kino.plugins.call` rejected (the Error's `code`). */
+type KinoProtocolErrorCode = "provider_missing" | "not_declared" | "bad_input" | "bad_output" | "rate_limited" | "timeout" | "provider_failed";
+
+/**
+ * The `arg` of the screenEvent named `protocol` (apiVersion 20): the new items of a stream your screen switched on with
+ * `state.protocol.<alias>.<stream> = true`, each validated against the stream's `out`. An object here, not the string `arg` of
+ * other events.
+ */
+interface KinoProtocolEventArg { alias: string; stream: string; items: unknown[] }
 
 /**
  * A screen's timer: Kino sends `screenEvent { name: event }` every `ms` milliseconds (at least 1000: a shorter one is raised,
@@ -1074,6 +1120,7 @@ type KinoScreenGo =
   | { copy: KinoScreenCopy }
   | { useTheme: KinoScreenUseTheme }
   | { setExperience: "light" | "full" }
+  | { installPlugin: KinoScreenInstallPlugin }
   | { liveChannel: KinoScreenLiveChannel }
   | { syncProvider: true };
 
@@ -1101,6 +1148,31 @@ type KinoScreenGo =
  */
 interface KinoScreenUseTheme {
   theme: string | null;
+}
+
+/**
+ * Kino 0.9.81, `"recommends": ["owner/name", ...]` in kino-plugin.json (additive: valid at every apiVersion, an older Kino ignores
+ * it): at most 8 plain GitHub `owner/name` strings (no URL, no sub-path, no `@ref`, at most 100 characters; case kept, repeats
+ * ignoring case collapse), else the manifest is refused: `The "recommends" field must be a list of at most 8 plain GitHub
+ * owner/name repositories`. `screen` and `screenEvent` then receive `installed`: `true` or `false` for exactly those entries
+ * (the repo as you wrote it), never for any other plugin the person has. Kino calls `screen` again when it changes.
+ */
+type KinoScreenInstalled = Record<string, boolean>;
+
+/**
+ * `go: { installPlugin: { repo } }` (apiVersion 19, the sixteenth shape): Kino opens its own install sheet for `repo` (the same one
+ * as Agregar un plugin), over your screen (no navigation to Plugins), so the person can install another plugin (a dependency of
+ * yours, a sibling) in one tap and one confirmation. Nothing installs without the person's own Instalar on that sheet. When that
+ * plugin is already installed Kino opens nothing and shows its own toast ("Ese plugin ya está instalado" / "That plugin is
+ * already installed"); declare it in the manifest's `recommends` and read `installed` to show "Instalado" instead of a button.
+ *
+ * - `repo` is a plain GitHub `owner/name` (at most 100 characters), kept as you wrote it. A URL, a sub-path (`owner/name/dir`) or a
+ *   `@ref` drops the whole `go`, logged; so does any other field.
+ * - Only from the person's own press or submit on your screen (as `go.url` and `go.copy`): dropped, logged, from `open`, a timer, a
+ *   change, a pop-up's `onClose`, a panel and a notice, and below apiVersion 19.
+ */
+interface KinoScreenInstallPlugin {
+  repo: string;
 }
 
 /**
@@ -1358,7 +1430,7 @@ type KinoScreenNode =
    * to its rounded shape, so an `Image` at its top runs to its edges; pad the text children with their own `padding`.
    */
   | (KinoScreenBase & { type: "Card"; children?: KinoScreenNode[]; variant?: KinoScreenResponsive<"plain" | "outlined" | "filled">; flush?: KinoScreenResponsive<boolean> })
-  | (KinoScreenBase & { type: "SingleChildScrollView"; children?: KinoScreenNode[]; direction?: KinoScreenResponsive<"vertical" | "horizontal"> })
+  | (KinoScreenBase & { type: "SingleChildScrollView"; children?: KinoScreenNode[]; direction?: KinoScreenResponsive<"vertical" | "horizontal">; zoom?: true | { max?: number }; onScroll?: KinoScreenAction })
   | (KinoScreenBase & { type: "GridView"; children?: KinoScreenNode[]; columns?: KinoScreenResponsive<number> })
   /** `SizedBox` is an empty box of its `width`/`height`; `Spacer` an empty one that takes its `flex` share. */
   | (KinoScreenBase & { type: "Spacer" | "SizedBox" | "Divider" })
@@ -1375,7 +1447,7 @@ type KinoScreenNode =
    * hold only Column, Row, Stack, Card, Spacer, SizedBox, Divider, Text, Icon, Badge, Skeleton and Image, at any depth, and
    * nothing in it is pressed (`onTap`/`onLongPress` there are ignored). Without one a failed picture shows Kino's mark.
    */
-  | (KinoScreenBase & { type: "Image"; url?: string; aspect?: KinoScreenResponsive<"16:9" | "2:3" | "1:1" | "banner">; alt?: string; altEn?: string; fallback?: KinoScreenNode })
+  | (KinoScreenBase & { type: "Image"; url?: string; aspect?: KinoScreenResponsive<"16:9" | "2:3" | "1:1" | "banner" | `${number}:${number}`>; alt?: string; altEn?: string; fallback?: KinoScreenNode; fit?: KinoScreenResponsive<"cover" | "contain" | "width">; focus?: KinoScreenResponsive<"top" | "center" | "bottom"> })
   | (KinoScreenBase & { type: "Icon"; name: KinoIconName })
   | (KinoScreenBase & { type: "Badge"; text: string; textEn?: string })
   | (KinoScreenBase & { type: "LinearProgressIndicator"; value?: number; labelText?: string; labelTextEn?: string })
@@ -1567,19 +1639,28 @@ type KinoScreenNode =
    * phone, Left and Right on a TV, never by themselves. The page reached is in `state.inputs.<key>` (a number from 0);
    * `onPageChanged`'s `value` is the settled index. Never inside a sideways scroll, a table cell or another `pages`.
    */
-  | (KinoScreenBase & { type: "pages"; key: string; children: KinoScreenNode[]; onPageChanged?: KinoScreenAction })
+  | (KinoScreenBase & { type: "pages"; key: string; children: KinoScreenNode[]; onPageChanged?: KinoScreenAction; reverse?: boolean; progress?: "segments" | "bar" | "none" })
   /**
    * Task 17 item G: only a result's root. The `appBar` sits under Kino's own title bar (never replacing or covering it), the
    * `body` takes the bounded height left (drawn in `layout: "fill"`), the button sits above the `bottomNavigationBar`.
+   *
+   * `onBack` (apiVersion 19, Flutter's PopScope with `canPop: false`): while the screen on show declares it, Back (the phone's,
+   * the TV remote's) does not close the screen or pop a route: Kino sends this action to you as the person's press and you
+   * answer as usual; your next tree no longer declares `onBack` when the next Back should leave. An open pop-up still closes
+   * first. No `go` in it. A failed or timed-out call closes the screen, and so does a second Back while the first is still
+   * running. A player panel ignores it.
    */
-  | (KinoScreenBase & { type: "Scaffold"; appBar?: KinoScreenAppBar; body: KinoScreenNode; floatingActionButton?: KinoScreenNode; bottomNavigationBar?: KinoScreenNavigationBar });
+  | (KinoScreenBase & { type: "Scaffold"; appBar?: KinoScreenAppBar; body: KinoScreenNode; floatingActionButton?: KinoScreenNode; bottomNavigationBar?: KinoScreenNavigationBar; onBack?: KinoScreenAction });
 
 /**
  * Task 17 item G: a Scaffold's top bar: `leading` and up to four `actions` are `IconButton`s with a `labelText`; `bottom` a `TabBar`.
  * `title` is a string (with its `titleEn` twin) or, Flutter's way, any node (a `TabBar`, a `Row` of buttons, an `Image`...; at
  * most 40 nodes) drawn in the room left of the actions: a `TabBar` there shares one row with the actions.
+ * `mergeWithKinoBar` (apiVersion 19, opt-in, needs a `leading`): Kino draws ONE bar, your `leading` in the place of its Close
+ * button and your `title` in the place of your plugin's name; your `actions` stay at the end, followed by Kino's own buttons.
+ * Without a `leading` the flag is ignored and both bars show. The person then leaves by your `leading` or by Back.
  */
-type KinoScreenAppBar = KinoScreenBase & { type: "AppBar"; title?: string | KinoScreenNode; titleEn?: string; leading?: KinoScreenNode; actions?: KinoScreenNode[]; bottom?: KinoScreenNode; centerTitle?: boolean; backgroundColor?: KinoScreenColorRole };
+type KinoScreenAppBar = KinoScreenBase & { type: "AppBar"; title?: string | KinoScreenNode; titleEn?: string; leading?: KinoScreenNode; actions?: KinoScreenNode[]; bottom?: KinoScreenNode; centerTitle?: boolean; backgroundColor?: KinoScreenColorRole; mergeWithKinoBar?: boolean };
 /** Task 17 item G: a Scaffold's bottom bar of 2..5 items; `onChanged`'s `value` is the item's key (keep it in your state). */
 type KinoScreenNavigationBar = KinoScreenBase & { type: "NavigationBar"; items: { key: string; icon: KinoIconName; label: string; labelEn?: string; badge?: KinoScreenBadge }[]; value?: string; selectedIndex?: number; onChanged?: KinoScreenAction };
 
@@ -1716,6 +1797,8 @@ type KinoScreenFn = (arg: {
   lang: "es" | "en";
   /** apiVersion 18: the id of your `appThemes` theme active now, else null. A change calls `screen` again. */
   activeTheme: string | null;
+  /** Kino 0.9.81: one key per entry of your manifest's `recommends`, written as you wrote it (`{}` when none): whether that plugin is installed now. A change calls `screen` again. */
+  installed: KinoScreenInstalled;
 }) => Promise<KinoScreenRoot>;
 
 /**
@@ -1775,7 +1858,12 @@ type KinoJobFn = (ctx: JobContext) => Promise<unknown>;
 type KinoScreenEventFn = (arg: {
   /** apiVersion 18: the id of your `appThemes` theme active now, else null. */
   activeTheme: string | null;
-  name: string; arg?: string; value?: unknown; state: Record<string, unknown>; route: KinoScreenRoute; device: KinoScreenDevice; lang: "es" | "en";
+  /** Kino 0.9.81: as in `screen`, `{ "<repo in recommends>": true | false }`. */
+  installed: KinoScreenInstalled;
+  name: string;
+  /** The press's text; for the event `protocol` (apiVersion 20) the object `{ alias, stream, items }` instead. */
+  arg?: string | KinoProtocolEventArg;
+  value?: unknown; state: Record<string, unknown>; route: KinoScreenRoute; device: KinoScreenDevice; lang: "es" | "en";
 }) => Promise<KinoScreenAnswer | null>;
 
 // ---------- the player panel built with the screen kit (Task 8i, opt-in per result, apiVersion 14) ----------
@@ -3246,6 +3334,20 @@ declare namespace kino {
   namespace coins {
     function balance(): Promise<KinoCoinsBalance>;
     function give(gift: KinoCoinsGift): Promise<KinoCoinsGiven>;
+  }
+
+  /**
+   * apiVersion 20, the plugin protocol (the manifest's `consumes`): asks a door another plugin opens, through Kino. `alias` is a
+   * key of your `consumes`, `call` a name it lists, `arg` JSON (up to 64 KB) matching the call's `in`. Resolves to the answer
+   * validated against the call's `out`; rejects with an Error whose `code` is a [KinoProtocolErrorCode]: `provider_missing` (not
+   * installed, or 18+ while your plugin is not), `not_declared`, `bad_input`, `bad_output`, `rate_limited` (30 calls in any 10 s
+   * per provider door), `timeout` (10 s) or `provider_failed`. `arg` reaches the provider, which may send it to its own hosts. Usable wherever the other services are (`screen`, `screenEvent`...); rejects `not_allowed` in a background
+   * `job`. Declare the provider in `recommends` and offer `go.installPlugin` while it is missing. A stream is switched on with
+   * the state flag `state.protocol.<alias>.<stream> = true` and arrives as the screenEvent `protocol` ([KinoProtocolEventArg]).
+   * Feature-detect with `typeof kino.plugins === "object"`.
+   */
+  namespace plugins {
+    function call(alias: string, call: string, arg?: unknown): Promise<unknown>;
   }
 
   /**

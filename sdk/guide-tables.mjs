@@ -19,6 +19,7 @@ const R = c.kinoRoom;
 const J = c.kinoJobs;
 const A = c.kinoAi;
 const SH = c.kinoShared;
+const PR = c.protocol;
 const PROP_CANON = Object.fromEntries(Object.entries(S.aliases.props).map(([flutter, old]) => [old, flutter]));
 /** The documented (Flutter-style) spelling of a property the contract names by its older name. */
 const canon = (p) => PROP_CANON[p] || p;
@@ -75,6 +76,7 @@ const GO_TEXT = {
   liveChannel: "the player tunes to an En vivo provider's channel (`provider`, `code`), only for a plugin whose player tab declares `\"kinds\": [\"live\"]`",
   syncProvider: "Kino's sync-provider settings (Ajustes ▸ Conectar ▸ Proveedor), where the person picks this plugin; only for a plugin that declares `syncProvider`",
   setExperience: "asks for the light (`\"light\"`: no shadows, no effects, square corners) or the full (`\"full\"`) experience of the whole app; Kino asks the person first and changes nothing without their yes",
+  installPlugin: "Kino's own install sheet for `repo` (a plain `owner/name`); nothing installs without the person's own Instalar",
   useTheme: "turns on one of this plugin's own `appThemes` as Apariencia does, or with `theme: null` goes back to Kino's theme while one of its own is active; opens nothing, Kino shows its own toast and calls `screen` again",
 };
 const CONSENTS = () => [
@@ -144,6 +146,7 @@ export const TABLES = {
     [`Jobs (\`schedule\`, apiVersion ${J.apiVersion})`, `1 to ${J.manifest.maxJobs} jobs, every ${J.manifest.minEveryMin} to ${n(J.manifest.maxEveryMin)} minutes; one run at most ${J.limits.runTimeoutMs / 1000} s, ${J.limits.maxFetches} requests made one at a time, ${kb(J.limits.maxResponseBytes)} of answers and ${kb(J.limits.maxStorageWriteBytes)} written to \`kino.storage\`; ${J.limits.maxRunsPerDay} runs a day per plugin; a failure waits ${J.limits.backoffBaseMin} minutes, doubling up to ${J.limits.backoffMaxMin / 60} h, and ${J.limits.failuresToPause} in a row pause the job; from apiVersion ${J.limits.aiApiVersion} a plugin with \`ai\` approved gets ${J.limits.aiRunTimeoutMs / 1000} s and ${J.limits.aiMaxRequests} requests`],
     [`\`kino.ai\` (apiVersion ${A.apiVersion})`, `a prompt at most ${n(A.limits.maxPromptBytes)} bytes, \`system\` ${n(A.limits.maxSystemBytes)}; the reply cut at \`maxChars\` (1 to ${n(A.limits.maxChars)}, default ${n(A.limits.defaultMaxChars)}); ${A.limits.perMinute} asks in any minute, ${A.limits.perDay} a day and ${A.limits.maxInFlight} at a time per plugin; ${A.limits.devicePerDay} a day and ${A.limits.deviceMaxInFlight} at a time for every plugin of the device together; ${A.limits.timeoutMs / 1000} s an ask`],
     [`\`kino.shared\` (apiVersion ${SH.apiVersion})`, `${SH.limits.maxKeys} keys of at most ${SH.limits.maxKeyChars} characters per plugin; a value at most ${kb(SH.limits.maxValueBytes)} and ${SH.limits.maxDepth} levels, ${kb(SH.limits.maxPluginBytes)} in all; ${SH.limits.writesPerMinute} writes a minute; a key's new value travels at most once every ${SH.limits.syncEveryMs / 1000} s`],
+    [`\`kino.plugins.call\` (apiVersion ${PR.apiVersion})`, `a request and an answer at most ${kb(PR.call.maxPayloadBytes)} of JSON; ${PR.call.timeoutMs / 1000} s a call; ${PR.call.maxCalls} calls in any ${PR.call.windowMs / 1000} s per door; a manifest holds at most ${PR.provides.maxDoors} doors (each ${PR.provides.maxCallsPerDoor} calls and ${PR.provides.maxStreamsPerDoor} streams) and ${PR.consumes.maxEntries} \`consumes\` entries; a stream polls every ${PR.provides.streamEverySeconds.min} s at least; ${PR.streams.maxSubscriptionsPerConsumer} live subscriptions per plugin; not in a background job`],
   ]),
   screenWidgets: () => table(["Name", "Older name", "What it is", "Its own properties", "As an input"], S.widgets.map((old) => {
     if (!WIDGET_TEXT[old]) throw new Error(`guide-tables: no description for the screen widget ${old}`);
@@ -185,7 +188,8 @@ export const TABLES = {
   })),
   screenGo: () => table(["`go`", "What opens", "Sent from"], S.goShapes.map((g) => {
     if (!GO_TEXT[g]) throw new Error(`guide-tables: no description for the go shape ${g}`);
-    const from = g === "setExperience" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen (a tap, a submit, the answer to one, a pop-up's button), never a panel; from apiVersion ${S.goSetExperience.apiVersion}`
+    const from = g === "installPlugin" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen (a tap, a submit, the answer to one, a pop-up's button), never a panel; from apiVersion ${S.goInstallPlugin.apiVersion}`
+      : g === "setExperience" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen (a tap, a submit, the answer to one, a pop-up's button), never a panel; from apiVersion ${S.goSetExperience.apiVersion}`
       : g === "useTheme" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen (a tap, a submit, the answer to one, a pop-up's button), never a panel; from apiVersion ${S.goUseTheme.apiVersion}`
       : g === "titleByIds" || g === "url" || g === "copy" || g === "liveChannel" || g === "syncProvider"
       ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} (a tap, a submit, the answer to one, a pop-up's button, a panel press)`

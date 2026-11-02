@@ -14,7 +14,7 @@ const goOf = (go) => {
 
 test("contract: syncProvider is the thirteenth shape and carries the rules", () => {
   const shapes = contract.manifest.screen.goShapes;
-  assert.equal(shapes.length, 15); // useTheme and setExperience (apiVersion 18) came after it
+  assert.equal(shapes.length, 16); // useTheme, setExperience (apiVersion 18) and installPlugin (apiVersion 19) came after it
   assert.equal(shapes[12], "syncProvider");
   const P = contract.manifest.screen.goSyncProvider;
   assert.equal(P.needsCapability, "syncProvider");

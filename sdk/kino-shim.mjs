@@ -26,6 +26,7 @@ import { filterRelevant, shortQuery, sortBySimilarity } from "./kino-rank.mjs";
 import { createSharedStore, kitSharedApi } from "./shared.mjs";
 import { kitNotificationsApi } from "./notices.mjs";
 import { kitCoinsApi } from "./coins.mjs";
+import { protocolError } from "./protocol.mjs";
 
 // Captured at load: the runner later replaces console.error to keep stdout clean, and kino.log
 // must not be routed through that replacement (it would print two prefixes).
@@ -855,7 +856,7 @@ function deviceFor(device, env) {
  * kino.device (Kino 0.9.55, contract.kinoDevice): [device] ("phone" or "tv", run.mjs --device), else env KINO_DEVICE,
  * else "phone". Anything else throws: a typo must not silently test the other UI.
  */
-export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", device = undefined, storageFile = null, cookiesFile = null, secretsFile = null, config = {}, record = null, replay = null, fetchImpl = globalThis.fetch, metaFixture = undefined, tmdbKey = undefined, tmdbFixture = undefined, nuvioFixture = undefined, libraryFixture = undefined, libraryRevoked = false, callFunction = null, env = process.env, now = Date.now, syncCall = false, qrScan = undefined, room = undefined, roomRevoked = false, ai = undefined, aiRevoked = false, identityRevoked = false, entryFile = null, noticesFile = null, notificationsRevoked = false, coinsRevoked = false, shared = undefined, jobsOn = [] } = {}) {
+export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", device = undefined, storageFile = null, cookiesFile = null, secretsFile = null, config = {}, record = null, replay = null, fetchImpl = globalThis.fetch, metaFixture = undefined, tmdbKey = undefined, tmdbFixture = undefined, nuvioFixture = undefined, libraryFixture = undefined, libraryRevoked = false, callFunction = null, env = process.env, now = Date.now, syncCall = false, qrScan = undefined, room = undefined, roomRevoked = false, ai = undefined, aiRevoked = false, identityRevoked = false, entryFile = null, noticesFile = null, notificationsRevoked = false, coinsRevoked = false, shared = undefined, jobsOn = [], protocol = undefined } = {}) {
   const f = contract.fetch;
   // [syncCall]: this kino runs a syncProvider's syncPull/syncPush (contract.fetch.syncCall): its requests and responses may
   // carry the declared blob, ceil(sync.maxBlobBytes * 4/3) + envelopeChars, like the app; every other call keeps the defaults.
@@ -2212,6 +2213,23 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", devic
     // apiVersion 14 (contract.kinoShared, Task 8q-2): one simulated device's store ([shared], createSharedDevices().phone or
     // .tv; a fresh one when none is given). Present on every apiVersion 14 kino, like the app's (typeof kino.shared === "object").
     ...(featureApiVersion(manifest) >= contract.kinoShared.apiVersion ? { shared: kitSharedApi(manifest, shared ?? createSharedStore({ now }), { now }) } : {}),
+    // apiVersion 20 (contract.protocol): kino.plugins.call(alias, call, arg) answered through [protocol] (createProtocolCaller, the
+    // provider folders of run.mjs --provider); without one every call rejects provider_missing, as when the person has not
+    // installed the provider. Present on every apiVersion 20 kino (typeof kino.plugins === "object").
+    ...(featureApiVersion(manifest) >= contract.protocol.apiVersion ? {
+      plugins: Object.freeze({
+        async call(alias, call, arg) {
+          await null;
+          if (typeof alias !== "string" || typeof call !== "string") throw protocolError("bad_input", "kino.plugins.call takes (alias, call, arg) with alias and call strings");
+          let text;
+          try { text = JSON.stringify(arg === undefined ? null : arg); } catch { throw protocolError("bad_input", "kino.plugins.call: the argument cannot be turned into JSON"); }
+          // UTF-8 bytes, as the app counts them (KinoServices.pluginsCall).
+          if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > contract.protocol.call.maxPayloadBytes) throw protocolError("bad_input", "kino.plugins.call: the argument is too large");
+          if (!protocol) throw protocolError("provider_missing", "no provider given to the kit: run with --provider <folder>");
+          return protocol.call(alias, call, JSON.parse(text));
+        },
+      }),
+    } : {}),
     // apiVersion 17: whether Kino's own row of a job is on ([jobsOn], the kit's stand-in for it), in a screen's call only.
     ...(featureApiVersion(manifest) >= contract.kinoJobs.manifest.enableJobApiVersion ? {
       jobOn(jobId) {
@@ -2316,6 +2334,7 @@ export function signingLane(kino) {
     ...(kino.coins ? { coins: Object.freeze({ balance: async () => { throw why("kino.coins"); }, give: async () => { throw why("kino.coins"); } }) } : {}),
     ...(kino.shared ? { shared: Object.freeze({ get: refused("kino.shared"), set: refused("kino.shared") }) } : {}),
     ...(kino.jobOn ? { jobOn: refused("kino.jobOn") } : {}),
+    ...(kino.plugins ? { plugins: Object.freeze({ call: async () => { throw why("kino.plugins"); } }) } : {}),
     ...(kino.browser ? { browser: Object.freeze({ captureAll: true, capture: async () => { throw why("kino.browser"); }, ...(kino.browser.page ? { page: async () => { throw why("kino.browser"); } } : {}) }) } : {}),
   });
 }
