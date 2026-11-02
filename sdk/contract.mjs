@@ -708,9 +708,10 @@ function validateManifestObject(o, { knownPermissions = contract.permissions } =
   // Only discovery reads it (never the runtime): valid at every apiVersion, exactly true or false.
   if (o.discoverable !== undefined && typeof o.discoverable !== "boolean") return bad("discoverable", 'The "discoverable" field must be true or false');
   const discoverable = o.discoverable === undefined ? m.discoverable.default : o.discoverable;
-  // Only the plugin marketplace reads it (its category chips): valid at every apiVersion, a list of known ids without repeats.
+  // Only the plugin marketplace reads it (its category chips): valid at every apiVersion, a list without repeats of known ids or
+  // new types (the pattern); an older Kino refuses a new one, so a new type is best declared in the catalog entry.
   if (o.categories !== undefined) {
-    const ok = Array.isArray(o.categories) && o.categories.every((c) => m.categories.values.includes(c)) && new Set(o.categories).size === o.categories.length;
+    const ok = Array.isArray(o.categories) && o.categories.every((c) => typeof c === "string" && (m.categories.values.includes(c) || new RegExp(m.categories.pattern).test(c))) && new Set(o.categories).size === o.categories.length;
     if (!ok) return bad("categories", m.categories.message);
   }
   const categories = o.categories || [];
@@ -1027,7 +1028,7 @@ function storeEntry(e, drop) {
   if (stremio) out.stremio = stremio;
   const description = text(e.description, L.maxDescriptionChars); if (description) out.description = description;
   const longDescription = text(e.longDescription, L.maxLongDescriptionChars); if (longDescription) out.longDescription = longDescription;
-  if (Array.isArray(e.categories)) out.categories = [...new Set(e.categories.filter((c) => S.categories.includes(c)))];
+  if (Array.isArray(e.categories)) out.categories = [...new Set(e.categories.filter((c) => typeof c === "string" && (S.categories.includes(c) || new RegExp(S.categoryPattern).test(c))))];
   const tags = strings(e.tags, L.maxTags, L.maxTagChars); if (tags) out.tags = tags;
   const icon = https(e.icon); if (icon) out.icon = icon;
   if (Array.isArray(e.screenshots)) out.screenshots = e.screenshots.map(https).filter(Boolean).slice(0, L.maxScreenshots);

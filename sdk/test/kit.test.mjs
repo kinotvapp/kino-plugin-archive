@@ -1746,9 +1746,12 @@ test("categories: an optional list of known ids at every apiVersion, no repeats"
   for (const apiVersion of [1, 6]) {
     assert.deepEqual(validateManifest(manifest({ apiVersion, categories: ["live", "radio"] })).manifest.categories, ["live", "radio"]);
   }
-  for (const value of [["movies", "movies"], ["películas"], "live", [1]]) {
+  for (const value of [["movies", "movies"], ["películas"], "live", [1], ["Manga"], ["m"], ["1manga"], ["a".repeat(25)], ["manga", "manga"]]) {
     assert.deepEqual(validateManifest(manifest({ categories: value })), { ok: false, field: "categories", message: contract.manifest.categories.message });
   }
+  // A new type is a valid id of the pattern: lowercase letters, digits and hyphens, 2 to 24, a letter first.
+  assert.deepEqual(validateManifest(manifest({ categories: ["manga", "audio-books", "movies"] })).manifest.categories, ["manga", "audio-books", "movies"]);
+  assert.deepEqual(validateManifest(manifest({ categories: ["a".repeat(24)] })).manifest.categories, ["a".repeat(24)]);
 });
 
 test("discoverable: an optional boolean at every apiVersion; false is a note, not a problem", async () => {

@@ -45,7 +45,7 @@
     "streamHosts": { "value": "any", "apiVersion": 4 },
     "fetchHosts": { "value": "any", "apiVersion": 4, "handWrittenApiVersion": 9, "consentLine": "Puede conectarse a cualquier servidor público de internet (solo https, nunca tu red local)" },
     "discoverable": { "default": true },
-    "categories": { "values": ["movies", "series", "anime", "live", "radio", "subtitles", "utilities", "themes", "adult"], "message": "The \"categories\" field must be a list without repeats of: movies, series, anime, live, radio, subtitles, utilities, themes, adult" },
+    "categories": { "values": ["movies", "series", "anime", "live", "radio", "subtitles", "utilities", "themes", "adult"], "pattern": "^[a-z][a-z0-9-]{1,23}$", "message": "The \"categories\" field must be a list without repeats of: movies, series, anime, live, radio, subtitles, utilities, themes, adult, or a new type (2 to 24 lowercase letters, digits and hyphens, starting with a letter)" },
     "catalogOnly": {
       "$comment": "\"catalogOnly\": true (Kino 0.9.54, additive: no apiVersion, valid at every one, an older Kino ignores the field). The plugin lists and describes titles and plays none: resolve is not required, one of atLeastOneOf is, forbiddenCapabilities and forbiddenFields (streamHosts, and browser only as true: \"pages\" reads pages for the catalog) are refused. Kino never calls its resolve, never lists it as a source of a title (search, Ver en otros plugins, Buscar dónde verlo, the player's Servidor) and sends its titles to the person's other sources. For Kino 0.9.53 and older also declare and export resolve (throwing not_found) and search or home.",
       "notBooleanMessage": "The \"catalogOnly\" field must be true or false",
@@ -1002,6 +1002,7 @@
     "idPattern": "^[a-z0-9][a-z0-9-]{1,39}$",
     "addressPattern": "^(?:url:https://[^\\s/]+/\\S*kino-plugin\\.json|[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}(?:/(?!\\.{1,2}(?:/|@|$))[A-Za-z0-9._-]+)*(?:@[A-Za-z0-9._/-]+)?)$",
     "categories": ["movies", "series", "anime", "live", "radio", "subtitles", "utilities", "themes", "adult"],
+    "categoryPattern": "^[a-z][a-z0-9-]{1,23}$",
     "keepRule": "At most maxEntriesPerSync entries are kept, counting only the valid ones: an invalid entry never uses a slot, and the first maxEntriesPerSync valid ones (a repeat of an address already kept is skipped, not counted) win.",
     "needsCapabilityMessage": "The \"pluginStore\" field needs the \"pluginStore\" capability",
     "badMessage": "The \"pluginStore\" field must be an object: { \"mode\": \"local\" or \"live\", \"name\": 1 to 60 characters }",
