@@ -6350,7 +6350,8 @@ Three ideas carry the whole chapter:
 plugin's name and Close, and your `AppBar` under it), about 150 dp of header on a phone. Set `mergeWithKinoBar: true` (one bar:
 your `leading` where Close was, your title where the name was; give the `leading` a real exit) and `dense: true` (on a phone,
 4 dp above and below the row instead of 16; a TV and a player panel keep their room) on the `AppBar` of **every** screen of the
-plugin. Both are additive (no new `apiVersion`); see [one compact bar](ui.md#one-compact-bar). For readers (manga, comics,
+plugin. `dense` is additive (no new `apiVersion`; an older Kino draws the bar at its normal height); `mergeWithKinoBar`
+needs `apiVersion: 19` (Kino 0.9.81); see [one compact bar](ui.md#one-compact-bar). For readers (manga, comics,
 long documents), carousels, a card in Kino's Home that opens your screen, search inside the field and filters in a sheet, see the
 [recipes](ui.md#recipes): a reader uses `Image` `fit: "width"`, a scroll with `zoom` and `onScroll`, and `pages` with `reverse`.
 

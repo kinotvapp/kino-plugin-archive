@@ -763,6 +763,7 @@ Both are plain booleans, not per-size maps. To choose by window, build the tree 
 - Set both on every screen of the plugin, not only one: a front page with two bars and a detail page with one looks like a bug.
 - `dense` only changes the padding; the title, the actions and a `bottom` TabBar are drawn as always.
 - `dense` is additive (no new `apiVersion`): a Kino that does not know it draws the bar at its normal height.
+- `mergeWithKinoBar` needs `"apiVersion": 19` (Kino 0.9.81): a plugin on a lower `apiVersion` keeps the two bars, and may still set `dense`.
 
 <a id="navigation-bar"></a>
 ### NavigationBar
