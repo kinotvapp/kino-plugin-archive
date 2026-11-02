@@ -6346,6 +6346,14 @@ Three ideas carry the whole chapter:
 - **The person always gets out.** The close button and Back are Kino's and always work, whatever your code answers or while
   it is still running.
 
+**Recommended setup for every screen:** one compact bar. Out of the box a screen has two bars (Kino's title bar with your
+plugin's name and Close, and your `AppBar` under it), about 150 dp of header on a phone. Set `mergeWithKinoBar: true` (one bar:
+your `leading` where Close was, your title where the name was; give the `leading` a real exit) and `dense: true` (on a phone,
+4 dp above and below the row instead of 16; a TV and a player panel keep their room) on the `AppBar` of **every** screen of the
+plugin. Both are additive (no new `apiVersion`); see [one compact bar](ui.md#one-compact-bar). For readers (manga, comics,
+long documents), carousels, a card in Kino's Home that opens your screen, search inside the field and filters in a sheet, see the
+[recipes](ui.md#recipes): a reader uses `Image` `fit: "width"`, a scroll with `zoom` and `onScroll`, and `pages` with `reverse`.
+
 Everything here needs `apiVersion: 14`, which arrives with the Kino version that introduces apiVersion 14 (the release is not
 chosen yet; `contract.json` says `"14": "0.9.74"`). On an older Kino `kino.screen` is `undefined`; a plugin that must keep
 installing there offers its screen through [`enhancements`](#screens-for-a-plugin-that-keeps-an-older-apiversion-enhancements).

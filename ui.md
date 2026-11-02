@@ -16,15 +16,15 @@ app enforces; [`kino.d.ts`](kino.d.ts) types every node (`KinoScreenNode`). To s
 | Group | Components |
 | --- | --- |
 | [Quick start](#quick-start) | [A first screen](#quick-start) · [Reading this page](#reading) |
-| [Layout](#layout) | [Column](#column) · [Row](#row) · [Twelve-column row](#wrap-row) · [Stack](#stack) · [Positioned children](#positioned) · [Spacer and SizedBox](#spacer) · [Divider](#divider) · [Scroll](#scroll) · [GridView](#grid-view) · [ListView](#list-view) · [TabBar](#tab-bar) · [ExpansionTile](#accordion) · [steps](#steps) · [Card](#card) · [Scaffold](#scaffold) ([AppBar](#app-bar), [NavigationBar](#navigation-bar)) · [PageView](#page-view) · [ListTile](#list-tile) |
+| [Layout](#layout) | [Column](#column) · [Row](#row) · [Twelve-column row](#wrap-row) · [Stack](#stack) · [Positioned children](#positioned) · [Spacer and SizedBox](#spacer) · [Divider](#divider) · [Scroll](#scroll) · [GridView](#grid-view) · [ListView](#list-view) · [TabBar](#tab-bar) · [ExpansionTile](#accordion) · [steps](#steps) · [Card](#card) · [Scaffold](#scaffold) ([AppBar](#app-bar), [NavigationBar](#navigation-bar)) · [PageView](#page-view) · [pages](#pages) · [ListTile](#list-tile) |
 | [Content](#content) | [Text](#text) · [Text scale](#text-scale) · [Colours](#colors) · [Image](#image) · [Icon](#icon) · [Badge](#badge) · [CircleAvatar](#circle-avatar) · [MaterialBanner](#banner) · [Progress bar](#progress) · [Spinner](#loading) · [Skeleton](#skeleton) · [QrImage](#qr) ([countdown](#qr-countdown)) · [DataTable](#table) ([TableRow](#table-row), [TableCell](#table-cell)) · [NumberStepper](#number-stepper) · [emptyState](#empty-state) · [errorState](#error-state) · [titleCard](#title-card) · [titleRail](#title-rail) · [titleGrid](#title-grid) · [heroCard](#hero-card) |
 | [Actions](#actions) | [Actions and events](#actions) · [Buttons](#button) · [FloatingActionButton](#floating-action-button) · [Tooltip](#tooltip) · [Chips](#chips) · [DropdownButton](#dropdown) · [Menus](#menu) · [Toasts](#toast) · [Local `ui` operations](#ui-ops) |
 | [Forms](#forms) | [Form](#form) · [TextField](#text-field) ([secret fields](#secret-field)) · [Several lines](#text-area) · [DropdownButton](#dropdown) · [RadioGroup](#radio-group) · [Checkbox](#checkbox) · [Switch](#switch) · [Slider](#slider) · [NumberStepper](#number-stepper) · [Focus on TV](#tv-focus) · [Validation](#validation) · [Patterns](#pattern) · [Submit rules](#submit) · [settings node](#settings) ([onSaved](#on-saved)) · [bind and config](#bind-and-config) |
 | [Overlays](#overlays) | [Dialog](#dialog) · [Sheet](#sheet) · [Menu](#menu) · [Declared pop-ups and `onClose`](#popup) |
-| [Navigation](#navigation) | [`title`](#go-title) · [`play`](#go-play) · [`search`](#go-search) · [`browse`](#go-browse) · [`section`](#go-section) · [`categories`](#go-categories) · [`close`](#go-close) · [`screen`](#go-screen) · [`titleByIds`](#go-title-by-ids) · [`url`](#go-url) · [`copy`](#go-copy) · [`liveChannel`](#go-live-channel) · [Routes](#route) |
+| [Navigation](#navigation) | [`title`](#go-title) · [`play`](#go-play) · [`search`](#go-search) · [`browse`](#go-browse) · [`section`](#go-section) · [`categories`](#go-categories) · [`close`](#go-close) · [`screen`](#go-screen) · [`titleByIds`](#go-title-by-ids) · [`url`](#go-url) · [`copy`](#go-copy) · [`liveChannel`](#go-live-channel) · [`syncProvider`](#go-sync-provider) · [Routes](#route) |
 | [Data and behavior](#data) | [State](#state) · [Inputs](#inputs) · [Events](#events) · [Answers](#answer) · [Timers](#every) · [Per-size values](#responsive) · [Flutter-style names](#aliases) · [Style](#style) · [Common properties](#common-properties) · [Box and text properties](#box-props) · [Animations](#animate) · [Tokens](#tokens) · [Limits](#limits) |
 | [Player panel](#panel) | [Legacy and screen mode](#panel-screen-mode) · [Contributed tabs](#panel-tab) · [Pinned panel](#pinned-panel) · [Layout fill: a chat tab](#layout-fill-a-chat-tab) |
-| [Recipes](#recipes) | [News card grid](#recipe-news-grid) · [Settings form with validation](#recipe-settings-form) · [Confirmation pop-up](#recipe-confirm) · [Tabs with chips](#recipe-tabs-chips) · [Button matrix](#recipe-matrix) · [App bar, tabs and a floating button](#recipe-scaffold) · [Tabs in the app bar](#recipe-app-bar-tabs) |
+| [Recipes](#recipes) | [News card grid](#recipe-news-grid) · [Settings form with validation](#recipe-settings-form) · [Confirmation pop-up](#recipe-confirm) · [Tabs with chips](#recipe-tabs-chips) · [Button matrix](#recipe-matrix) · [App bar, tabs and a floating button](#recipe-scaffold) · [Tabs in the app bar](#recipe-app-bar-tabs) · [A search view that Back closes first](#recipe-search-back) · [A reader](#recipe-reader) · [A carousel](#recipe-carousel) · [A card in Kino's Home that opens your screen](#recipe-home-opens-screen) · [Search inside the field](#recipe-search-field) · [Filters in a bottom sheet](#recipe-filter-sheet) |
 | [Screenshots](#screenshots) | How the pictures on this page are captured |
 
 <a id="quick-start"></a>
@@ -329,6 +329,15 @@ export async function screen() {
 Its children, scrolling: `vertical` (the default) for a long page, `horizontal` for a strip of chips or badges. Most
 screens put everything under the fixed parts (a `TabBar`) in one vertical scroll with `flex: 1`.
 
+A reader (manga, webtoon, comics, a long article) adds two things: `zoom` (pinch, double tap and drag; the content is laid out
+wider, so a picture with `fit: "width"` stays sharp and gets taller) and `onScroll` (where the person stopped, from 0 to 1,
+to show "42 %" or to save the place). Both are additive: no new `apiVersion`, an older Kino ignores them.
+
+```json
+{ "type": "SingleChildScrollView", "key": "chapter", "flex": 1, "zoom": true, "onScroll": "scrolled",
+  "children": [{ "type": "Image", "url": "https://example.com/p1.jpg", "fit": "width" }] }
+```
+
 > Screenshot slots: `ui-img/scroll-phone.png`, `ui-img/scroll-tv.png` (phone captured, TV pending, see [Screenshots](#screenshots)).
 
 <!-- ui:props:scroll:start -->
@@ -336,6 +345,8 @@ screens put everything under the fixed parts (a `TabBar`) in one vertical scroll
 | --- | --- | --- | --- | --- |
 | `children` | nodes[] | none | no | its children, drawn in order |
 | `direction` | `vertical` \| `horizontal` | `vertical` | yes | a `ListView` or rail inside a scroll of the same direction is drawn all at once |
+| `zoom` | `true` \| `{ max }` | none | yes | a vertical scroll the person can pinch or double-tap to zoom (to 4x, or `max` from 1.5 to 8) and drag once zoomed; the content is laid out wider, so a `fit: "width"` picture stays sharp; ignored on a sideways scroll |
+| `onScroll` | action | none | no | its event's `value` is the settled position from 0 (top) to 1 (end), sent 0.3 s after the person stops scrolling; a vertical scroll that scrolls itself |
 <!-- ui:props:scroll:end -->
 
 ```json
@@ -656,7 +667,7 @@ the body (an opened `ExpansionTile`'s text too) and, at its very end, stays put.
 
 **Kino's own title bar stays.** Over every plugin screen Kino draws the bar with your plugin's name and Close (an X alone; a screen reader says «Cerrar», «Close» in English); a `Scaffold`'s
 `AppBar` sits under it, inside your area, and never replaces or covers it (the person always knows whose screen this is and
-how to leave). In a player panel the `AppBar` is compact (one 48 dp row). The bar owns one padding on all sides (16 dp; 24 on the TV, 16 in a
+how to leave). One exception, yours to ask for: [`mergeWithKinoBar`](#app-bar) makes the two one bar. In a player panel the `AppBar` is compact (one 48 dp row). The bar owns one padding on all sides (16 dp; 24 on the TV, 16 in a
 panel) round its title row and its `bottom` TabBar together, so the first tab lines up with the title and nothing touches
 the bar's edges; a hairline marks its lower edge, so the body that scrolls under it never merges with it. On the TV the D-pad goes from the `AppBar`'s
 `leading` and `actions` to the body, then the bottom bar and the button; Up from the body's first stop reaches the bar's
@@ -671,7 +682,16 @@ still scroll up, Up pages it first. Right past the last tab reaches the bar's ac
 | `body` | node | required | no | the bounded height left: a `ListView` or a scroll in it scrolls itself while the bars stay |
 | `floatingActionButton` | a `FloatingActionButton` | none | no | above the bottom bar |
 | `bottomNavigationBar` | a `NavigationBar` | none | no | at the bottom |
+| `onBack` | action | none | no | apiVersion 19: Back sends this to you instead of leaving (Flutter's `PopScope` with `canPop: false`); no `go`; a failed or timed-out call, or a second Back meanwhile, closes the screen |
 <!-- ui:props:scaffold:end -->
+
+**`onBack` is Flutter's `PopScope` with `canPop: false`** (apiVersion 19). While the screen on show declares it, the system Back
+(the phone's, the TV remote's) does not close the screen or pop a route: Kino sends you that action as the person's press (the
+same shapes as `onPressed`: `"event"`, `{ event, arg }` or `{ ui: [...], event }`, never a `go`) and you answer as usual. When
+the next Back should leave, your next tree simply does not declare `onBack`. It never traps the person: an open pop-up still
+closes first; a pushed route whose root declares it gets the Back instead of popping; if the call fails, times out or its
+answer is invalid the screen closes; a second Back while the first call is still running closes it too; Kino's own Close is
+unaffected. A player panel has no Back to hold and ignores it (logged). See the recipe [A search view that Back closes first](#recipe-search-back).
 
 See the recipe [A screen with an app bar, tabs and a floating button](#recipe-scaffold).
 
@@ -697,8 +717,52 @@ the body lands on the selected tab). `bottom` stays for the classic second row. 
 | `actions` | `IconButton[]` | none | no | at most 4, each with a `labelText`; a `badge` allowed |
 | `bottom` | a `TabBar` | none | no | under the row |
 | `centerTitle` | boolean | `false` | no | the title centred |
+| `dense` | boolean | `false` | no | additive, no new apiVersion: on a phone the bar has 4 dp above and below its row instead of 16 (a TV and a player panel keep theirs); also the one bar of `mergeWithKinoBar` |
 | `backgroundColor` | a colour role | Kino's surface | no | its text and icons in the role's readable colour |
+| `mergeWithKinoBar` | boolean | `false` | no | apiVersion 19, the root Scaffold's only: with a `leading`, Kino draws one bar, your `leading` in Close's place and your `title` in your plugin's name's |
 <!-- ui:props:appBar:end -->
+
+**`mergeWithKinoBar`** (apiVersion 19, opt-in, only on the root `Scaffold`'s bar and only the boolean `true`): with a `leading`
+`IconButton`, Kino draws ONE bar instead of two. Your `leading` takes the place of Kino's Close (its press is your action;
+its `labelText` is what a screen reader says), your `title` (`titleEn` too) the place of your plugin's name, your `actions` stay
+at the end and Kino's own buttons (the plugin's bell) follow them; your plugin's name stays the bar's label for a screen
+reader. Without a `leading` the flag is ignored (logged) and both bars show, as for every plugin that does not set it. The
+person's way out is then your `leading` and the system Back (which closes the screen when `onBack` is absent or fails), so give
+the `leading` a real exit (`{ close: true }`, or a back to the previous view). On the TV the same, the `leading` first in D-pad
+order. A player panel ignores it (logged).
+
+<a id="one-compact-bar"></a>
+### Recommended: one compact bar
+
+Out of the box a plugin screen has **two bars**: Kino's own title bar (your plugin's name and Close) and, under it, your
+`AppBar`. On a phone that is about 150 dp of header before the first line of content. The recommended setup for every screen
+of a plugin is **one compact bar**: `mergeWithKinoBar: true` (one bar, your `leading` where Close was, your `title` where
+the plugin's name was) plus `dense: true` (on a phone, 4 dp above and below the row instead of 16: 56 dp in all).
+
+```json
+{ "type": "Scaffold",
+  "appBar": { "type": "AppBar", "mergeWithKinoBar": true, "dense": true, "title": "Catálogo", "titleEn": "Catalog",
+    "leading": { "type": "IconButton", "icon": "arrow_back", "labelText": "Atrás", "labelTextEn": "Back", "onPressed": { "event": "back" } },
+    "actions": [{ "type": "IconButton", "icon": "search", "labelText": "Buscar", "labelTextEn": "Search", "onPressed": { "event": "search" } }] },
+  "body": { "type": "SingleChildScrollView", "children": [] } }
+```
+
+What each window does with those two booleans:
+
+| Where | `mergeWithKinoBar` | `dense` |
+| --- | --- | --- |
+| Phone | one bar: your `leading`, your title, your actions and Kino's own buttons (the bell) at the end | the row has 4 dp above and below (56 dp) |
+| TV | the same one bar, your `leading` first in D-pad order | ignored: the TV keeps its 24 dp, the focus ring needs the room |
+| Player panel | ignored (logged) | ignored: a panel's bar is already one compact 48 dp row |
+
+Both are plain booleans, not per-size maps. To choose by window, build the tree from `ctx.device` and `ctx.size` (the
+[per-size values](#responsive) section): for example the merged bar everywhere, and `dense` only where `ctx.size` is `compact`.
+
+- Give the `leading` a real exit on **every** screen: `{ close: true }` on the front page, a back to the previous view
+  everywhere else. With the two bars merged it is the only visible way out besides the system Back.
+- Set both on every screen of the plugin, not only one: a front page with two bars and a detail page with one looks like a bug.
+- `dense` only changes the padding; the title, the actions and a `bottom` TabBar are drawn as always.
+- `dense` is additive (no new `apiVersion`): a Kino that does not know it draws the bar at its normal height.
 
 <a id="navigation-bar"></a>
 ### NavigationBar
@@ -746,6 +810,41 @@ a sideways scroll or a table cell (dropped, logged); at most 24 pages.
 ] }
 ```
 
+<a id="pages"></a>
+### pages
+
+Full-screen pages for a story to go through (apiVersion 17): Kino's own node, so it has no Flutter name; `PageView` stays the
+carousel with dots. Put it as the root, or in a `Column` with `flex: 1`, which gives it the height left. Swiped on a phone and a desktop. On a TV Left
+and Right move a page once nothing more is focusable that way inside it, Up and Down stay in it, and focus goes into the new
+page; a page with nothing focusable still turns. On the first page Left does nothing: the plugin's area keeps focus, as
+everywhere, and Back and Kino's close leave.
+
+Kino draws the progress bar above the pages, one segment a page; you neither draw nor hide it. Nothing turns by itself. The
+page reached lives in `state.inputs.<key>` as a number from 0 (it is no input: no label, no form rules), so it survives your
+re-renders; a `ui` set or your state's `inputs` move it, and `onPageChanged` sends the settled index as `value`.
+
+2 to 8 `children` and a `key` of your own, else the whole node is dropped, logged. Never inside a sideways scroll, a table cell
+or another `pages` (dropped, logged). `autoPlayMs`, `initialPage`, `viewportFraction`, `padEnds` and `progress` are ignored,
+logged. An older Kino drops the node: check `kino.screen.widgets.includes("pages")`.
+
+> Screenshot slots: `ui-img/pages-phone.png`, `ui-img/pages-tv.png` (not captured yet, see [Screenshots](#screenshots)).
+
+<!-- ui:props:pages:start -->
+| Property | Type | Default | Per size | Notes |
+| --- | --- | --- | --- | --- |
+| `children` | nodes (the pages, 2 to 8)[] | none | no | its children, drawn in order |
+| `onPageChanged` | action | none | no | its event's `value` is the settled page's index |
+| `progress` | `segments` | `bar` | `none` | `segments` | no | Kino's bar over the pages: one segment a page (up to 8 pages), one thin bar or none (up to 250 pages: a chapter, not a story) |
+| `reverse` | boolean | `false` | no | right to left, page 0 at the right: a swipe to the left turns to the next page, and on a TV so does Left (manga) |
+<!-- ui:props:pages:end -->
+
+```json
+{ "type": "pages", "key": "story", "onPageChanged": "page", "children": [
+  { "type": "Column", "padding": 24, "children": [{ "type": "Text", "text": "47", "style": "hero" }] },
+  { "type": "Column", "padding": 24, "children": [{ "type": "Text", "text": "Lo tuyo es la madrugada", "style": "h2" }] }
+] }
+```
+
 <a id="list-tile"></a>
 ### ListTile
 
@@ -790,7 +889,7 @@ direction. Give every text its English twin (`textEn`): Kino picks by the person
 | --- | --- | --- | --- | --- |
 | `text` | string | required (optional with `time`) | no | 1 to 2,000 characters, plain (no markup, no links); newlines kept; with a `time` it is its prefix |
 | `textEn` | string | none | no | the English twin, shown when the app is in English |
-| `style` | `h1` \| `h2` \| `h3` \| `h4` \| `h5` \| `p` \| `caption` \| `label` | `p` | yes | Kino's type scale ([Text scale](#text-scale)); `display`, `title`, `subtitle`, `body` read as `h1`, `h3`, `h4`, `p` |
+| `style` | `hero` \| `h1` \| `h2` \| `h3` \| `h4` \| `h5` \| `p` \| `caption` \| `label` | `p` | yes | Kino's type scale ([Text scale](#text-scale)); `display`, `title`, `subtitle`, `body` read as `h1`, `h3`, `h4`, `p` |
 | `maxLines` | integer ≥ 1 | none | yes | cut with an ellipsis |
 | `bold` | boolean | `false` | yes | headings are bold already; `false` never thins one |
 | `time` | epoch ms | none | no | a whole number 0 to 253,402,300,799,999: Kino writes the time itself in the app's language ([Text with a time](#text-time)) |
@@ -851,6 +950,9 @@ that time on the device's clock and turns it on by itself, with no call to your 
 `caption` is the small muted step and `label` the one buttons use. On the TV each step grows by 1.25. Headings are bold
 already. The older names `display`, `title`, `subtitle` and `body` read as `h1`, `h3`, `h4` and `p`; an unknown style is
 `p` (logged).
+
+`hero` (apiVersion 17) is one step above `h1`, for a big number: 72 sp with a 72 sp line on the phone, 90 sp on the TV, bold.
+A Kino from before apiVersion 17 does not know it and draws `p`, so check the API version when the size matters.
 
 > Screenshot slots: `ui-img/text-scale-phone.png`, `ui-img/text-scale-tv.png` (phone captured, TV pending, see [Screenshots](#screenshots)).
 
@@ -917,7 +1019,9 @@ a hole.
 | --- | --- | --- | --- | --- |
 | `url` | https URL | required without `fallback` | no | a public https host (no declaration needed); with a `fallback`, no `url` draws the fallback (an empty or refused one too, logged) |
 | `alt` | string | none | no | what a screen reader says (`altEn` the English one) |
-| `aspect` | `16:9` \| `2:3` \| `1:1` \| `banner` | the picture's own | yes | the box's shape |
+| `aspect` | `16:9` \| `2:3` \| `1:1` \| `banner` \| `w:h` | the picture's own | yes | the box's shape; `w:h` is any width over height from 0.2 to 5, like `1.4:1` or `900:1300` |
+| `fit` | `cover` \| `contain` \| `width` | `cover` | yes | how the picture sits in its box: `cover` fills and crops, `contain` shows all of it, `width` takes the width and the picture's own height (the `aspect`, or 2:3, holds its place until it loads) |
+| `focus` | `top` \| `center` \| `bottom` | `center` | yes | the part of the picture that stays when `cover` crops it |
 | `fallback` | node | none | no | drawn in the image's box when the picture fails or there is no `url`: only `Column`, `Row`, `Stack`, `Card`, `Spacer`, `Divider`, `Text`, `Icon`, `Badge`, `Skeleton`, `Image`, at any depth, never pressed |
 <!-- ui:props:image:end -->
 
@@ -934,6 +1038,11 @@ export async function screen({ state }) {
   return { type: "Image", ...picture, aspect: "16:9", alt: "Póster", fallback: { type: "Text", text: "Sin imagen", textEn: "No picture", padding: 12 } };
 }
 ```
+
+`fit` decides how the picture sits in its box (additive, no new `apiVersion`; an older Kino reads every picture as
+`cover`): `cover` fills the box and crops, `contain` shows all of it, and `width` takes the box's width and the picture's own
+height, so a page or a long strip is never cut. With `width` the `aspect` (any `w:h`, like `"1.4:1"`) only holds the place
+until the picture loads. `focus` (`top`, `center`, `bottom`) picks the part that stays when `cover` crops.
 
 - **TV:** an image is not focused unless it (or what holds it) has an action.
 - **Phone and TV:** the same.
@@ -1580,7 +1689,7 @@ onPressed: { go: { url: { href: "https://kinotvapp.github.io/kino-plugins/" } } 
 onPressed: { event: "login", timeoutMs: 28000 }               // Task 18: this press's call may take up to 28 s
 ```
 
-`screenEvent` receives `{ name, arg, value, state, route, device, lang }` and answers what should change
+`screenEvent` receives `{ name, arg, value, state, route, device, lang, activeTheme, installed }` and answers what should change
 ([Answers](#answer)). The event name `open` is reserved: Kino sends it once when the screen opens.
 
 <a id="button"></a>
@@ -2615,7 +2724,7 @@ close button of its own. A quick pick beside a button (a reaction, a speed, a so
 <a id="navigation"></a>
 ## Navigation
 
-A node's action or an answer may carry `go`: one of twelve shapes, **always into this plugin's own content or one of
+A node's action or an answer may carry `go`: one of thirteen shapes, **always into this plugin's own content or one of
 Kino's own pages**. Kino's page opens over your screen; Back returns to it with its state. At most one page-opening `go`
 every 500 ms. No shape names an intent or an app, and only `liveChannel` names another plugin (an En vivo provider, whose
 channel Kino tunes to for a plugin whose player tab joins live channels).
@@ -2625,7 +2734,7 @@ channel Kino tunes to for a plugin whose player tab joins live channels).
 | --- | --- | --- | --- |
 | [`title`](#go-title) | `{ title: { ref, kind, id, title, adult } }` | this plugin's title page | a tap or an event's answer (never `open`'s, a timer's or an `onClose`'s) |
 | [`play`](#go-play) | `{ play: { ref, kind, id, title, adult } }` | plays this plugin's title | a tap or an event's answer (never `open`'s, a timer's or an `onClose`'s) |
-| [`search`](#go-search) | `{ search: { q } }` | Kino's search with `q` (at most 200 characters), only this plugin as the source | a tap or an event's answer (never `open`'s, a timer's or an `onClose`'s) |
+| [`search`](#go-search) | `{ search: { q } }` | Kino's search with `q` (at most 200 characters), only this plugin as the source (with `scope: "all"`, apiVersion 17, Kino's search on every source, only on the person's tap) | a tap or an event's answer (never `open`'s, a timer's or an `onClose`'s) |
 | [`browse`](#go-browse) | `{ browse: { ref, title?, titleEn? } }` | this plugin's «Ver más» list for a `ref` | a tap or an event's answer (never `open`'s, a timer's or an `onClose`'s) |
 | [`section`](#go-section) | `{ section: true }` | this plugin's section | a tap or an event's answer (never `open`'s, a timer's or an `onClose`'s) |
 | [`categories`](#go-categories) | `{ categories: true }` | Kino's Categorías, this plugin's group first | a tap or an event's answer (never `open`'s, a timer's or an `onClose`'s) |
@@ -2635,6 +2744,10 @@ channel Kino tunes to for a plugin whose player tab joins live channels).
 | [`url`](#go-url) | `{ url: { href, title } }` | an https link in the browser, after Kino's own sheet (a QR code on a TV) | only the person's own press or submit |
 | [`copy`](#go-copy) | `{ copy: { text, label, sensitive } }` | Kino copies `text` (at most 500 characters, 6 lines) and shows its own «Copiado» toast; a TV cannot | only the person's own press or submit |
 | [`liveChannel`](#go-live-channel) | `{ liveChannel: { provider, code } }` | tunes the player to an En vivo provider's channel (only for a plugin whose player tab joins live channels) | only the person's own press or submit |
+| [`syncProvider`](#go-sync-provider) | `{ syncProvider: true }` | Kino's sync-provider settings (Ajustes ▸ Conectar ▸ Proveedor), where the person picks this plugin (only for a plugin with `syncProvider`) | only the person's own press or submit |
+| [`useTheme`](#go-use-theme) | `{ useTheme: { theme } }` | turns on one of this plugin's own `appThemes` as Apariencia does, or back to Kino's theme with `theme: null`; Kino shows its own toast | only the person's own press or submit on your screen, from apiVersion 18 |
+| [`setExperience`](#go-set-experience) | `{ setExperience: "light" | "full" }` | asks for the light or the full experience of the whole app; Kino asks the person first and changes nothing without their yes | only the person's own press or submit on your screen, from apiVersion 18 |
+| [`installPlugin`](#go-install-plugin) | `{ installPlugin: { repo } }` | Kino's own install sheet for `repo` (a plain `owner/name`); nothing installs without the person's own Instalar | only the person's own press or submit on your screen, from apiVersion 19 |
 <!-- ui:go:end -->
 
 > Screenshot slots: `ui-img/navigation-phone.png`, `ui-img/navigation-tv.png` (phone captured, TV pending, see [Screenshots](#screenshots)).
@@ -2668,6 +2781,13 @@ for a plugin without `search`.
 
 ```json
 { "go": { "search": { "q": "big buck bunny" } } }
+```
+
+With `scope: "all"` (apiVersion 17) it opens Kino's normal search across every source instead, with the 18+ gate as usual. Your
+plugin learns nothing: not the results, not which plugins exist. It needs no `search` of yours.
+
+```json
+{ "go": { "search": { "q": "big buck bunny", "scope": "all" } } }
 ```
 
 <a id="go-browse"></a>
@@ -2795,11 +2915,140 @@ the host: the host's tab reads `context.channel`, sends it to the room, and the 
 - In the player panel on a live channel the channel changes in place (the panel and its pin stay); from anywhere else the
   panel or screen closes and the player opens the channel. Nothing comes back to you: the next context says the channel.
 
+<a id="go-sync-provider"></a>
+### `go.syncProvider`
+
+Opens Kino's own sync-provider settings (Ajustes ▸ Conectar ▸ Proveedor), where the person taps «Usar <your plugin>» to make it
+the provider that carries their data. It is the natural last step of a sync provider's connect flow: the plugin has linked the
+account, and this button takes the person to the one place where they choose it. It carries nothing (`true`), and it changes no
+choice by itself: Kino never makes a plugin the provider for them.
+
+```json
+{ "type": "ElevatedButton", "labelText": "Abrir proveedor de sincronización", "labelTextEn": "Open the sync provider", "icon": "sync",
+  "onPressed": { "go": { "syncProvider": true } } }
+```
+
+- Only for a plugin that declares the `syncProvider` capability; any other plugin's is dropped, logged `not_sync_provider`.
+  Only from the person's own press or submit, as `url` and `copy`.
+- A Kino from before this shape drops the whole `go`, logged: keep a written instruction ("Abre Ajustes ▸ Conectar ▸ Proveedor")
+  beside the button so the step still reads on an older Kino.
+
+<a id="go-use-theme"></a>
+### `go.useTheme`
+
+From `apiVersion` 18: a button on your own screen that activates one of your `appThemes`, so the person need not go to Ajustes ▸
+Apariencia. One theme is active at a time, so it replaces the one before. `theme: null` goes back to Kino's theme, the way out of
+yours. `screen` and `screenEvent` receive `activeTheme`, the id of your theme active now or null, and Kino calls `screen` again
+after any change (one made in Apariencia too), so one button can flip between activating and deactivating:
+
+```js
+export async function screen({ activeTheme }) {
+  const on = activeTheme === "noche";
+  return { type: "ElevatedButton", labelText: on ? "Desactivar" : "Activar", labelTextEn: on ? "Turn off" : "Turn on",
+    onPressed: { go: { useTheme: { theme: on ? null : "noche" } } } };
+}
+```
+
+- `theme` is the only field: one of your manifest's `appThemes` ids, or null. It does what Apariencia's button does: the same
+  per-profile choice, the same sync, the person's adjustments of that theme kept.
+- Only from the person's own press or submit on your screen (a tap, a submit, the answer to one, a pop-up's button): dropped,
+  logged, from `open`, a timer, a change, a load-more, a pop-up's `onClose`, a panel or a notice. Below `apiVersion` 18 it is dropped.
+- Refused, logged, with nothing changed, when Apariencia does not list that theme as yours (another plugin's id, your plugin off in
+  this profile, 18+ while locked). `theme: null` acts only while your own theme is active, so you can never reset another plugin's.
+- Kino shows its own toast, «Tema aplicado» or «Volviste al tema de Kino»; the app repaints at once, your screen included.
+
+<a id="go-set-experience"></a>
+### `go.setExperience`
+
+From `apiVersion` 18: a button on your own screen that asks for the **light** or the **full** experience of the whole app, the two
+presets of Ajustes ▸ Experiencia visual (light: no shadows, no effects, square corners; full: every effect on and rounded
+corners). A theme that looks best with one of them can also say so with its `experience` field, asked the same way when the
+theme is turned on.
+
+```js
+export async function screen() {
+  return { type: "ElevatedButton", labelText: "Usar la experiencia completa", labelTextEn: "Use the full experience",
+    onPressed: { go: { setExperience: "full" } } };
+}
+```
+
+- The value is the word `"light"` or `"full"`. Anything else drops the `go`, logged.
+- Kino asks the person first, in its own words, naming your plugin («Tu plugin» pide la experiencia completa. ¿La usamos?),
+  and changes nothing without their yes. When the app already has that experience nothing is asked.
+- Only from the person's own press or submit on your screen (a tap, a submit, the answer to one, a pop-up's button): dropped,
+  logged, from `open`, a timer, a change, a load-more, a pop-up's `onClose`, a panel or a notice. Below `apiVersion` 18 it is dropped.
+
+<a id="go-install-plugin"></a>
+### `go.installPlugin`
+
+From `apiVersion` 19: a button on your own screen that opens Kino's own install sheet for a repository (the same preview and consent
+sheet as **Agregar un plugin**: what the plugin connects to, then Instalar or Cancelar), so the person installs another plugin
+(a dependency of yours, a sibling of your catalog) in one tap and one confirmation. The sheet opens over your screen: the person
+is not taken to Plugins, and your screen is where they are when they close it. Nothing installs without the person's own
+Instalar on that sheet. If that plugin is already installed Kino opens nothing and shows its own toast ("Ese plugin ya está
+instalado" / "That plugin is already installed"). You can offer several, one button per dependency.
+
+```js
+export async function screen() {
+  // One button per dependency: the person picks which one to install.
+  const needs = [
+    { repo: "kinotvapp/kino-plugin-archive", label: "Instalar Archive", labelEn: "Install Archive" },
+    { repo: "kinotvapp/kino-plugin-poster-pro", label: "Instalar Poster Pro", labelEn: "Install Poster Pro" },
+  ];
+  return { type: "Column", children: needs.map((n) => (
+    { type: "ElevatedButton", labelText: n.label, labelTextEn: n.labelEn, onPressed: { go: { installPlugin: { repo: n.repo } } } })) };
+}
+```
+
+- To show "Instalado" instead of a button, declare the repositories in the manifest's [`recommends`](#recommends-installed) and read
+  `installed`. The only field of the `go` is `repo`, a plain GitHub `owner/name` of at most 100 characters, kept as you wrote it (case untouched). A URL
+  (anything with `://`), a sub-path (`owner/name/dir`), a `@ref` or any other field drops the `go`, logged.
+- One `go` opens one repository. To offer several dependencies, show **one button each** (the list above is the recommended
+  shape), never a single button that tries to install them all: the person decides each one.
+- Only from the person's own press or submit on your screen (a tap, a submit, the answer to one, a pop-up's button): dropped,
+  logged, from `open`, a timer, a change, a load-more, a pop-up's `onClose`, a panel or a notice. Below `apiVersion` 19 it is dropped.
+
+<a id="recommends-installed"></a>
+#### Recommended plugins and `installed` (Kino 0.9.81)
+
+Declare the plugins yours works better with in `kino-plugin.json`, at any `apiVersion` (an older Kino ignores the field):
+
+```jsonc
+{ "recommends": ["kinotvapp/kino-plugin-archive", "kinotvapp/kino-plugin-poster-pro"] }
+```
+
+A list of at most 8 plain GitHub `owner/name` strings (no URL, no sub-path, no `@ref`, at most 100 characters each; the case you write is
+kept and a repeat, ignoring case, collapses into the first). Anything else makes the manifest invalid:
+`The "recommends" field must be a list of at most 8 plain GitHub owner/name repositories`.
+
+`screen` and `screenEvent` then receive `installed`, an object with **one key per entry of your own `recommends`, written exactly as
+you wrote it**, `true` when that plugin is installed now on this device and `false` when not (`{}` when you declare none). Kino never
+tells you about any other plugin the person has. When it changes while your screen is open (the person installs or removes one),
+Kino calls `screen` again, so a tile can switch from the button to "Instalado". One Settings tile per recommended plugin:
+
+```js
+const NEEDS = [
+  { repo: "kinotvapp/kino-plugin-archive", name: "Archive" },
+  { repo: "kinotvapp/kino-plugin-poster-pro", name: "Poster Pro" },
+];
+
+export async function screen({ installed }) {
+  return { type: "Column", children: NEEDS.map((n) => installed[n.repo]
+    ? { type: "ListTile", title: n.name, subtitle: "Instalado", subtitleEn: "Installed" }
+    : { type: "ListTile", title: n.name, subtitle: "Toca para instalar", subtitleEn: "Tap to install",
+        onTap: { go: { installPlugin: { repo: n.repo } } } }) };
+}
+```
+
+In the kit, `node sdk/run.mjs <plugin dir> screen` passes `installed` with every `recommends` entry `false`; mark some as installed
+with `--context '{"installed":{"kinotvapp/kino-plugin-archive":true}}'`.
+
 <a id="route"></a>
 ### Routes (`route` push and pop)
 
 Screens of your own deeper in the canvas: an answer's `route: { push: "detail", params }` goes one level deeper, `{ pop:
-true }` back; Back pops a pushed route before it closes the canvas. `screen({ route })` gets `{ name, params, args? }`.
+true }` back; Back pops a pushed route before it closes the canvas. `screen({ route })` gets `{ name, params, args? }`; `name` is `"main"` when the screen was opened without a route (from Kino's
+Home, from a card, from the menu), so treat `"main"` as your front page.
 
 > Screenshot slots: `ui-img/route-phone.png`, `ui-img/route-tv.png` (phone captured, TV pending, see [Screenshots](#screenshots)).
 
@@ -2886,7 +3135,40 @@ its `go` (except `go.screen`), a load-more's never changes the route.
 | `focus` | the key of the node that takes the focus | dropped | dropped | kept |
 | `config` | your settings to write, at most 32 keys ([bind and config](#bind-and-config)) | kept | kept | kept |
 | `ui` | local operations (at most 8); an `open` waits for the tree the answer asks for | dropped | kept, without `open` and `focus` | kept |
+| `share` | `{ key }`, apiVersion 17: that node as an image in the system share sheet ([Sharing an image](#share)); only the answer to the person's tap or submit | dropped | dropped | dropped |
+| `enableJob` | a job id, apiVersion 17: turns on Kino's own row of that job, only after the person's tap; no answer turns it off | dropped | dropped | dropped |
 <!-- ui:answer:end -->
+
+<a id="share"></a>
+### Sharing an image (`share`)
+
+`share: { key }` in an answer draws one node of the screen as an image and opens the system share sheet: a card to send, not
+a screenshot. It takes `apiVersion` 17; a lower plugin is refused and logged.
+
+```js
+screenEvent(event) {
+  if (event.name === "share") return { share: { key: "card" } };
+}
+```
+
+- **Only after the person's own tap or submit.** The answer to the reserved `open`, a timer, a load-more, a change or an
+  `onClose` drops it, and so does a panel; so does an answer or a new tree that comes more than 5 s after the tap, and Back, a restart, a failure, a newer pop-up or a render that draws nothing in between. Each is logged.
+- **The node** must be one the person can see now: in the current tree or an open pop-up's body; with `state` or `route` in the
+  same answer, in the tree that answer asks for. A `hidden` node, one in a closed pop-up or accordion item, one on another page
+  of `pages`, a key naming a pop-up and an unknown key are dropped, logged.
+- **A `pageView` is never shared whole.** Kino does not know which page the person swiped to, so a node that holds a `pageView`,
+  its own key or an ancestor's, is refused, logged. Inside one, only its first page can be shared, and only when `initialPage` is 0.
+- **18+ titles never go in an image,** even with the code unlocked: `TitleCard`, `TitleRail` and `TitleGrid` lose them. A node
+  with nothing left is dropped, logged.
+- **The image** is a PNG of 1080×1350 pixels, always drawn 360 dp wide and at font scale 1, so your layout does not move with
+  the person's phone or font size. Your node gets the area above Kino's own line, clipped to it, in your screen's theme.
+  Kino's line names your plugin (at most 24 characters), so a card never passes as Kino's own; nothing of yours can cover it.
+- **Images** wait 3 s at most, then Kino's placeholder (or your `fallback`). Animations jump to their end. Buttons and fields
+  draw, but do nothing; a `settings` node is not drawn.
+- One at a time: a second tap while one is being made is dropped. If it fails, Kino says so in its own toast.
+- The share sheet's title names your plugin; nothing is added to what the person writes. The file stays in Kino's private cache, read-only for the app the person
+  picks, and goes at the next share. No capability and no permission line: the person taps and picks the app.
+- **A TV has no share sheet:** it refuses `share`, logged, with no toast. Hide the button there (`kino.device`, `device: "tv"`).
 
 <a id="every"></a>
 ### Timers (`every`)
@@ -3153,7 +3435,7 @@ jump; an animation never delays a press or focus; at most 24 animating nodes a s
 | Corners (`borderRadius`) | `none`, `small`, `medium`, `large`, `full` (one for every corner, or a map per corner) |
 | Colour roles (`color`) | `primary`, `secondary`, `surface`, `muted`, `warning`, `error`, `onPrimary`, `primaryContainer`, `surfaceVariant` |
 | Roles (`MaterialBanner`, a toast) | `info`, `warning`, `error`, `success` |
-| Text styles (`Text.style`) | `h1`, `h2`, `h3`, `h4`, `h5`, `p`, `caption`, `label` |
+| Text styles (`Text.style`) | `hero`, `h1`, `h2`, `h3`, `h4`, `h5`, `p`, `caption`, `label` |
 | Card sizes (`titleCard`, `titleRail`, `QrImage`) | `small`, `medium`, `large` |
 | Width classes (per-size maps, `sizes`) | `compact`, `medium`, `expanded` |
 | Devices (`devices`, `ctx.device`) | `phone`, `tv`, `desktop` |
@@ -3165,7 +3447,7 @@ range slider, a rating, dismissible and reorderable list items, rich text, chart
 file inputs. Task 17 added the positioned `Stack`, `alignSelf`, `textAlign`, borders, elevation, a background role,
 `minWidth`/`maxWidth`/`maxHeight`, animations, `FloatingActionButton`, `ListTile`, `CircleAvatar`, `PageView` (and the
 carousel), tooltips and the `Scaffold`. The screen asks added the masked `TextField` (`obscureText`), password writes
-through `config`, and the `settings` node's `onSaved`.
+through `config`, and the `settings` node's `onSaved`. apiVersion 17 added [`pages`](#pages).
 Feature-detect a widget a newer Kino adds with `kino.screen.names.includes("DataTable")`.
 
 <a id="limits"></a>
@@ -3258,7 +3540,7 @@ the title and its facts, the synopsis, the details, the images and last the cast
 | Context adds | `state`, `size`, and `features` holds `"screen"` while screens are on |
 | `panelAction` triggers | `press`, `change`, `submit` |
 | Answer fields kept | `state`, `toast`, `toastEn`, `ui`, `config`, `go`, `close`, `focus`, `player`, `message`, `pause`, `panel` |
-| Answer fields dropped | `dialog`, `sheet`, `menu`, `route`; legacy-only `patch`, `values`, `save` |
+| Answer fields dropped | `dialog`, `sheet`, `menu`, `route`, `share`, `enableJob`; legacy-only `patch`, `values`, `save` |
 <!-- ui:panel:end -->
 
 ```json
@@ -3503,6 +3785,43 @@ export async function screenEvent(e) {
 }
 ```
 
+<a id="recipe-search-back"></a>
+### A search view that Back closes first
+
+One bar (`mergeWithKinoBar`: your `leading` where Close was, your title in place of the plugin's name) and a Back that first
+leaves the search, then the screen: while `state.searching` is true the tree declares `onBack`, and its answer turns the flag
+off, so the next Back closes the screen.
+
+```js
+export async function screen({ state }) {
+  const searching = state.searching === true;
+  return {
+    type: "Scaffold",
+    // Declared only while there is something for Back to undo.
+    onBack: searching ? "close_search" : undefined,
+    appBar: {
+      type: "AppBar", mergeWithKinoBar: true,
+      title: searching ? "Buscar" : "Mis listas", titleEn: searching ? "Search" : "My lists",
+      leading: searching
+        ? { type: "IconButton", icon: "arrow_back", labelText: "Cerrar la búsqueda", labelTextEn: "Close search", onPressed: "close_search" }
+        : { type: "IconButton", icon: "close", labelText: "Cerrar", labelTextEn: "Close", onPressed: { close: true } },
+      actions: searching ? [] : [{ type: "IconButton", icon: "search", labelText: "Buscar", labelTextEn: "Search", onPressed: "open_search" }],
+    },
+    body: { type: "Column", padding: 16, gap: 12, children: [
+      searching
+        ? { type: "TextField", key: "q", labelText: "Buscar", labelTextEn: "Search", autofocus: true }
+        : { type: "Text", text: "Tus listas", textEn: "Your lists" },
+    ] },
+  };
+}
+
+export async function screenEvent(e) {
+  if (e.name === "open_search") return { state: { searching: true } };
+  if (e.name === "close_search") return { state: { searching: false } };
+  return null;
+}
+```
+
 <a id="recipe-app-bar-tabs"></a>
 ### Tabs in the app bar
 
@@ -3534,6 +3853,155 @@ export async function screenEvent(e) {
   return e.name === "tab" ? { state: { tab: e.value } } : null;
 }
 ```
+
+<a id="recipe-reader"></a>
+### A reader: pages that fit the width, zoom and a place that is kept
+
+For manga, webtoons, comics and long documents. Four small pieces, each useful alone:
+
+- `Image` with `fit: "width"`: the picture takes the width of its box and its own height, so a page is never cut (no byte
+  measuring, no size table). The `aspect` (any `"w:h"`, like `"1.4:1"`) only holds the place until it loads.
+- `zoom: true` on the vertical scroll: pinch, double tap and drag; the content is laid out wider, so the picture stays sharp.
+- `onScroll`: where the person stopped, `0` (top) to `1` (end), 0.3 s after they stop. Save it in `kino.storage`.
+- `pages` with `reverse: true` and `progress: "bar"`: one page at a time, swiped left to right, or right to left for manga,
+  up to 250 pages, with one thin bar instead of a segment per page. A page that holds a zoomable scroll zooms; one finger on
+  an unzoomed page still swipes.
+
+```js
+export async function screen({ state }) {
+  const pages = state.pages ?? []; // [{ url }]
+  if (state.mode === "paged") {
+    return { type: "pages", key: "pgs", flex: 1, reverse: state.rtl === true, progress: "bar", onPageChanged: "page",
+      children: pages.map((p, i) => ({ type: "SingleChildScrollView", key: "z" + i, zoom: true, children: [
+        { type: "Image", url: p.url, fit: "width", aspect: "2:3", alt: "Página " + (i + 1), altEn: "Page " + (i + 1) } ] })) };
+  }
+  return { type: "SingleChildScrollView", key: "strip", flex: 1, zoom: true, onScroll: "scrolled",
+    children: [{ type: "Column", crossAxisAlignment: "center",
+      children: pages.map((p, i) => ({ type: "Image", key: "p" + i, url: p.url, fit: "width", aspect: "2:3" })) }] };
+}
+
+export async function screenEvent({ name, value }) {
+  if (name === "scrolled" || name === "page") { kino.storage.set("at", String(value)); return null; } // the place to resume
+  return null;
+}
+```
+
+- A `pages` node needs a `key` of its own and 2 or more children; with `progress: "segments"` (the default) at most 8.
+- `onScroll` is for a vertical scroll that scrolls itself (the strip); inside `pages`, the page the person reached comes from `onPageChanged`.
+- Resume a page with a `ui` `set` on the `pages` key in the answer that opens the chapter: `ui: [{ set: { key: "pgs", value: 4 } }]`.
+- The vertical strip cannot be told to scroll to a saved position: keep the place, show it, and let the person scroll.
+
+<a id="recipe-carousel"></a>
+### A carousel at the top of a front page
+
+`PageView` with `viewportFraction` below 1: the next page peeks at the side, it turns by itself and Kino draws the dots.
+
+```js
+const page = (it, i) => ({ type: "Card", key: "car-" + i, variant: "filled", radius: "large", margin: 8,
+  onTap: { event: "open", arg: it.url },
+  children: [{ type: "Row", gap: 16, padding: 16, crossAxisAlignment: "center", children: [
+    { type: "Card", flush: true, radius: "medium", elevation: 6, children: [
+      { type: "Image", url: it.poster, width: 120, aspect: "2:3", alt: it.title } ] },
+    { type: "Column", gap: 8, flex: 1, crossAxisAlignment: "start", children: [
+      { type: "Badge", text: "#" + (i + 1), color: "primary" },
+      { type: "Text", text: it.title, style: "h3", maxLines: 3 },
+      { type: "ElevatedButton", icon: "play", radius: "full", labelText: "Ver", labelTextEn: "See", onPressed: { event: "open", arg: it.url } },
+    ] } ] }] });
+
+export async function screen({ state }) {
+  return { type: "SingleChildScrollView", children: [
+    { type: "Text", text: "Tendencias", textEn: "Trending", style: "h3", padding: 16 },
+    { type: "PageView", key: "carousel", viewportFraction: { compact: 0.9, medium: 0.6, expanded: 0.42 }, padEnds: false,
+      autoPlayMs: 5000, children: (state.trending ?? []).slice(0, 6).map(page) } ] };
+}
+```
+
+Every page counts toward the 600 nodes of a screen: a page like this one is about 9 nodes, so six pages cost 54. Keep the
+carousel to 6 to 8 pages and trim the rails under it.
+
+<a id="recipe-home-opens-screen"></a>
+### A card in Kino's Home that opens your screen, with a front page to go back to
+
+A `home()` row item carries `open: { screen }`: tapping it opens your screen instead of the title page, from Kino's Home rows
+and from its category shelves. Give it **`args`, not a route**, so the screen opens on your front page (route `main`) and
+you push the detail over it: Back then lands on your front page instead of doing nothing.
+
+```js
+export async function home() {
+  return [{ id: "trending", title: "Mangas populares", items: titles.map((t) => ({
+    id: t.slug, ref: t.url, title: t.title, kind: "movie", poster: t.poster,
+    open: { screen: { args: { open: t.url } } },          // no route: the screen opens as "main"
+  })) }];
+}
+
+export async function screenEvent({ name, route }) {
+  if (name === "open" && typeof route?.args?.open === "string") {
+    const detail = await loadSeries(route.args.open);       // your own loader
+    return { state: { detail }, route: { push: "detail", params: { url: route.args.open } } }; // front page below, detail on top
+  }
+  return null;
+}
+```
+
+- A plugin that plays nothing declares `"catalogOnly": true`; give its items `kind: "movie"` (a `series` item needs `episodes`).
+- Check `route.args.open` yourself (a path you recognise): it comes from a saved row that an older plugin version wrote.
+- Kino keeps `home()` rows 6 hours and drops them when the plugin's version changes.
+
+<a id="recipe-search-field"></a>
+### Search inside the field, with skeletons while it loads
+
+A `TextField` can carry its own search icon (`trailingIcon`, `trailingLabel`, `onTrailingTap`), so no separate button or `Form`
+is needed. Show a hidden skeleton grid **at once** with a local `ui` operation, and hide it in the answer: the screen never
+sits frozen while your `screenEvent` fetches.
+
+```js
+const SEARCH = { ui: [{ show: "loading" }, { hide: "results" }], event: "search" };
+
+export async function screen({ state }) {
+  return { type: "SingleChildScrollView", children: [{ type: "Column", children: [
+    { type: "TextField", key: "q", kind: "search", padding: 16, labelText: "Buscar", labelTextEn: "Search",
+      trailingIcon: "search", trailingLabel: "Buscar", trailingLabelEn: "Search", onSubmitted: SEARCH, onTrailingTap: SEARCH },
+    { type: "Column", key: "loading", hidden: true, padding: 12, children: [{ type: "GridView", columns: 3, gap: 12,
+      children: [0, 1, 2, 3, 4, 5].map((i) => ({ type: "Column", key: "sk" + i, gap: 8, children: [
+        { type: "Skeleton", shape: "block", height: 200 }, { type: "Skeleton", shape: "line", lines: 2 } ] })) }] },
+    { type: "Column", key: "results", children: (state.results ?? []).map(card) },
+  ] }] };
+}
+
+export async function screenEvent({ name, value }) {
+  if (name !== "search") return null;
+  const results = await find(String(value ?? "").trim());   // the field's text arrives as `value`
+  return { state: { results }, ui: [{ hide: "loading" }, { show: "results" }] }; // also in the answer to a failure
+}
+```
+
+Skeletons beat a spinner here: they keep the shape of the grid, so nothing jumps when the results arrive.
+
+<a id="recipe-filter-sheet"></a>
+### Filters in a bottom sheet, with a search field
+
+Three or four filters as buttons (`Género: Todos ▾`) that open a `BottomSheet`; a long list (genres) gets a search field.
+Picking a row closes the sheet and shows skeletons while the new page loads, all with local `ui` operations on the tap.
+
+```js
+const BUSY = [{ show: "skeleton" }, { hide: "grid" }];
+
+const sheet = (key, title, options, current, event, q) => ({ type: "BottomSheet", key, title, children: [
+  options.length > 8 ? { type: "TextField", key: "gq", kind: "search", value: q, padding: 8, labelText: "Buscar", onChanged: "gq" } : null,
+  { type: "ListView", key: key + "-list", items: options.filter((o) => !q || o[1].toLowerCase().includes(q.toLowerCase())).map((o) => ({
+    type: "ListTile", key: key + "-" + o[0], dense: true, title: o[1],
+    trailing: o[0] === current ? { type: "Icon", name: "check" } : undefined,
+    onTap: { ui: [{ close: key }].concat(BUSY), event, arg: o[0] } })) },
+].filter(Boolean) });
+
+// the button that opens it
+const button = (sheetKey, label, value) => ({ type: value ? "ElevatedButton" : "TextButton", radius: "full", icon: "expand_more",
+  labelText: label + ": " + (value || "Todos"), onPressed: { ui: [{ open: sheetKey }] } });
+```
+
+- `gq` is your own state: `screenEvent` answers `{ state: { gq: value } }` and the next render filters the list; the sheet stays open.
+- A `Chips` row is fine for 3 to 5 short options; with more, scrolling sideways hides most of them. Use a sheet.
+- An option with an empty value cannot be a chip's `value`: use a word like `"all"` and read it back as empty.
 
 <a id="screenshots"></a>
 ## Screenshots

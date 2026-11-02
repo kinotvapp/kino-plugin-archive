@@ -1268,6 +1268,10 @@ type KinoScreenTitleByIds = {
  * buttons (`pause: true` beside it pauses the video; default it keeps playing under the screen) and as an item's or a row's
  * `open` in `home`, `section` and `browse` answers. With screens switched off, or the screen hidden or failing, a card or row
  * does what it did before; a plugin without a screen gets it refused and logged.
+ * With no `route` the screen opens as `{ name: "main", params: {}, args }`: put what the screen must load in `args` (for a row item
+ * in Kino's Home, `{ screen: { args: { open: url } } }`) and answer the reserved `open` with `route: { push: "detail" }`, so your
+ * front page stays under the detail and Back returns to it. An item that names `route: "detail"` directly opens the screen with
+ * nothing under it: Back then has nowhere to go.
  */
 type KinoScreenOpen = { route?: string; args?: Record<string, unknown> };
 
@@ -1659,8 +1663,11 @@ type KinoScreenNode =
  * `mergeWithKinoBar` (apiVersion 19, opt-in, needs a `leading`): Kino draws ONE bar, your `leading` in the place of its Close
  * button and your `title` in the place of your plugin's name; your `actions` stay at the end, followed by Kino's own buttons.
  * Without a `leading` the flag is ignored and both bars show. The person then leaves by your `leading` or by Back.
+ * `dense` (additive, no new apiVersion): on a phone the bar has 4 dp above and below its row instead of 16 (56 dp in all); a TV
+ * and a player panel ignore it. **Recommended for every screen of a plugin: `mergeWithKinoBar: true` + `dense: true`**, one compact
+ * bar instead of two; both are plain booleans, so choose by window with `ctx.device` / `ctx.size` when you need to.
  */
-type KinoScreenAppBar = KinoScreenBase & { type: "AppBar"; title?: string | KinoScreenNode; titleEn?: string; leading?: KinoScreenNode; actions?: KinoScreenNode[]; bottom?: KinoScreenNode; centerTitle?: boolean; backgroundColor?: KinoScreenColorRole; mergeWithKinoBar?: boolean };
+type KinoScreenAppBar = KinoScreenBase & { type: "AppBar"; title?: string | KinoScreenNode; titleEn?: string; leading?: KinoScreenNode; actions?: KinoScreenNode[]; bottom?: KinoScreenNode; centerTitle?: boolean; dense?: boolean; backgroundColor?: KinoScreenColorRole; mergeWithKinoBar?: boolean };
 /** Task 17 item G: a Scaffold's bottom bar of 2..5 items; `onChanged`'s `value` is the item's key (keep it in your state). */
 type KinoScreenNavigationBar = KinoScreenBase & { type: "NavigationBar"; items: { key: string; icon: KinoIconName; label: string; labelEn?: string; badge?: KinoScreenBadge }[]; value?: string; selectedIndex?: number; onChanged?: KinoScreenAction };
 

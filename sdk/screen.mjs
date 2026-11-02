@@ -1439,6 +1439,7 @@ class Reader {
         if (this.mySlot !== "appBar") return fail("only as a Scaffold's appBar");
         const title = t("title");
         const centerTitle = this.flag(o, type, "centerTitle");
+        const dense = this.flag(o, type, "dense");
         const merge = this.appBarMerge(o);
         let background = null;
         if (present(o, "backgroundColor")) {
