@@ -103,17 +103,19 @@ test("--kind consumer: a screen with the install gate, recommends = consumes' re
     assert.match(src, /e\.code|\.code/);
     assert.doesNotMatch(src, /GUIDE\.md/);
     assert.ok(existsSync(join(dir, "test", "provider", "kino-plugin.json")), "a stand-in provider for the tests");
+    // A screen-only consumer declares no host of its own: "hosts": [] (no placeholder to replace, no warning, no todo).
+    assert.deepEqual(m.hosts, []);
+    assert.doesNotMatch(readFileSync(join(dir, "kino-plugin.json"), "utf8"), /example\.com/);
+    assert.match(readFileSync(join(dir, "README.md"), "utf8"), /`hosts`: `\[\]`/);
     const r = await validate(dir);
     assert.deepEqual(r.problems, []);
-    // The default host is a placeholder: accepted, with validate's loud warning (and a todo in the scaffold's own test).
-    assert.equal(r.warnings.length, 1);
-    assert.match(r.warnings[0], /"example\.com" is a placeholder host; declare a host the plugin really loads from, or see https:\/\/\S+#text-only-consumer for a text-only consumer/);
+    assert.deepEqual(r.warnings, []);
     withKit(dir);
     const t = node(["--test", "--test-reporter=tap", "test/plugin.test.mjs"], dir);
     assert.equal(t.status, 0, t.stdout + t.stderr);
     assert.match(t.stdout, /# fail 0/);
     assert.match(t.stdout, /# pass [1-9]/);
-    assert.match(t.stdout, /# todo 1/, "the placeholder host is a visible todo");
+    assert.match(t.stdout, /# todo 0/, "no placeholder host to replace");
     const provider = await validate(join(dir, "test", "provider"));
     assert.deepEqual(provider.problems, []);
   } finally { rmSync(dir, { recursive: true, force: true }); }

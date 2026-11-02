@@ -1113,6 +1113,13 @@
       "apiVersion": 20,
       "$comment": "A plugin whose only purpose is a non-empty \"provides\" and which declares no capability (the field may be left out) is valid with \"hosts\": [] and without search/home/resolve: it plays nothing, is no source, its consent sheet claims no network or role, and with no host its installed card says it does not connect to the internet. Any capability, setting, or a provides below apiVersion 20 brings back the ordinary rules."
     },
+    "screenOnlyConsumer": {
+      "apiVersion": 20,
+      "capabilities": [
+        "screen"
+      ],
+      "$comment": "Owner decision: a manifest of apiVersion 20 or later with a non-empty \"consumes\" and capabilities exactly [\"screen\"] (no source capability, nothing else) is valid with \"hosts\": []. With no host its own kino.fetch calls are refused unless it declares fetchHosts \"any\" or has a url setting (alone or as a field of a list), it is no source, and the pictures its screen shows from public https addresses need no host declared, so it declares none rather than a placeholder. With no host and no setting at all its installed card says it does not connect to the internet. Another capability, an empty or missing consumes, or apiVersion 19 (consumes only through enhancements[\"20\"]) bring back the ordinary rules; a screen-only consumer that does declare hosts stays valid."
+    },
     "consentLine": "Uses data from <provider> (<door summary>)"
   },
   "cookies": {

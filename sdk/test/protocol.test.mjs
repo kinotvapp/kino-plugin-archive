@@ -144,7 +144,8 @@ test("provider_failed, rate_limited and provider_missing", async () => {
 });
 
 test("kino.plugins exists only from apiVersion 20, and not in a background job", async () => {
-  const old = { ...manifestOf(consumerDir), apiVersion: 14 };
+  // Without consumes (and below apiVersion 20) it is no screen-only consumer: an ordinary screen plugin needs a host.
+  const old = { ...manifestOf(consumerDir), apiVersion: 14, hosts: ["image.tmdb.org"] };
   delete old.consumes;
   const m = validateManifest(JSON.stringify(old));
   assert.equal(m.ok, true, JSON.stringify(m));
@@ -270,4 +271,50 @@ test("providesOnly stays refused with any setting or a capabilities field that i
   assert.equal(validateManifest(JSON.stringify({ ...only, settings: [] })).ok, true);
   assert.equal(validateManifest(JSON.stringify({ ...only, capabilities: "search" })).field, "capabilities");
   assert.equal(validateManifest(JSON.stringify({ ...only, capabilities: {} })).field, "capabilities");
+});
+
+// screenOnlyConsumer: a screen whose only purpose is to show what other plugins provide may declare "hosts": [] (owner decision;
+// contract.json protocol.screenOnlyConsumer): apiVersion 20+, a non-empty "consumes", capabilities exactly ["screen"].
+test("screenOnlyConsumer: consumes + capabilities [\"screen\"] at apiVersion 20 is valid with hosts []", () => {
+  const sc = contract.protocol.screenOnlyConsumer;
+  assert.equal(sc.apiVersion, 20);
+  assert.deepEqual(sc.capabilities, ["screen"]);
+  const c = { ...manifestOf(consumerDir), hosts: [] };
+  const ok = validateManifest(JSON.stringify(c));
+  assert.equal(ok.ok, true, JSON.stringify(ok));
+  assert.deepEqual(ok.manifest.hosts, []);
+  // Still fine with a host of its own.
+  assert.equal(validateManifest(JSON.stringify({ ...c, hosts: ["image.tmdb.org"] })).ok, true);
+});
+
+test("screenOnlyConsumer: another capability, no consumes or apiVersion 19 keep needing a host", () => {
+  const c = { ...manifestOf(consumerDir), hosts: [] };
+  assert.equal(validateManifest(JSON.stringify({ ...c, capabilities: ["screen", "tracking"] })).field, "hosts");
+  assert.equal(validateManifest(JSON.stringify({ ...c, hosts: ["api.example.org"], capabilities: ["screen", "tracking"] })).ok, true);
+  assert.equal(validateManifest(JSON.stringify({ ...c, capabilities: ["screen", "search", "home", "resolve"] })).field, "hosts");
+  const { consumes, ...noConsumes } = c;
+  assert.equal(validateManifest(JSON.stringify(noConsumes)).field, "hosts");
+  assert.equal(validateManifest(JSON.stringify({ ...noConsumes, hosts: ["api.example.org"] })).ok, true);
+  assert.equal(validateManifest(JSON.stringify({ ...c, consumes: {} })).ok, false);
+  // apiVersion 19: a plain consumes is refused; through enhancements["20"] it is honoured, yet the base still needs a host.
+  assert.equal(validateManifest(JSON.stringify({ ...c, apiVersion: 19 })).ok, false);
+  const via = { ...noConsumes, apiVersion: 19, enhancements: { 20: { consumes } } };
+  assert.equal(validateManifest(JSON.stringify(via)).field, "hosts");
+  assert.equal(validateManifest(JSON.stringify({ ...via, hosts: ["api.example.org"] })).ok, true);
+});
+
+test("validate's placeholder-host warning tells a screen-only consumer to declare none (hosts [])", async () => {
+  const { placeholderHostWarnings } = await import("../validate.mjs");
+  const consumer = manifestOf(consumerDir);
+  const w = placeholderHostWarnings(["example.com"], { ...consumer, hosts: ["example.com"] });
+  assert.equal(w.length, 1);
+  assert.match(w[0], /"example\.com" is a placeholder host/);
+  assert.match(w[0], /screen-only consumer/);
+  assert.match(w[0], /"hosts": \[\]/);
+  assert.doesNotMatch(w[0], /declare a host the plugin really loads from/);
+  // Any other plugin is still told to declare a real host.
+  const other = placeholderHostWarnings(["example.com"], { ...consumer, capabilities: ["screen", "tracking"] });
+  assert.match(other[0], /declare a host the plugin really loads from/);
+  assert.doesNotMatch(other[0], /"hosts": \[\]/);
+  assert.match(placeholderHostWarnings(["example.com"])[0], /declare a host the plugin really loads from/);
 });

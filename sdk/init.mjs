@@ -7,7 +7,7 @@
 //                 "Structure a bigger plugin in files and bundle it")
 //   [--kind provider|consumer]   (apiVersion 20, the plugin protocol. provider: a provides-only plugin, "hosts": [] and no
 //                 capabilities, one door with a call and a stream, its proto_ exports and a test that tries them with
-//                 `run.mjs proto`. consumer: a screen plugin that asks a provider through kino.plugins.call, with the install
+//                 `run.mjs proto`. consumer: a screen-only plugin ("hosts": [], or --host) that asks a provider through kino.plugins.call, with the install
 //                 gate, "recommends", "consumes", error handling, the stream switch, and a test against a stand-in provider in
 //                 test/provider (a STAND-IN to replace with a copy of the real provider). --repo owner/name: the provider's
 //                 repository a consumer asks; --door/--call/--stream: the real door's names (default quotes, byId, latest))
@@ -33,7 +33,7 @@ export const KINDS = ["provider", "consumer"];
 export const DOCS = "https://kinotvapp.github.io/kino-plugins/";
 
 export const USAGE = 'usage: node sdk/init.mjs <folder> [--id my-plugin] [--name "Mi plugin"] [--host example.com] [--with ' + WITH.join(",") + "] [--bundle] [--store " + STORE_MODES.join("|") + "]\n"
-  + "       node sdk/init.mjs <folder> --kind provider|consumer [--id my-plugin] [--name \"Mi plugin\"] [--door quotes] [--call byId] [--stream latest] [--repo owner/name (consumer: the provider's repository)] [--host <a host the screen really loads from> (consumer)]\n"
+  + "       node sdk/init.mjs <folder> --kind provider|consumer [--id my-plugin] [--name \"Mi plugin\"] [--door quotes] [--call byId] [--stream latest] [--repo owner/name (consumer: the provider's repository)] [--host <a host the screen really fetches from; none by default: \"hosts\": []> (consumer)]\n"
   + "  (--door, --call, --stream: the real door's names, so the consumer, its test/provider stand-in and the provider agree)\n"
   + "  (no kind: a source plugin with search/home/browse/resolve; provider: provides-only, opens a door; consumer: a screen that asks a provider)\n"
   + `  docs: ${DOCS}`;
@@ -45,8 +45,11 @@ const DEFAULT_STREAM = "latest";
 /** Door, call, stream and alias names, as the app checks them (contract.protocol). */
 const PROTOCOL_NAME = /^[A-Za-z][A-Za-z0-9]{0,31}$/;
 const DEFAULT_PROVIDER_REPO = "your-user/kino-plugin-quotes";
-/** Where the docs say what a consumer with no host of its own declares (validate's placeholder-host warning links here too). */
-export const TEXT_ONLY_CONSUMER_DOCS = "https://kinotvapp.github.io/kino-plugins/en/protocol/#text-only-consumer";
+/**
+ * Where the docs say a screen-only consumer declares no host, "hosts": [] (validate's placeholder-host warning names it too). Named,
+ * not linked: the public docs site still describes the old rule under its anchor, and a dead or stale link is worse than none.
+ */
+export const TEXT_ONLY_CONSUMER_DOCS = "the plugin guide's section «A consumer's hosts: a screen-only consumer declares none»";
 
 /** The door block of the scaffolds: one call and one stream named as the author asked, one type. */
 function doorBlock({ call, stream }) {
@@ -180,6 +183,8 @@ test("the stream answers new items and a cursor, and nothing new from that curso
 
 /** A consumer's manifest: a screen that asks [repo]'s door, with that repo in "recommends" (the install gate needs it). */
 function consumerManifest(pluginId, title, host, repo, { door, call, stream }) {
+  // A screen-only consumer (consumes + capabilities ["screen"], apiVersion 20) declares no host: it cannot fetch with none, and
+  // pictures from public https addresses need no declaration. --host adds one the screen really fetches from.
   return JSON.stringify({
     id: pluginId,
     name: title,
@@ -187,7 +192,7 @@ function consumerManifest(pluginId, title, host, repo, { door, call, stream }) {
     apiVersion: 20,
     entry: "plugin.js",
     description: `TODO: en español, qué muestra esta pantalla (usa la puerta "${door}" de otro plugin)`,
-    hosts: [host],
+    hosts: host ? [host] : [],
     capabilities: ["screen"],
     screen: { label: title.slice(0, 20), labelEn: englishLabel(door) },
     recommends: [repo],
@@ -425,7 +430,7 @@ function protocolFiles({ kind, pluginId, name, host, repo, names }) {
   return {
     "kino-plugin.json": consumerManifest(pluginId, title, host, repo, names),
     "plugin.js": consumerPlugin(title, repo, names),
-    "README.md": `# ${title}\n\nA [Kino](${DOCS}) plugin screen that asks the door \`${door}\` of the provider plugin \`${repo}\` (apiVersion 20, the plugin protocol). Install it in Kino (Ajustes ▸ Plugins) with this repository's \`owner/repo\`.\n\n- TODO: write the manifest's \`description\` in Spanish, and check \`screen.label\` (Spanish) and \`screen.labelEn\` (English).\n- \`consumes\` and \`recommends\` name the provider's repository: replace \`${repo}\` with the real one in kino-plugin.json, plugin.js and test/plugin.test.mjs.\n- \`hosts\`: a screen plugin needs at least one; put the one host your screen really loads from, not a placeholder (\`node sdk/validate.mjs .\` warns on one). A screen that shows only text: ${TEXT_ONLY_CONSUMER_DOCS}\n- \`test/provider\` is a STAND-IN that opens the door \`${door}\` (call \`${call}\`, stream \`${stream}\`) so the tests run offline: replace it with a copy of the real provider (test/provider/README.md); \`--provider <the real provider's folder>\` tries the real one.\n\n## Develop\n\n\`\`\`\nnode sdk/validate.mjs .\nnode sdk/run.mjs --context '{"installed":{"${repo}":true}}' --provider test/provider . screen\nnode sdk/run.mjs --lang en --context '{"installed":{"${repo}":false}}' . screen\nnode sdk/run.mjs --context '{"installed":{"${repo}":true}}' --provider test/provider . screenEvent next\nnode sdk/run.mjs --context '{"installed":{"${repo}":true},"route":{"name":"detail","params":{"id":1}}}' --state '{"item":{"id":1,"text":"Hola"}}' . screen\nnode --test test/plugin.test.mjs\n\`\`\`\n`,
+    "README.md": `# ${title}\n\nA [Kino](${DOCS}) plugin screen that asks the door \`${door}\` of the provider plugin \`${repo}\` (apiVersion 20, the plugin protocol). Install it in Kino (Ajustes ▸ Plugins) with this repository's \`owner/repo\`.\n\n- TODO: write the manifest's \`description\` in Spanish, and check \`screen.label\` (Spanish) and \`screen.labelEn\` (English).\n- \`consumes\` and \`recommends\` name the provider's repository: replace \`${repo}\` with the real one in kino-plugin.json, plugin.js and test/plugin.test.mjs.\n- \`hosts\`: \`[]\`: a screen whose only capability is \`screen\` and that only shows what its provider gives declares no host (its own \`kino.fetch\` calls are refused without one unless it declares \`fetchHosts: \"any\"\` or a \`url\` setting, and pictures from public https addresses need no declaration; see ${TEXT_ONLY_CONSUMER_DOCS}). Add a host only if the screen fetches from it, never a placeholder (\`node sdk/validate.mjs .\` warns on one).\n- \`test/provider\` is a STAND-IN that opens the door \`${door}\` (call \`${call}\`, stream \`${stream}\`) so the tests run offline: replace it with a copy of the real provider (test/provider/README.md); \`--provider <the real provider's folder>\` tries the real one.\n\n## Develop\n\n\`\`\`\nnode sdk/validate.mjs .\nnode sdk/run.mjs --context '{"installed":{"${repo}":true}}' --provider test/provider . screen\nnode sdk/run.mjs --lang en --context '{"installed":{"${repo}":false}}' . screen\nnode sdk/run.mjs --context '{"installed":{"${repo}":true}}' --provider test/provider . screenEvent next\nnode sdk/run.mjs --context '{"installed":{"${repo}":true},"route":{"name":"detail","params":{"id":1}}}' --state '{"item":{"id":1,"text":"Hola"}}' . screen\nnode --test test/plugin.test.mjs\n\`\`\`\n`,
     "test/plugin.test.mjs": consumerTest(repo, names),
     "test/provider/README.md": standInReadme(names, repo),
     "test/provider/kino-plugin.json": providerManifest(`${pluginId}-test-provider`.slice(0, 40), standInName, names),
@@ -584,7 +589,7 @@ async function talk() {
   }
 }
 
-export function scaffold(folder, { id, name, host = "example.com", with: extras = [], bundle = false, store = null, kind = null, repo = DEFAULT_PROVIDER_REPO, door = DOOR, call = DEFAULT_CALL, stream = DEFAULT_STREAM } = {}) {
+export function scaffold(folder, { id, name, host: hostOption, with: extras = [], bundle = false, store = null, kind = null, repo = DEFAULT_PROVIDER_REPO, door = DOOR, call = DEFAULT_CALL, stream = DEFAULT_STREAM } = {}) {
   if (kind !== null && !KINDS.includes(kind)) throw new Error(`unknown --kind ${kind}: ${KINDS.join(", ")}`);
   for (const [flag, v] of [["--door", door], ["--call", call], ["--stream", stream]]) {
     if (typeof v !== "string" || !PROTOCOL_NAME.test(v)) throw new Error(`${flag} needs a name like the provider's: a letter, then letters or digits (no "_" or "-"), at most 32`);
@@ -596,6 +601,8 @@ export function scaffold(folder, { id, name, host = "example.com", with: extras 
   if (store !== null && !STORE_MODES.includes(store)) throw new Error(`unknown --store ${store}: ${STORE_MODES.join(", ")}`);
   if (store && (extras.length || bundle)) throw new Error("--store cannot be combined with --with or --bundle: a store plays nothing and has no catalogue to scaffold");
   for (const x of extras) if (!WITH.includes(x)) throw new Error(`unknown --with ${x}: ${WITH.join(", ")}`);
+  // The source and store scaffolds need a host (example.com until the author names one); a consumer gets only the one asked for.
+  const host = hostOption || "example.com";
   const dir = resolve(folder);
   const pluginId = id || basename(dir).toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "mi-plugin";
   const files = {
@@ -623,7 +630,7 @@ function toItem(x) {
     "test/plugin.test.mjs": PLUGIN_TEST,
   };
   if (kind) {
-    Object.assign(files, protocolFiles({ kind, pluginId, name, host, repo, names: { door, call, stream } }));
+    Object.assign(files, protocolFiles({ kind, pluginId, name, host: hostOption || null, repo, names: { door, call, stream } }));
   } else if (store) {
     Object.assign(files, storeFiles({ pluginId, name, host, store }));
   } else if (bundle) Object.assign(files, bundleFiles({ pluginId, name, host, extras }));

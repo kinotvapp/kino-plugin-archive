@@ -19,7 +19,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { checkOutput, checkSettingsOutput, contract, englishCoverage, fetchAnyHost, isStandaloneSet, kb, maskSetPasswords, statusHide, requiredExports, validateManifest, validateManifestWithoutEnhancements } from "./contract.mjs";
+import { checkOutput, checkSettingsOutput, contract, englishCoverage, fetchAnyHost, isScreenOnlyConsumer, isStandaloneSet, kb, maskSetPasswords, statusHide, requiredExports, validateManifest, validateManifestWithoutEnhancements } from "./contract.mjs";
 import { resolvePalette } from "./palette.mjs";
 import { protocolBlocks, protocolWarnings } from "./protocol.mjs";
 import { resolveAppTheme } from "./appthemes.mjs";
@@ -116,8 +116,11 @@ export function consentLines(m, { authorFingerprint = null } = {}) {
   return out;
 }
 
-/** Where the docs say what to declare instead of a placeholder (a screen that loads nothing of its own: a text-only consumer). */
-export const PLACEHOLDER_HOST_DOCS = "https://kinotvapp.github.io/kino-plugins/en/protocol/#text-only-consumer";
+/**
+ * Where the docs say what a screen-only consumer declares instead of a placeholder: no host at all (`"hosts": []`). Named, not
+ * linked: the public docs site still describes the old rule under its anchor.
+ */
+export const PLACEHOLDER_HOST_DOCS = "the plugin guide's section «A consumer's hosts: a screen-only consumer declares none»";
 
 /**
  * Whether [host] is a placeholder, never a host a plugin really loads from: the RFC 2606 / RFC 6761 example and reserved names
@@ -130,13 +133,19 @@ export function isPlaceholderHost(host) {
   return /(^|\.)example\.(com|org|net)$/.test(h) || /(^|\.)(test|invalid|example)$/.test(h);
 }
 
-/** One warning per placeholder entry of the manifest's raw [hosts] (strings or `{ host }` objects). */
-export function placeholderHostWarnings(hosts) {
+/**
+ * One warning per placeholder entry of the manifest's raw [hosts] (strings or `{ host }` objects). A screen-only consumer
+ * ([manifest] with consumes and capabilities exactly ["screen"], apiVersion 20: isScreenOnlyConsumer) is told to declare none.
+ */
+export function placeholderHostWarnings(hosts, manifest = null) {
   if (!Array.isArray(hosts)) return [];
+  const advice = isScreenOnlyConsumer(manifest)
+    ? `a screen-only consumer needs no host: declare none ("hosts": []); its pictures from public https addresses need no declaration (see ${PLACEHOLDER_HOST_DOCS})`
+    : "declare a host the plugin really loads from";
   return hosts
     .map((h) => (typeof h === "string" ? h : h && typeof h === "object" ? h.host : null))
     .filter(isPlaceholderHost)
-    .map((h) => `hosts: "${h}" is a placeholder host; declare a host the plugin really loads from, or see ${PLACEHOLDER_HOST_DOCS} for a text-only consumer` +
+    .map((h) => `hosts: "${h}" is a placeholder host; ${advice}` +
       (/(^|\.)invalid$/.test(h.trim().toLowerCase().replace(/\.$/, "")) ? " (Kino accepts a .invalid name and never lists it, but it reaches nothing: keep it only on purpose)" : ""));
 }
 
@@ -458,7 +467,8 @@ export async function validate(dirArg, { run = null, args = [], config = {}, rep
     notes.push(`Más de ${legacy.value} hosts: Kino ${legacy.refusedUpToApp} o anterior rechaza este plugin; necesita Kino ${legacy.noLimitFromApp} o superior`);
   }
   // A placeholder host (example.com, *.test...) is accepted by Kino but is never where a plugin really loads from: said loudly.
-  warnings.push(...placeholderHostWarnings(JSON.parse(manifestText).hosts));
+  const rawManifest = JSON.parse(manifestText);
+  warnings.push(...placeholderHostWarnings(rawManifest.hosts, rawManifest));
   if (m.browser) {
     notes.push(m.browserPages
       ? "kino.browser.capture and kino.browser.page only work in the app (a hidden WebView); here they answer browser_unavailable, so test on a device. Kino never solves captchas: a page that asks to confirm a human is there answers blocked"

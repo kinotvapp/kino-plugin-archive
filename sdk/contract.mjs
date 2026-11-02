@@ -944,8 +944,10 @@ function validateManifestObject(o, { knownPermissions = contract.permissions } =
   if (o.settings !== undefined && !Array.isArray(o.settings)) return bad("settings", 'The "settings" field must be a list');
   const settingsError = validateSettings(o.settings || [], o.apiVersion);
   if (settingsError) return bad("settings", settingsError);
-  // A themes-only plugin (no capabilities) reaches nothing: it needs no host and no url setting.
-  if (hosts.length === 0 && !(themesOnly && caps.every((c) => c === "screen") && (o.settings || []).length === 0) && !(providesOnly && (o.settings || []).length === 0) && !(o.settings || []).some((x) => x.type === "url" || (x.type === "list" && Array.isArray(x.fields) && x.fields.some((f) => f.type === "url")))) {
+  // A themes-only plugin (no capabilities) reaches nothing: it needs no host and no url setting. Nor does a screen-only consumer
+  // (apiVersion 20, owner decision: contract.protocol.screenOnlyConsumer): it is no source, and with no host its fetch is refused
+  // unless it declares fetchHosts "any" or a url setting.
+  if (hosts.length === 0 && !(themesOnly && caps.every((c) => c === "screen") && (o.settings || []).length === 0) && !(providesOnly && (o.settings || []).length === 0) && !isScreenOnlyConsumer(o) && !(o.settings || []).some((x) => x.type === "url" || (x.type === "list" && Array.isArray(x.fields) && x.fields.some((f) => f.type === "url")))) {
     return bad("hosts", 'The "hosts" field can only be empty if the plugin has a setting of type "url"');
   }
   // apiVersion 11, `externalResolver`: the app a plugin hands its `external` answers to and the ways to get it (ManifestParser.parseExternalResolver).
@@ -3374,6 +3376,19 @@ export function checkOutput(fn, value, manifest, servers = [], { liveChannel = f
       return { value: parsed, drops };
     default: throw new Error(`unknown function ${fn}`);
   }
+}
+
+/**
+ * Whether the raw manifest [o] is a screen-only consumer (apiVersion 20, owner decision; ManifestParser.isScreenOnlyConsumer):
+ * apiVersion >= contract.protocol.screenOnlyConsumer.apiVersion, a non-empty `consumes`, and capabilities exactly
+ * contract.protocol.screenOnlyConsumer.capabilities (["screen"]). Such a manifest may declare `"hosts": []`.
+ */
+export function isScreenOnlyConsumer(o) {
+  const rule = contract.protocol.screenOnlyConsumer;
+  if (o === null || typeof o !== "object" || !Number.isInteger(o.apiVersion) || o.apiVersion < rule.apiVersion) return false;
+  if (!plainProvides(o.consumes) || !Array.isArray(o.capabilities)) return false;
+  const caps = [...new Set(o.capabilities)];
+  return caps.length === rule.capabilities.length && rule.capabilities.every((c) => caps.includes(c));
 }
 
 /** A non-empty `provides` object (the raw shape; the blocks are validated properly by protocol.mjs). */
