@@ -5,6 +5,12 @@
 //                           own API too. No search/home/resolve: a store plays nothing. See docs/plugins/examples/store-local and store-live)
 //   [--bundle]   (the source split into src/ and bundled into plugin.js by `npm run build` with esbuild; see the guide's
 //                 "Structure a bigger plugin in files and bundle it")
+//   [--kind provider|consumer]   (apiVersion 20, the plugin protocol. provider: a provides-only plugin, "hosts": [] and no
+//                 capabilities, one door with a call and a stream, its proto_ exports and a test that tries them with
+//                 `run.mjs proto`. consumer: a screen plugin that asks a provider through kino.plugins.call, with the install
+//                 gate, "recommends", "consumes", error handling, the stream switch, and a test against a stand-in provider in
+//                 test/provider. --repo owner/name: the provider's repository a consumer asks)
+//   [--help]     this usage
 // Writes kino-plugin.json, plugin.js (every function, commented), README.md, test/plugin.test.mjs
 // (a replay-based test: record once with --record, then it runs offline) and a .gitignore for the
 // kit's local stand-ins (.kino-storage.json, .kino-cookies.json, .kino-secrets.json). Never overwrites a file.
@@ -18,6 +24,314 @@ const WITH_CAPABILITY = { byteSource: "byteSource", images: "imageSource", catal
 
 /** What `--store` may be (apiVersion 15): a local store hands Kino its list; a live store also answers while the person browses. */
 export const STORE_MODES = ["local", "live"];
+
+/** What `--kind` may be (apiVersion 20, the plugin protocol): the plugin that opens a door, or the one that asks it. */
+export const KINDS = ["provider", "consumer"];
+
+/** Where an author reads about every function, node and rule (the scaffolds ship no guide of their own). */
+export const DOCS = "https://kinotvapp.github.io/kino-plugins/";
+
+export const USAGE = 'usage: node sdk/init.mjs <folder> [--id my-plugin] [--name "Mi plugin"] [--host example.com] [--with ' + WITH.join(",") + "] [--bundle] [--store " + STORE_MODES.join("|") + "]\n"
+  + "       node sdk/init.mjs <folder> --kind provider|consumer [--id my-plugin] [--name \"Mi plugin\"] [--repo owner/name (consumer: the provider's repository)] [--host example.com (consumer)]\n"
+  + "  (no kind: a source plugin with search/home/browse/resolve; provider: provides-only, opens a door; consumer: a screen that asks a provider)\n"
+  + `  docs: ${DOCS}`;
+
+/** The door the protocol scaffolds share: a provider opens it, a consumer asks it (and its test stand-in answers it). */
+const DOOR = "quotes";
+const DOOR_BLOCK = {
+  summary: "Short quotes with the movie they come from",
+  calls: { byId: { in: { id: "number" }, out: "Quote" } },
+  streams: { latest: { out: "Quote", everySeconds: 300 } },
+  types: { Quote: { id: "number", text: "string", movie: "string?" } },
+};
+const DEFAULT_PROVIDER_REPO = "your-user/kino-plugin-quotes";
+
+/** A provides-only manifest (apiVersion 20): no capabilities, no settings, "hosts": []. */
+function providerManifest(pluginId, title) {
+  return JSON.stringify({
+    id: pluginId,
+    name: title,
+    version: "0.1.0",
+    apiVersion: 20,
+    entry: "plugin.js",
+    description: "Opens the door \"quotes\" to other plugins",
+    hosts: [],
+    provides: { [DOOR]: DOOR_BLOCK },
+  }, null, 2) + "\n";
+}
+
+/** A provider's plugin.js: the door's call and stream as proto_<door>_<name> exports. */
+function providerPlugin(title) {
+  return `// ${title}: a Kino PROVIDER plugin (apiVersion 20, the plugin protocol). Docs: ${DOCS}
+// It opens the door "${DOOR}" of kino-plugin.json "provides" to other plugins. Each call is an export named
+// proto_<door>_<call>(arg) and each stream proto_<door>_<stream>(cursor); Kino checks the argument against the call's "in"
+// (strictly: a wrong, extra or missing field never reaches you, the consumer gets bad_input) and your answer against "out"
+// (a field you did not declare is dropped; a wrong type is bad_output). Throwing answers provider_failed.
+//
+// Provides-only: no capabilities, no settings and "hosts": [], so Kino's consent sheet claims no network. To read your
+// data with kino.fetch, add its host to "hosts" (still provides-only); a capability or a setting brings the ordinary rules.
+//
+// Try it on its own:  node sdk/run.mjs . proto ${DOOR}.byId '{"id":1}'      node sdk/run.mjs . proto ${DOOR}.latest
+const QUOTES = [
+  { id: 1, text: "A first quote", movie: "A first movie" },
+  { id: 2, text: "A second quote", movie: "A second movie" },
+  { id: 3, text: "A third quote" },
+];
+
+// A call: the argument is already checked against { id: "number" }.
+export async function proto_${DOOR}_byId({ id }) {
+  const quote = QUOTES.find((q) => q.id === id);
+  if (!quote) throw new Error("no quote " + id); // the consumer gets provider_failed
+  return quote;
+}
+
+// A stream: the cursor is what this function returned last time (null the first time). Answer the items that are new since
+// then and the next cursor (small JSON: a number, a string, an id). Kino polls it every "everySeconds" (at least 30).
+export async function proto_${DOOR}_latest(cursor) {
+  const seen = typeof cursor === "number" ? cursor : 0;
+  return { items: QUOTES.slice(seen), cursor: QUOTES.length };
+}
+`;
+}
+
+const PROVIDER_TEST = `// The provider on its own: Kino accepts it, and each call and stream answers through the app's checks (run.mjs proto).
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { validate } from "../sdk/validate.mjs";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const proto = (...args) => spawnSync(process.execPath, [join(root, "sdk", "run.mjs"), root, "proto", ...args], { encoding: "utf8" });
+
+test("Kino accepts the manifest and the exports", async () => {
+  const r = await validate(root);
+  assert.deepEqual(r.problems, []);
+  assert.deepEqual(r.warnings, []);
+});
+
+test("a call answers what its \\"out\\" declares", () => {
+  const r = proto("${DOOR}.byId", '{"id":1}');
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout).text, "A first quote");
+});
+
+test("a wrong argument is bad_input, an unknown id provider_failed", () => {
+  const bad = proto("${DOOR}.byId", '{"id":"1"}');
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /bad_input/);
+  const missing = proto("${DOOR}.byId", '{"id":99}');
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /provider_failed/);
+});
+
+test("the stream answers new items and a cursor, and nothing new from that cursor", () => {
+  const first = proto("${DOOR}.latest");
+  assert.equal(first.status, 0, first.stderr);
+  const a = JSON.parse(first.stdout);
+  assert.equal(a.items.length, 3);
+  const next = proto("${DOOR}.latest", JSON.stringify(a.cursor));
+  assert.equal(next.status, 0, next.stderr);
+  assert.deepEqual(JSON.parse(next.stdout).items, []);
+});
+`;
+
+/** A consumer's manifest: a screen that asks [repo]'s door, with that repo in "recommends" (the install gate needs it). */
+function consumerManifest(pluginId, title, host, repo) {
+  return JSON.stringify({
+    id: pluginId,
+    name: title,
+    version: "0.1.0",
+    apiVersion: 20,
+    entry: "plugin.js",
+    description: "Shows quotes another plugin provides",
+    hosts: [host],
+    capabilities: ["screen"],
+    screen: { label: title.slice(0, 20), labelEn: title.slice(0, 20) },
+    recommends: [repo],
+    consumes: { [DOOR]: { repo, door: DOOR, calls: ["byId"], streams: ["latest"] } },
+  }, null, 2) + "\n";
+}
+
+/** A consumer's plugin.js: the install gate, one call with its error codes, and the stream switch. */
+function consumerPlugin(title, repo) {
+  return `// ${title}: a Kino plugin screen that CONSUMES another plugin's door (apiVersion 20, the plugin protocol).
+// Docs: ${DOCS}
+//
+// - The install gate: \`installed\` has one key per entry of kino-plugin.json "recommends" (true once installed). Until the
+//   provider is installed, draw only the install view and ignore every event; Kino calls screen() again after the install.
+// - kino.plugins.call("${DOOR}", call, arg) resolves to the provider's checked answer or rejects with an Error whose \`code\` is
+//   provider_missing, not_declared, bad_input, bad_output, rate_limited, timeout or provider_failed. Keep the code in the
+//   state and draw it; never let it throw out of screenEvent.
+// - The stream: the state flag \`protocol.${DOOR}.latest: true\` switches it on; Kino then sends its new items as the event
+//   "protocol" with arg { alias, stream, items }. Items may repeat: keep the latest, never append blindly.
+// - TV: the main button of each view has \`autofocus\`; each answer says where the focus goes.
+//
+// Try it:  node sdk/run.mjs --context '{"installed":{"${repo}":true}}' --provider test/provider . screen
+//          node sdk/run.mjs --lang en --context '{"installed":{"${repo}":false}}' . screen
+const PROVIDER = "${repo}";
+
+const text = (es, en, more = {}) => ({ type: "Text", text: es, textEn: en, ...more });
+const button = (key, es, en, onPressed, more = {}) => ({ type: "ElevatedButton", key, labelText: es, labelTextEn: en, onPressed, ...more });
+const page = (children) => ({
+  type: "Scaffold",
+  appBar: { type: "AppBar", title: ${JSON.stringify(title)}, titleEn: ${JSON.stringify(title)} },
+  body: { type: "SingleChildScrollView", children: [{ type: "Column", padding: 16, gap: 12, children }] },
+});
+
+/** What went wrong, in the person's words, by the error code of kino.plugins.call. */
+function errorText(code) {
+  switch (code) {
+    case "provider_missing": return ["El plugin de frases está apagado o le falta configurarse. Revísalo en Plugins.", "The quotes plugin is off or needs setting up. Check it in Plugins."];
+    case "rate_limited": return ["Demasiadas peticiones seguidas. Espera unos segundos.", "Too many requests in a row. Wait a few seconds."];
+    case "timeout": return ["El plugin tardó demasiado en responder. Vuelve a intentarlo.", "The plugin took too long to answer. Try again."];
+    default: return ["No se pudo traer la frase. Vuelve a intentarlo.", "Could not get the quote. Try again."];
+  }
+}
+
+function installView() {
+  return page([
+    text("Esta pantalla necesita el plugin de frases.", "This screen needs the quotes plugin."),
+    button("install", "Instalar", "Install", { go: { installPlugin: { repo: PROVIDER } } }, { autofocus: true }),
+  ]);
+}
+
+function mainView(state) {
+  const children = [];
+  if (state.quote) children.push(text(state.quote.text, state.quote.text, { style: "h3" }));
+  if (state.quote && state.quote.movie) children.push(text(state.quote.movie, state.quote.movie, { style: "caption" }));
+  if (!state.quote) children.push(text("Pulsa el botón para ver una frase.", "Press the button to see a quote."));
+  if (state.error) {
+    const [es, en] = errorText(state.error);
+    children.push(text(es, en, { color: "error" }));
+  }
+  children.push(button("next", "Ver una frase", "Show a quote", "next", { autofocus: true }));
+  const on = state.protocol?.${DOOR}?.latest === true;
+  children.push({ type: "Divider" });
+  children.push({ type: "Switch", key: "latest", labelText: "Novedades en vivo", labelTextEn: "Live updates", value: on, onChanged: "latest" });
+  if (on && Array.isArray(state.latest) && state.latest.length) {
+    for (const line of state.latest) children.push(text(line, line, { style: "caption" }));
+  }
+  return page(children);
+}
+
+export async function screen({ state = {}, installed = {} } = {}) {
+  if (installed[PROVIDER] !== true) return installView();
+  return mainView(state || {});
+}
+
+export async function screenEvent({ name, value, arg, state = {}, installed = {} } = {}) {
+  if (installed[PROVIDER] !== true) return null;
+  const st = state || {};
+  if (name === "next") {
+    const id = Number.isInteger(st.nextId) ? st.nextId : 1;
+    try {
+      const quote = await kino.plugins.call("${DOOR}", "byId", { id });
+      return { state: { quote: { text: quote.text, movie: quote.movie ?? null }, nextId: id + 1, error: null }, focus: "next" };
+    } catch (e) {
+      // provider_failed here also means "no quote with that id": start again from the first one.
+      return { state: { error: typeof e?.code === "string" ? e.code : "provider_failed", nextId: 1 }, focus: "next" };
+    }
+  }
+  if (name === "latest") return { state: { protocol: { ${DOOR}: { latest: value === true } }, latest: [] } };
+  if (name === "protocol") {
+    if (st.protocol?.${DOOR}?.latest !== true || !arg || !Array.isArray(arg.items)) return null;
+    const lines = arg.items.map((q) => q && q.text).filter((t) => typeof t === "string" && t);
+    return lines.length ? { state: { latest: lines.slice(-3) } } : null;
+  }
+  return null;
+}
+`;
+}
+
+/** The consumer's test: the gate, the drawn screens (nothing dropped), the call, its error and the stream, against test/provider. */
+function consumerTest(repo) {
+  return `// The screen as Kino runs it, against test/provider: a stand-in that opens the same door as the real provider. Point
+// --provider at the real provider's folder to try it too.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { validate } from "../sdk/validate.mjs";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const provider = join(root, "test", "provider");
+const REPO = "${repo}";
+const run = (...args) => spawnSync(process.execPath, [join(root, "sdk", "run.mjs"), ...args], { encoding: "utf8" });
+const ctx = (installed, lang = "es") => JSON.stringify({ installed: { [REPO]: installed }, lang });
+
+test("Kino accepts the manifest and the exports", async () => {
+  const r = await validate(root);
+  assert.deepEqual(r.problems, []);
+  assert.deepEqual(r.warnings, []);
+});
+
+for (const installed of [false, true]) {
+  for (const lang of ["es", "en"]) {
+    test(\`the screen draws with nothing dropped (installed \${installed}, \${lang})\`, () => {
+      const r = run("--context", ctx(installed, lang), "--provider", provider, root, "screen");
+      assert.equal(r.status, 0, r.stderr);
+      assert.doesNotMatch(r.stderr, /dropped|✗/, r.stderr);
+      assert.match(r.stdout, installed ? (lang === "es" ? /Ver una frase/ : /Show a quote/) : (lang === "es" ? /Instalar/ : /Install/));
+    });
+  }
+}
+
+test("until the provider is installed an event does nothing", () => {
+  const r = run("--context", ctx(false), "--provider", provider, "--raw", root, "screenEvent", "next");
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout), null);
+});
+
+test("a press asks the provider and keeps its answer", () => {
+  const r = run("--context", ctx(true), "--provider", provider, "--raw", root, "screenEvent", "next");
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout).state.quote.text, "A first quote");
+});
+
+test("without the provider the call fails with a code the screen draws", () => {
+  const r = run("--context", ctx(true), "--raw", root, "screenEvent", "next");
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout).state.error, "provider_missing");
+  const drawn = run("--context", ctx(true), "--state", '{"error":"provider_missing"}', root, "screen");
+  assert.doesNotMatch(drawn.stderr, /dropped/, drawn.stderr);
+});
+
+test("the switch turns the stream on, and its items (repeated ones too) replace the list", () => {
+  const on = run("--context", ctx(true), "--trigger", "change", "--raw", root, "screenEvent", "latest", "", "true");
+  assert.deepEqual(JSON.parse(on.stdout).state.protocol, { ${DOOR}: { latest: true } });
+  const state = '{"protocol":{"${DOOR}":{"latest":true}}}';
+  for (const cursor of ["null", "1"]) {
+    const r = run("--context", ctx(true), "--state", state, "--provider", provider, "--cursor", cursor, "--raw", root, "screenEvent", "protocol", "${DOOR}.latest");
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(JSON.parse(r.stdout).state.latest.length > 0);
+  }
+});
+`;
+}
+
+/** The files of a protocol scaffold (replace the search/home/browse/resolve ones). */
+function protocolFiles({ kind, pluginId, name, host, repo }) {
+  const title = name || pluginId;
+  if (kind === "provider") {
+    return {
+      "kino-plugin.json": providerManifest(pluginId, title),
+      "plugin.js": providerPlugin(title),
+      "README.md": `# ${title}\n\nA [Kino](${DOCS}) provider plugin (apiVersion 20, the plugin protocol): it opens the door \`${DOOR}\` to other plugins and plays nothing. Install it in Kino (Ajustes ▸ Plugins) with this repository's \`owner/repo\`; a consumer names that repository in its \`consumes\` and \`recommends\`.\n\n## Develop\n\n\`\`\`\nnode sdk/validate.mjs .\nnode sdk/run.mjs . proto ${DOOR}.byId '{"id":1}'\nnode sdk/run.mjs . proto ${DOOR}.latest\nnode --test test/plugin.test.mjs\n\`\`\`\n`,
+      "test/plugin.test.mjs": PROVIDER_TEST,
+    };
+  }
+  return {
+    "kino-plugin.json": consumerManifest(pluginId, title, host, repo),
+    "plugin.js": consumerPlugin(title, repo),
+    "README.md": `# ${title}\n\nA [Kino](${DOCS}) plugin screen that asks the door \`${DOOR}\` of the provider plugin \`${repo}\` (apiVersion 20, the plugin protocol). Install it in Kino (Ajustes ▸ Plugins) with this repository's \`owner/repo\`.\n\n- \`consumes\` and \`recommends\` name the provider's repository: replace \`${repo}\` with the real one in kino-plugin.json, plugin.js and test/plugin.test.mjs.\n- \`hosts\`: a screen plugin needs at least one; put the one host your screen really uses (the pictures it draws, a site it reads), not a placeholder.\n- \`test/provider\` is a stand-in that opens the same door, so the tests run offline; \`--provider <the real provider's folder>\` tries the real one.\n\n## Develop\n\n\`\`\`\nnode sdk/validate.mjs .\nnode sdk/run.mjs --context '{"installed":{"${repo}":true}}' --provider test/provider . screen\nnode sdk/run.mjs --lang en --context '{"installed":{"${repo}":false}}' . screen\nnode sdk/run.mjs --context '{"installed":{"${repo}":true}}' --provider test/provider . screenEvent next\nnode --test test/plugin.test.mjs\n\`\`\`\n`,
+    "test/plugin.test.mjs": consumerTest(repo),
+    "test/provider/kino-plugin.json": providerManifest(`${pluginId}-test-provider`.slice(0, 40), `${title} (test provider)`),
+    "test/provider/plugin.js": providerPlugin(`${title} (test provider)`),
+  };
+}
 
 /** The plugin.js of a store scaffold; the same code as docs/plugins/examples/store-local and store-live, shortened. */
 function storePlugin(name, host, mode) {
@@ -170,7 +484,10 @@ async function talk() {
   }
 }
 
-export function scaffold(folder, { id, name, host = "example.com", with: extras = [], bundle = false, store = null } = {}) {
+export function scaffold(folder, { id, name, host = "example.com", with: extras = [], bundle = false, store = null, kind = null, repo = DEFAULT_PROVIDER_REPO } = {}) {
+  if (kind !== null && !KINDS.includes(kind)) throw new Error(`unknown --kind ${kind}: ${KINDS.join(", ")}`);
+  if (kind && (store || extras.length || bundle)) throw new Error("--kind cannot be combined with --store, --with or --bundle: a protocol scaffold has no catalogue");
+  if (kind === "consumer" && !/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/.test(repo)) throw new Error("--repo needs the provider's plain GitHub owner/name");
   if (store !== null && !STORE_MODES.includes(store)) throw new Error(`unknown --store ${store}: ${STORE_MODES.join(", ")}`);
   if (store && (extras.length || bundle)) throw new Error("--store cannot be combined with --with or --bundle: a store plays nothing and has no catalogue to scaffold");
   for (const x of extras) if (!WITH.includes(x)) throw new Error(`unknown --with ${x}: ${WITH.join(", ")}`);
@@ -188,8 +505,8 @@ export function scaffold(folder, { id, name, host = "example.com", with: extras 
       hosts: [host],
       capabilities: ["search", "home", "browse", "resolve", ...extras.map((x) => WITH_CAPABILITY[x])],
     }, null, 2) + "\n",
-    "plugin.js": `// ${name || pluginId}: a Kino plugin. Read GUIDE.md: every function is async, returns plain JSON,
-// and must not throw before its first await (Kino 0.9.49 and older cannot catch that).
+    "plugin.js": `// ${name || pluginId}: a Kino plugin. Docs: ${DOCS}
+// Every function is async, returns plain JSON and must not throw before its first await (Kino 0.9.49 and older cannot catch that).
 const BASE = "https://${host}";
 
 ${CATALOG_FUNCTIONS}
@@ -200,7 +517,9 @@ function toItem(x) {
     "README.md": `# ${name || pluginId}\n\nA [Kino](https://github.com/kinotvapp/kino-plugin-archive) plugin. Install it in Kino (Ajustes ▸ Plugins) with this repository's \`owner/repo\`.\n\n## Develop\n\n\`\`\`\nnode sdk/validate.mjs .\nnode sdk/run.mjs --record test/fixtures.json . search "algo"\nnode --test test/plugin.test.mjs\n\`\`\`\n`,
     "test/plugin.test.mjs": PLUGIN_TEST,
   };
-  if (store) {
+  if (kind) {
+    Object.assign(files, protocolFiles({ kind, pluginId, name, host, repo }));
+  } else if (store) {
     Object.assign(files, storeFiles({ pluginId, name, host, store }));
   } else if (bundle) Object.assign(files, bundleFiles({ pluginId, name, host, extras }));
   const written = [];
@@ -266,8 +585,8 @@ function bundleFiles({ pluginId, name, host, extras }) {
       },
       devDependencies: { esbuild: "^0.21.0" },
     }, null, 2) + "\n",
-    "src/plugin.js": `// ${name || pluginId}: a Kino plugin. Read GUIDE.md: every function is async, returns plain JSON,
-// and must not throw before its first await (Kino 0.9.49 and older cannot catch that).
+    "src/plugin.js": `// ${name || pluginId}: a Kino plugin. Docs: ${DOCS}
+// Every function is async, returns plain JSON and must not throw before its first await (Kino 0.9.49 and older cannot catch that).
 //
 // The entry of the source: it only re-exports what Kino calls. \`npm run build\` bundles src/ into the shipped plugin.js
 // (one ES module, the file Kino installs); never edit plugin.js by hand.
@@ -435,16 +754,20 @@ test("search answers offline, and Kino drops nothing", { skip: !existsSync(fixtu
 `;
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const [folder, ...rest] = process.argv.slice(2);
-  if (!folder) {
-    console.error('usage: node sdk/init.mjs <folder> [--id my-plugin] [--name "Mi plugin"] [--host example.com] [--with ' + WITH.join(",") + "] [--bundle] [--store " + STORE_MODES.join("|") + "]");
+  const argv = process.argv.slice(2);
+  const [folder, ...rest] = argv;
+  if (argv.includes("--help") || argv.includes("-h")) {
+    console.log(USAGE);
+  } else if (!folder || folder.startsWith("-")) {
+    // The folder comes first: an option in its place would become a folder of that name.
+    console.error(USAGE);
     process.exitCode = 2;
   } else {
     const opt = (k) => { const i = rest.indexOf(k); return i === -1 ? undefined : rest[i + 1]; };
     const extras = (opt("--with") || "").split(",").map((x) => x.trim()).filter(Boolean);
     let written;
     try {
-      written = scaffold(folder, { id: opt("--id"), name: opt("--name"), host: opt("--host"), with: extras, bundle: rest.includes("--bundle"), store: opt("--store") });
+      written = scaffold(folder, { id: opt("--id"), name: opt("--name"), host: opt("--host"), with: extras, bundle: rest.includes("--bundle"), store: opt("--store"), kind: opt("--kind") ?? null, repo: opt("--repo") ?? DEFAULT_PROVIDER_REPO });
     } catch (e) {
       console.error(e.message);
       process.exitCode = 2;
@@ -452,7 +775,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     if (written) {
       console.error(written.length ? `wrote ${written.join(", ")}` : "nothing written: every file already exists");
       console.error(`next: copy sdk/ (and contract.json) into ${folder}, then from inside it: ` +
-        (rest.includes("--bundle") ? "npm install && npm run build && node sdk/validate.mjs ." : "node sdk/validate.mjs ."));
+        (rest.includes("--bundle") ? "npm install && npm run build && node sdk/validate.mjs ." : "node sdk/validate.mjs . && node --test test/plugin.test.mjs"));
     }
   }
 }

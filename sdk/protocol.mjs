@@ -192,6 +192,40 @@ export function protocolBlocks(rawManifest) {
   return out;
 }
 
+/**
+ * What validate warns about the protocol blocks of a raw manifest that the app accepts but changes or ignores, one line each:
+ * a stream's `everySeconds` outside Kino's range (the app clamps it), a consumed repo missing from `recommends` (its screen
+ * is never told whether the provider is installed, so an install gate never opens) and a literal `providesOnly` field (not a
+ * manifest field: the app derives it).
+ */
+export function protocolWarnings(rawManifest) {
+  const out = [];
+  if (!isObject(rawManifest)) return out;
+  const api = Number.isInteger(rawManifest.apiVersion) ? rawManifest.apiVersion : 0;
+  if ("providesOnly" in rawManifest) {
+    out.push(`kino-plugin.json: "providesOnly" is not a manifest field and Kino ignores it: a plugin is provides-only when it has apiVersion ${P.apiVersion} or later, a non-empty "provides", no capabilities and no settings (then "hosts" may be []). Remove the field`);
+  }
+  const src = api >= P.apiVersion ? rawManifest : rawManifest.enhancements?.[String(P.apiVersion)];
+  if (!isObject(src)) return out;
+  const E = P.provides.streamEverySeconds;
+  for (const [door, d] of Object.entries(isObject(src.provides) ? src.provides : {})) {
+    for (const [s, so] of Object.entries(isObject(d?.streams) ? d.streams : {})) {
+      const every = so?.everySeconds;
+      if (typeof every !== "number" || !Number.isFinite(every)) continue;
+      const kept = Math.min(E.max, Math.max(E.min, Math.trunc(every)));
+      if (kept !== every) out.push(`provides "${door}": stream "${s}" declares everySeconds ${every}; Kino polls it every ${kept} s (everySeconds is a whole number from ${E.min} to ${E.max})`);
+    }
+  }
+  const recommended = new Set((Array.isArray(rawManifest.recommends) ? rawManifest.recommends : []).map((r) => (typeof r === "string" ? bareRepo(r) : null)).filter(Boolean).map((r) => r.toLowerCase()));
+  for (const [alias, u] of Object.entries(isObject(src.consumes) ? src.consumes : {})) {
+    const repo = typeof u?.repo === "string" ? bareRepo(u.repo) : null;
+    if (repo && !recommended.has(repo.toLowerCase())) {
+      out.push(`consumes "${alias}": its provider ${repo} is not in "recommends": Kino tells your screen whether a plugin is installed (installed["${repo}"]) only for the repos in "recommends", so an install gate on it never opens. Add "recommends": ["${repo}"]`);
+    }
+  }
+  return out;
+}
+
 // ---------- the caller (PluginProtocolBroker) ----------
 
 const exportOf = (door, name) => `proto_${door}_${name}`;

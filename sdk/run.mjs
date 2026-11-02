@@ -73,8 +73,17 @@
 //   kino.qr.scan needs); a change is not, and its go.titleByIds / go.url is dropped
 //   Both calls get `installed` (Kino 0.9.81): one key per entry of the manifest's "recommends", all false; mark some installed with
 //   --context '{"installed":{"owner/name":true}}' (only declared repos: Kino tells a plugin about no other)
-//   node sdk/run.mjs [--context '<json>'] [--state '<json>'] <plugin dir> screen
+//   node sdk/run.mjs [--context '<json>'] [--state '<json>'] [--lang es|en] <plugin dir> screen
 //   node sdk/run.mjs [--context '<json>'] [--state '<json>'] <plugin dir> screenEvent <name> [arg] ['<value json>'] [--trigger tap|change|submit]
+//   --lang en is --context '{"lang":"en"}': the English texts (textEn, labelTextEn...) as Kino in English draws them.
+// The plugin protocol (apiVersion 20): a consumer's kino.plugins.call is answered by a provider folder (--provider), and a
+//   provider is tried on its own with `proto`, through the same checks as the app (its argument against "in", strictly; its
+//   answer against "out"; the error codes). A stream's argument is the cursor of its last answer (null the first time):
+//   node sdk/run.mjs --context '{"installed":{"owner/name":true}}' --provider <provider dir> <consumer dir> screen
+//   node sdk/run.mjs --provider <provider dir> <consumer dir> screenEvent <name>
+//   node sdk/run.mjs --provider <provider dir> [--cursor '<json>'] <consumer dir> screenEvent protocol <alias>.<stream>
+//   node sdk/run.mjs <provider dir> proto <door>.<call> ['<arg json>']
+//   node sdk/run.mjs <provider dir> proto <door>.<stream> ['<cursor json>']
 // Describing other titles (apiVersion 6, the "meta" capability): the query as the app builds it, Kino's verdict field by
 // field, and how the info page would use it (within the app's 6 s)
 //   node sdk/run.mjs <plugin dir> meta tt0133093 [movie|series]          (KINO_LANG=es: the person's language)
@@ -124,6 +133,8 @@
 //   --provider <folder>    a plugin of the plugin protocol (apiVersion 20) that answers the consumer's kino.plugins.call: its
 //                          `provides` door is served by the folder's proto_<door>_<call> exports, through the app's validation (repeatable).
 //                          `screenEvent protocol <alias>.<stream>` then polls that stream once and sends { alias, stream, items }.
+//   --cursor '<json>'      screenEvent protocol only: poll the stream from this cursor instead of null (try repeated items)
+//   --lang es|en           the person's language in a screen's or panel's context (default es)
 //   --device tv|phone      what kino.device says (default KINO_DEVICE, else phone): test the TV side of your plugin
 // The first argument is the plugin's entry file or the folder that holds kino-plugin.json. The
 // result goes to stdout as JSON; everything else (kino.log, console.*, dropped entries, errors)
@@ -177,7 +188,11 @@ const USAGE = "usage: node sdk/run.mjs [--config k=v] [--record f | --replay f] 
   + "       node sdk/run.mjs [--context '<json>'] [--state '<json>'] --screen <plugin folder> panelAction <ref> <name> <press|change|submit> ['<value json>'] ['<arg>']\n"
   + "       node sdk/run.mjs --foreign <source plugin id>[:<name>] <plugin folder> <panel | panelAction | playerEvent> <ref> ...\n"
   + "       node sdk/run.mjs --live-channel <provider>:<code>[:<name>] <plugin folder> <panel | panelAction> - ...\n"
-  + "       node sdk/run.mjs [--context '<json>'] [--state '<json>'] <plugin folder> <screen | screenEvent <name> [arg] ['<value json>'] [--trigger tap|change|submit]>\n"
+  + "       node sdk/run.mjs [--context '<json>'] [--state '<json>'] [--lang es|en] <plugin folder> <screen | screenEvent <name> [arg] ['<value json>'] [--trigger tap|change|submit]>\n"
+  + "         (screen and screenEvent get `installed`, one key per \"recommends\" entry, all false: --context '{\"installed\":{\"owner/name\":true}}')\n"
+  + "       node sdk/run.mjs [--context '<json>'] [--state '<json>'] --provider <folder> <consumer folder> <screen | screenEvent <name> ...>   (plugin protocol: the provider answers kino.plugins.call)\n"
+  + "       node sdk/run.mjs [--state '<json>'] --provider <folder> [--cursor '<json>'] <consumer folder> screenEvent protocol <alias>.<stream>   (one poll of the stream, from null or the cursor)\n"
+  + "       node sdk/run.mjs <provider folder> <proto <door>.<call> ['<arg json>'] | proto <door>.<stream> ['<cursor json>']>   (a provider on its own, with the app's checks and error codes)\n"
   + "       node sdk/run.mjs [--size <bytes>] <plugin folder> read <handle> <offset> <length>   (byteSource: one range, as Kino's proxy asks it)\n"
   + "       node sdk/run.mjs [--out <file>] <plugin folder> image <handle>   (imageSource: the picture, written to a file)\n"
   + "       node sdk/run.mjs [--context '<json>'] <plugin folder> job [jobId] [scheduled|manual]   (schedule: one background run, with Kino's caps)\n"
@@ -243,7 +258,7 @@ function fail(message) {
 }
 
 export function parseArgs(argv) {
-  const opts = { config: {}, record: null, replay: null, raw: false, epg: null, live: false, retry: null, within: null, context: null, state: null, device: null, size: null, out: null, screen: false, foreign: null, liveChannel: null, trigger: null, providers: [] };
+  const opts = { config: {}, record: null, replay: null, raw: false, epg: null, live: false, retry: null, within: null, context: null, state: null, device: null, size: null, out: null, screen: false, foreign: null, liveChannel: null, trigger: null, providers: [], cursor: undefined, lang: null };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -297,6 +312,14 @@ export function parseArgs(argv) {
       if (c === null || typeof c !== "object" || Array.isArray(c)) throw new Error("--state needs a JSON object");
       opts.state = c;
     }
+    else if (a === "--cursor") {
+      try { opts.cursor = JSON.parse(argv[++i] ?? ""); } catch (e) { throw new Error(`--cursor needs JSON (the cursor a stream's last answer returned, e.g. 2 or '"abc"'): ${e.message}`); }
+    }
+    else if (a === "--lang") {
+      const l = argv[++i];
+      if (!LANGS.includes(l)) throw new Error(`--lang takes ${LANGS.join(" or ")}`);
+      opts.lang = l;
+    }
     else if (a === "--since") {
       const n = Number(argv[++i]);
       if (!Number.isFinite(n) || n < 0) throw new Error("--since needs when the store last synced, in milliseconds since 1970");
@@ -326,8 +349,13 @@ export function parseArgs(argv) {
     }
     else rest.push(a);
   }
+  // --lang is a shorthand for the context's lang (a --context lang loses to it).
+  if (opts.lang) opts.context = { ...(opts.context || {}), lang: opts.lang };
   return { opts, rest };
 }
+
+/** What `--lang` takes: the languages Kino draws a plugin's texts in. */
+export const LANGS = ["es", "en"];
 
 async function main() {
   // Inside Kino, console.* goes to the log. Keep stdout clean so the JSON result can be piped.
@@ -350,6 +378,8 @@ async function main() {
   if (fn === contract.kinoJobs.export) return jobCommand(targetArg, rest, opts);
   if (fn === "shared") return sharedCommand(targetArg);
   if (fn === "notifications") return notificationsCommand(targetArg);
+  if (fn === "proto") return protoCommand(targetArg, rest);
+  if (opts.cursor !== undefined && !(fn === "screenEvent" && rest[0] === "protocol")) return fail("--cursor only applies to screenEvent protocol <alias>.<stream> (for a provider on its own: proto <door>.<stream> '<cursor json>')");
   if (!targetArg || !(FUNCTIONS.includes(fn) || SETTINGS_FUNCTIONS.includes(fn) || PANEL_FUNCTIONS.includes(fn) || SCREEN_FUNCTIONS.includes(fn) || STORE_FUNCTIONS.includes(fn) || fn === "sign" || fn === "theme" || Object.values(LIVE).includes(fn))) return fail(USAGE);
   if (opts.record && opts.replay) return fail("--record and --replay can't be used together");
   const target = resolve(targetArg);
@@ -486,7 +516,7 @@ async function main() {
       if (opts.trigger !== null && fn !== "screenEvent") return fail("--trigger only applies to screenEvent");
       try { request = screenRequest(fn, rest, { ...opts, recommends: manifest.recommends ?? [] }); } catch (e) { return fail(e.message); }
       if (fn === "screenEvent" && request.event.name === "protocol") {
-        try { request.event.arg = await protocolEventArg(protocol, request.event.arg); } catch (e) { return fail(e.message); }
+        try { request.event.arg = await protocolEventArg(protocol, request.event.arg, opts.cursor ?? null, stderr); } catch (e) { return fail(e.code ? `✗ ${e.code}: ${e.message}` : e.message); }
       }
       if (opts.trigger !== null && request.event.name === "open") return fail("--trigger does not apply to open: Kino sends it itself, never as a press");
       const trigger = opts.trigger ?? "tap";
@@ -983,30 +1013,80 @@ function manifestOf(dir) {
 export async function protocolFromProviders(folders, consumerManifest, say = () => {}) {
   if (!folders.length) return null;
   const providers = [];
-  for (const folder of folders) {
-    const dir = resolve(folder);
-    let raw;
-    try { raw = manifestOf(dir); } catch (e) { throw new Error(`--provider ${folder}: cannot read kino-plugin.json: ${e.message}`); }
-    const checked = validateManifest(JSON.stringify(raw));
-    if (!checked.ok) throw new Error(`--provider ${folder}: kino-plugin.json: ${checked.field}: ${checked.message}`);
-    const blocks = protocolBlocks(raw);
-    if (blocks.problems.length) throw new Error(`--provider ${folder}: kino-plugin.json: ${blocks.problems[0]}`);
-    if (!blocks.provides.length) throw new Error(`--provider ${folder}: its manifest declares no "provides" (apiVersion ${contract.protocol.apiVersion}): it opens no door`);
-    const { kino } = createKino(checked.manifest, { storageFile: join(dir, ".kino-storage.json"), config: {}, env: process.env });
-    providers.push({ id: checked.manifest.id, doors: blocks.provides, plugin: (await loadPlugin(resolve(dir, checked.manifest.entry), kino)).plugin });
-  }
+  for (const folder of folders) providers.push(await loadProvider(folder, "--provider "));
   const blocks = protocolBlocks(consumerManifest);
   blocks.problems.forEach((p) => say(`! ${p}`));
   return { caller: createProtocolCaller({ consumes: blocks.consumes, providers, log: (line) => say(`· ${line}`) }), uses: blocks.consumes };
 }
 
-/** `screenEvent protocol <alias>.<stream>`: the arg Kino sends, `{ alias, stream, items }`, from one poll of the provider's stream. */
-export async function protocolEventArg(protocol, text) {
+/**
+ * A provider plugin from [folder] (its own sandbox and kino): `{ id, doors, plugin }`. Throws Error, its message prefixed
+ * with [label], when the manifest is refused or opens no door.
+ */
+async function loadProvider(folder, label = "") {
+  const dir = resolve(folder);
+  let raw;
+  try { raw = manifestOf(dir); } catch (e) { throw new Error(`${label}${folder}: cannot read kino-plugin.json: ${e.message}`); }
+  const checked = validateManifest(JSON.stringify(raw));
+  if (!checked.ok) throw new Error(`${label}${folder}: kino-plugin.json: ${checked.field}: ${checked.message}`);
+  const blocks = protocolBlocks(raw);
+  if (blocks.problems.length) throw new Error(`${label}${folder}: kino-plugin.json: ${blocks.problems[0]}`);
+  if (!blocks.provides.length) throw new Error(`${label}${folder}: its manifest declares no "provides" (apiVersion ${contract.protocol.apiVersion}): it opens no door`);
+  const { kino } = createKino(checked.manifest, { storageFile: join(dir, ".kino-storage.json"), config: {}, env: process.env });
+  return { id: checked.manifest.id, doors: blocks.provides, plugin: (await loadPlugin(resolve(dir, checked.manifest.entry), kino)).plugin };
+}
+
+/**
+ * `screenEvent protocol <alias>.<stream>`: the arg Kino sends, `{ alias, stream, items }`, from one poll of the provider's
+ * stream from [cursor] (null: the first poll; `--cursor` gives another, to try what the screen does with repeated items).
+ */
+export async function protocolEventArg(protocol, text, cursor = null, say = () => {}) {
   if (!protocol) throw new Error("the protocol event needs --provider <folder>: the kit polls the provider's stream");
   const m = /^([^.]+)\.([^.]+)$/.exec(text ?? "");
   if (!m) throw new Error('screenEvent protocol takes "<alias>.<stream>" as its argument, e.g. screenEvent protocol tmdb.trending');
-  const { items } = await protocol.caller.poll(m[1], m[2], null);
-  return { alias: m[1], stream: m[2], items };
+  const answer = await protocol.caller.poll(m[1], m[2], cursor);
+  say(`· polled ${m[1]}.${m[2]} from cursor ${JSON.stringify(cursor)}: ${answer.items?.length ?? 0} item(s), next cursor ${JSON.stringify(answer.cursor ?? null)} (poll again with --cursor '${JSON.stringify(answer.cursor ?? null)}'; Kino polls every ${answer.everySeconds ?? "?"} s and may send items it already sent)`);
+  return { alias: m[1], stream: m[2], items: answer.items };
+}
+
+/**
+ * `proto <door>.<call> ['<arg json>']` or `proto <door>.<stream> ['<cursor json>']`: a provider tried on its own, as a
+ * consumer that lists every call and stream of its doors would reach it through the app (the same order of checks and error
+ * codes as kino.plugins.call: the argument strictly against "in", the answer loosely against "out"). Prints the checked
+ * answer (a stream's `{ items, cursor }`); exit 1 with the error code, 2 for a bad command.
+ */
+export async function protoCommand(folder, rest) {
+  const [target, json] = rest;
+  const m = /^([^.]+)\.([^.]+)$/.exec(target ?? "");
+  if (!folder || !m) return fail("usage: node sdk/run.mjs <provider folder> proto <door>.<call> ['<arg json>']   or   proto <door>.<stream> ['<cursor json>']");
+  const [, doorName, name] = m;
+  let provider;
+  try { provider = await loadProvider(folder); } catch (e) { return fail(e.message); }
+  const door = provider.doors.find((d) => d.name === doorName);
+  if (!door) return fail(`the provider has no door "${doorName}": its doors are ${provider.doors.map((d) => d.name).join(", ")}`);
+  const calls = Object.keys(door.calls);
+  const streams = Object.keys(door.streams);
+  if (!calls.includes(name) && !streams.includes(name)) return fail(`the door "${doorName}" has no call or stream "${name}": it has ${[...calls, ...streams].sort().join(", ")}`);
+  let arg = null;
+  if (json !== undefined) {
+    try { arg = JSON.parse(json); } catch (e) { return fail(`the ${streams.includes(name) ? "cursor" : "argument"} must be JSON: ${e.message}`); }
+  }
+  const use = { alias: doorName, repo: "kit/proto", door: doorName, calls, streams };
+  const caller = createProtocolCaller({ consumes: [use], providers: [provider], log: (line) => stderr(`· ${line}`) });
+  try {
+    if (calls.includes(name)) {
+      process.stdout.write(JSON.stringify(await caller.call(doorName, name, json === undefined ? undefined : arg), null, 2) + "\n");
+      return 0;
+    }
+    const { items, cursor, everySeconds } = await caller.poll(doorName, name, arg);
+    process.stdout.write(JSON.stringify({ items, cursor }, null, 2) + "\n");
+    stderr(`· ${items.length} item(s); Kino polls every ${everySeconds} s and passes the cursor back: node sdk/run.mjs ${folder} proto ${doorName}.${name} '${JSON.stringify(cursor)}'`);
+    return 0;
+  } catch (e) {
+    if (!e?.code) throw e;
+    stderr(`✗ ${e.code}: ${e.message}`);
+    return 1;
+  }
 }
 
 /**

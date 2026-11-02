@@ -212,23 +212,25 @@ test("screenEvent protocol takes alias.stream with a real dot", async () => {
 });
 
 const cli = (...args) => spawnSync(process.execPath, [run, ...args], { encoding: "utf8" });
+// The example consumer draws its game only once its provider is installed (its install gate).
+const INSTALLED = ["--context", '{"installed":{"kinotvapp/kino-plugin-tmdb":true}}'];
 
 test("run.mjs --provider: a consumer's screenEvent calls the provider folder", () => {
-  const r = cli("--provider", providerDir, "--raw", consumerDir, "screenEvent", "play");
+  const r = cli(...INSTALLED, "--provider", providerDir, "--raw", consumerDir, "screenEvent", "play");
   assert.equal(r.status, 0, r.stderr);
-  assert.deepEqual(JSON.parse(r.stdout).state, { question: "¿Quién dirigió The Matrix?", answer: "Lana Wachowski" });
+  assert.deepEqual(JSON.parse(r.stdout).state, { movie: { title: "The Matrix", director: "Lana Wachowski" }, revealed: false, error: null });
 });
 
 test("run.mjs without --provider: the call rejects with provider_missing", () => {
-  const r = cli("--raw", consumerDir, "screenEvent", "play");
+  const r = cli(...INSTALLED, "--raw", consumerDir, "screenEvent", "play");
   assert.equal(r.status, 0, r.stderr);
-  assert.match(JSON.parse(r.stdout).toast.text, /provider_missing/);
+  assert.equal(JSON.parse(r.stdout).state.error, "provider_missing");
 });
 
 test("run.mjs --provider: the protocol event carries the polled items of alias.stream", () => {
-  const r = cli("--provider", providerDir, "--raw", consumerDir, "screenEvent", "protocol", "tmdb.trending");
+  const r = cli(...INSTALLED, "--state", '{"protocol":{"tmdb":{"trending":true}}}', "--provider", providerDir, "--raw", consumerDir, "screenEvent", "protocol", "tmdb.trending");
   assert.equal(r.status, 0, r.stderr);
-  assert.deepEqual(JSON.parse(r.stdout).state.lastTrending, ["The Matrix", "Pulp Fiction"]);
+  assert.deepEqual(JSON.parse(r.stdout).state.trending, ["The Matrix", "Pulp Fiction"]);
 });
 
 test("run.mjs --provider refuses a folder that is not a provider", () => {
