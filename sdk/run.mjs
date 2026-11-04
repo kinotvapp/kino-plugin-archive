@@ -489,7 +489,7 @@ async function main() {
       if (opts.liveChannel && fn === "playerEvent") return fail("--live-channel: Kino sends no playerEvent on an En vivo channel (there is no plugin title to feed it)");
       if (opts.liveChannel && opts.foreign) return fail("--live-channel and --foreign do not go together");
       const foreign = opts.foreign ? { contributorId: manifest.id, ...opts.foreign } : null;
-      try { request = panelRequest(fn, rest.length ? rest : ["-"], opts.context, { apiVersion: manifest.apiVersion, screen: opts.screen, state: opts.state, foreign, liveChannel: opts.liveChannel }); } catch (e) { return fail(e.message); }
+      try { request = panelRequest(fn, rest.length ? rest : ["-"], opts.context, { apiVersion: featureApiVersion(manifest), screen: opts.screen, state: opts.state, foreign, liveChannel: opts.liveChannel }); } catch (e) { return fail(e.message); }
       // Task 8p: a screen-mode panelAction runs as the app marks it: the person's press for a press or submit trigger.
       const answer = fn === "panelAction" && opts.screen
         ? await kitScreenCall.run({ press: contract.qr.screenTriggers.includes(request.event.trigger), tick: false }, () => callPanel(plugin, fn, request))
@@ -508,7 +508,7 @@ async function main() {
       // Task 8j: who may move the player, by origin and the playerControl capability.
       if (!opts.liveChannel) playerControlLines(fn, answer, request, { contributed: !!foreign, manifest });
       if (opts.raw) { process.stdout.write(JSON.stringify(answer === undefined ? null : answer, null, 2) + "\n"); return 0; }
-      return printPanelAnswer(fn, answer, request.context, servers, { apiVersion: manifest.apiVersion, screen: opts.screen, settings: manifest.settings });
+      return printPanelAnswer(fn, answer, request.context, servers, { apiVersion: featureApiVersion(manifest), screen: opts.screen, settings: manifest.settings });
     }
     if (SCREEN_FUNCTIONS.includes(fn)) {
       // Built before the call: a bad argument is the command's fault (exit 2), not the plugin's.
@@ -1137,7 +1137,7 @@ export async function callScreen(plugin, fn, { context, event }, timeoutMs = SCR
 function printScreenAnswer(fn, answer, context, manifest, writeConfig = () => {}, event = null) {
   const lang = langOf(context);
   // As the app: a series title is kept only from a plugin that declares episodes; binds and config meet its settings.
-  const opts = { allowSeries: (manifest?.capabilities ?? []).includes("episodes"), settings: manifest?.settings ?? [], apiVersion: manifest?.apiVersion };
+  const opts = { allowSeries: (manifest?.capabilities ?? []).includes("episodes"), settings: manifest?.settings ?? [], apiVersion: manifest ? featureApiVersion(manifest) : undefined };
   if (fn === "screen") {
     const checked = checkScreenTree(answer, lang, undefined, opts);
     checked.dropped.forEach((d) => stderr(`· dropped: ${d}`));

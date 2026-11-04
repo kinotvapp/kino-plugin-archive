@@ -52,7 +52,7 @@
       "name": "only screen and library may be added",
       "manifest": { "enhancements": { "14": { "capabilities": ["screen", "download"], "screen": { "label": "Inicio" } } } },
       "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [],
-      "dropped": ["enhancements.14: the \"download\" capability can't be added by an enhancement (only screen, library, playerPanelTab, playerControl, room, schedule, shared and ai)"]
+      "dropped": ["enhancements.14: the \"download\" capability can't be added by an enhancement (only screen, library, playerPanelTab, playerControl, room, schedule, shared, ai and files)"]
     },
     {
       "name": "capabilities must be a list of names",

@@ -95,15 +95,25 @@ function parsePrice(raw, id, present) {
   return ok({ kinos: raw.kinos, payTo: raw.payTo });
 }
 
-// `logo`: { wordmark, mark }, each { size: [w, h], paths: [{ d, fill }] }: vector only, at least one of the two.
+// `logo`: { wordmark, mark, decor }. wordmark and mark are each { size: [w, h], paths: [{ d, fill }] }; decor is { paths } drawn over
+// Kino's own logo in the space of its "o". Vector only, at least one of the three.
 function parseLogo(raw, id, present) {
   if (!present) return ok(null);
   const l = A().logo;
-  if (!isObj(raw)) return err(`theme "${id}": "logo" must be an object { "wordmark", "mark" }`);
-  const extra = Object.keys(raw).filter((k) => !l.shapes.includes(k)).sort()[0];
+  if (!isObj(raw)) return err(`theme "${id}": "logo" must be an object { "wordmark", "mark", "decor" }`);
+  const extra = Object.keys(raw).filter((k) => !l.shapes.includes(k) && k !== "decor").sort()[0];
   if (extra !== undefined) return err(`theme "${id}": "logo" has an unknown field: "${cut(extra)}"`);
-  if (raw.wordmark === undefined && raw.mark === undefined) return err(`theme "${id}": "logo" needs a "wordmark" or a "mark"`);
-  const out = { wordmark: null, mark: null };
+  if (raw.wordmark === undefined && raw.mark === undefined && raw.decor === undefined) return err(`theme "${id}": "logo" needs a "wordmark", a "mark" or a "decor"`);
+  const out = { wordmark: null, mark: null, decor: null };
+  if (raw.decor !== undefined) {
+    const where = `theme "${id}": "logo.decor"`;
+    if (!isObj(raw.decor)) return err(`${where} must be an object { "paths" }`);
+    const bad = Object.keys(raw.decor).filter((k) => k !== "paths").sort()[0];
+    if (bad !== undefined) return err(`${where} has an unknown field: "${cut(bad)}"`);
+    const paths = parseLogoPaths(raw.decor.paths, where, l);
+    if (!paths.ok) return paths;
+    out.decor = paths.value;
+  }
   for (const key of l.shapes) {
     if (raw[key] === undefined) continue;
     const where = `theme "${id}": "logo.${key}"`;
@@ -115,25 +125,32 @@ function parseLogo(raw, id, present) {
     const inRange = (n) => Number.isInteger(n) && n >= 1 && n <= l.maxCanvas;
     if (!inRange(w) || !inRange(h)) return err(`${where}.size must be [width, height], whole numbers from 1 to ${l.maxCanvas}`);
     if (w > h * l.maxAspect || h > w * l.maxAspect) return err(`${where}.size is more than ${l.maxAspect} times wider than tall (or the reverse)`);
-    if (!Array.isArray(s.paths) || s.paths.length < 1 || s.paths.length > l.maxPaths) return err(`${where}.paths must be a list of 1 to ${l.maxPaths} paths`);
-    const paths = [];
-    for (let i = 0; i < s.paths.length; i++) {
-      const p = s.paths[i];
-      if (!isObj(p)) return err(`${where}.paths[${i}] must be an object { "d", "fill" }`);
-      const pb = Object.keys(p).filter((k) => k !== "d" && k !== "fill").sort()[0];
-      if (pb !== undefined) return err(`${where}.paths[${i}] has an unknown field: "${cut(pb)}"`);
-      if (typeof p.d !== "string" || p.d.trim() === "" || p.d.length > l.maxPathChars || !re(l.pathPattern).test(p.d)) {
-        return err(`${where}.paths[${i}].d must be SVG path data (M, L, H, V, C, S, Q, T, A, Z and numbers), up to ${l.maxPathChars} characters`);
-      }
-      const color = hexOf(p.fill);
-      if (typeof p.fill !== "string" || (!l.fillTokens.includes(p.fill) && color === null)) {
-        return err(`${where}.paths[${i}].fill must be accent, onAccent, textPrimary, textSecondary or a color #RRGGBB`);
-      }
-      paths.push({ d: p.d, fill: color ?? p.fill });
-    }
-    out[key] = { width: w, height: h, paths };
+    const paths = parseLogoPaths(s.paths, where, l);
+    if (!paths.ok) return paths;
+    out[key] = { width: w, height: h, paths: paths.value };
   }
   return ok(out);
+}
+
+// A logo's `paths`: 1 to maxPaths of { d, fill }, shared by the shapes and the decor.
+function parseLogoPaths(raw, where, l) {
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > l.maxPaths) return err(`${where}.paths must be a list of 1 to ${l.maxPaths} paths`);
+  const paths = [];
+  for (let i = 0; i < raw.length; i++) {
+    const p = raw[i];
+    if (!isObj(p)) return err(`${where}.paths[${i}] must be an object { "d", "fill" }`);
+    const pb = Object.keys(p).filter((k) => k !== "d" && k !== "fill").sort()[0];
+    if (pb !== undefined) return err(`${where}.paths[${i}] has an unknown field: "${cut(pb)}"`);
+    if (typeof p.d !== "string" || p.d.trim() === "" || p.d.length > l.maxPathChars || !re(l.pathPattern).test(p.d)) {
+      return err(`${where}.paths[${i}].d must be SVG path data (M, L, H, V, C, S, Q, T, A, Z and numbers), up to ${l.maxPathChars} characters`);
+    }
+    const color = hexOf(p.fill);
+    if (typeof p.fill !== "string" || (!l.fillTokens.includes(p.fill) && color === null)) {
+      return err(`${where}.paths[${i}].fill must be accent, onAccent, textPrimary, textSecondary or a color #RRGGBB`);
+    }
+    paths.push({ d: p.d, fill: color ?? p.fill });
+  }
+  return ok(paths);
 }
 
 // `name`: { es, en } (one may be missing and falls back to the other) or a plain string for both.
@@ -304,11 +321,6 @@ export function resolveAppTheme(theme, { tv = false, adjustments = {} } = {}) {
   const reset = (...keys) => { for (const k of keys) delete merged[k]; };
   let accentKept = "colors.accent" in merged;
 
-  if (bgStops().some((s) => luminance(s) > contract.manifest.theme.maxBackgroundLuminance)) {
-    warnings.push("background: is too light (the background must be dark for now); Kino's is used");
-    reset("background", "colors.background");
-  }
-
   // The accent first: when it is Kino's own only the background can give way, and everything below reads the final one.
   if (eff("colors.accent") !== D["colors.accent"] || eff("colors.onAccent") !== D["colors.onAccent"]) {
     const accent = eff("colors.accent");
@@ -357,6 +369,17 @@ export function resolveAppTheme(theme, { tv = false, adjustments = {} } = {}) {
     if (worst(eff("colors.focus")) < minUi || contrast(eff("colors.onFocus"), eff("colors.focus")) < minText) {
       warnings.push("colors.focus/onFocus: not legible (3:1 on the background, 4.5:1 for the text on it); Kino's are used");
       reset("colors.focus", "colors.onFocus");
+    }
+  }
+
+  // A light background is fine when the theme brings its own text that reads on it and on its surfaces (Kino's text is near-white).
+  if (bgStops().some((s) => luminance(s) > contract.manifest.theme.maxBackgroundLuminance) &&
+    [eff("colors.textPrimary"), eff("colors.textSecondary")].some((c) => worst(c) < minText || contrast(c, eff("colors.surface")) < minText)) {
+    warnings.push("background: is light, and Kino's text would not be readable on it; the theme must bring its own readable text colors (colors.textPrimary and colors.textSecondary); Kino's is used");
+    reset("background", "colors.background");
+    if (worst(eff("colors.accent")) < minUi) {
+      reset("colors.accent", "colors.onAccent");
+      accentKept = false;
     }
   }
 

@@ -18,7 +18,7 @@ const manifest = (extra = {}) => ({ id: "ytm", name: "YT", version: "1.0.0", api
 test("visualBrowser: the contract's numbers", () => {
   const V = contract.visualBrowser;
   assert.equal(V.apiVersion, 20);
-  assert.equal(contract.maxApiVersion, 20);
+  assert.equal(contract.maxApiVersion, 21);
   assert.deepEqual([V.maxTimeoutMs, V.minTimeoutMs, V.maxCookies, V.maxCookieChars, V.maxHtmlChars], [600000, 5000, 64, 16384, 2000000]);
   assert.deepEqual(V.errorCodes, ["bad_args", "forbidden", "unavailable", "busy", "store_failed"]);
   assert.deepEqual(V.fromFunctions, contract.qr.fromFunctions);
@@ -130,7 +130,7 @@ test("visualBrowser: the manifest key exists from apiVersion 20 and is a boolean
   assert.equal(v({ visualBrowser: false }).manifest.visualBrowser, false);
   assert.equal(v({ visualBrowser: true }, 19).manifest.visualBrowser, false);
   assert.deepEqual(v({ visualBrowser: "yes" }), { ok: false, field: "visualBrowser", message: contract.visualBrowser.notBooleanMessage });
-  assert.equal(v({}, 21).ok, false);
+  assert.equal(v({}, 22).ok, false);
   assert.ok(consentLines(v({}).manifest).some((l) => l.text === contract.visualBrowser.consentLine));
   assert.ok(!consentLines(v({ visualBrowser: false }).manifest).some((l) => l.text === contract.visualBrowser.consentLine));
 });

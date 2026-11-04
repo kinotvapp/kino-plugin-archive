@@ -28,6 +28,9 @@ const GO_BAD_ID = "id must be 1 to 128 of A-Z a-z 0-9 . _ ~ -";
 const ACTION_KEYS = ["ui", "event", "arg", "go", "timeoutMs"];
 /** Task 18 (G6): the action fields that are a press of the person's, where an action's own timeoutMs is read. */
 const PRESS_FIELDS = ["onTap", "onLongPress", "onSubmit", "onTrailingTap"];
+/** An image's `data:` url: a base64 png, jpeg, webp or gif (never svg), at most this many characters. */
+const DATA_IMAGE = /^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/;
+const DATA_IMAGE_MAX_CHARS = 200000;
 /** Every field a screen answer may carry (ScreenLimits.ANSWER_FIELDS); `ui` since Task 7i-2. */
 const ANSWER_KEYS = S.answerFields;
 /** A declared pop-up's `onClose` (Task 7i-2): ScreenLimits.POPUP_ON_CLOSE. */
@@ -678,7 +681,15 @@ class Reader {
         if (!this.animatedLogged) { this.animatedLogged = true; this.log(`screen: more than ${S.motion.maxAnimated} animating nodes, the rest drop their animate`); }
       }
     }
-    const common = (p, byClass) => ({ key, enabled, hidden, style: still ? { ...p.style, animate: null } : p.style, onTap: p.onTap, onLongPress: p.onLongPress, devices, sizes, testKey, byClass, ...shared });
+    // `onSwipeLeft` / `onSwipeRight` (additive, no apiVersion): shared by every size, read as any action.
+    const swipe = {};
+    for (const field of ["onSwipeLeft", "onSwipeRight"]) {
+      if (present(o, field) && !(maps !== null && maps.has(field))) {
+        const a = this.actions(opt(o, field), o, type, field);
+        if (a !== null) swipe[field] = a;
+      }
+    }
+    const common = (p, byClass) => ({ key, enabled, hidden, style: still ? { ...p.style, animate: null } : p.style, onTap: p.onTap, onLongPress: p.onLongPress, devices, sizes, testKey, byClass, ...shared, ...swipe });
     const byClass = {};
     if (maps !== null) for (const [cls, p] of passes) byClass[cls] = node(type, p.build(false, key), common(p, {}));
     const base = passes[0][1];
@@ -927,7 +938,14 @@ class Reader {
         const fallbackJson = opt(o, "fallback");
         const hasFallback = isObj(fallbackJson);
         if (!absent(fallbackJson) && !hasFallback) this.log("screen: image fallback is not a node, dropped");
-        let url = httpsImage(o, []);
+        // A picture the plugin holds itself (a book's cover read from its file): `data:image/...;base64,` up to a size limit.
+        let inline = "";
+        if (typeof o.url === "string" && o.url.startsWith("data:")) {
+          if (!DATA_IMAGE.test(o.url)) this.log("screen: image data: url is not a base64 png, jpeg, webp or gif, ignored");
+          else if (o.url.length > DATA_IMAGE_MAX_CHARS) this.log(`screen: image data: url is over ${DATA_IMAGE_MAX_CHARS} characters, ignored`);
+          else inline = o.url;
+        }
+        let url = inline || httpsImage(o, []);
         if (!url) {
           if (!hasFallback) return fail("url is not https on a public host");
           if (present(o, "url")) this.log("screen: image url is not https on a public host, its fallback drawn");
@@ -1077,7 +1095,10 @@ class Reader {
         if (tabs.length === 0) return fail(`needs 1 to ${LIMITS.maxListItems} valid tabs`);
         const value = this.chosen(o, type, tabs) ?? tabs[0].value;
         const onChange = this.actions(opt(o, "onChange"), o, type, "onChange");
-        return () => ({ tabs, value, onChange });
+        // `divider: false` takes away the line under the tabs (default true).
+        const dv = o.divider;
+        const divider = dv === undefined || dv === null ? true : typeof dv === "boolean" ? dv : (this.log(`screen: tabs divider ${typeof dv} is not true or false, ignored`), true);
+        return () => ({ tabs, value, onChange, divider });
       }
       case "emptyState": case "errorState": {
         const title = t("title");
@@ -1154,7 +1175,14 @@ class Reader {
           image = httpsImage({ url: typeof i === "string" ? i : "" }, []) || null;
           if (image === null) this.log("screen: heroCard image is not https on a public host, dropped");
         }
-        return (k) => ({ title, text, image, buttons: k ? this.heroButtons(o, depth) : [] });
+        // Additive: a title's logo (a public https picture) drawn where the title's text is, when it loads.
+        let logo = null;
+        const lg = opt(o, "logo");
+        if (!absent(lg)) {
+          logo = httpsImage({ url: typeof lg === "string" ? lg : "" }, []) || null;
+          if (logo === null) this.log("screen: heroCard logo is not https on a public host, dropped");
+        }
+        return (k) => ({ title, text, image, logo, buttons: k ? this.heroButtons(o, depth) : [] });
       }
       case POPUP: {
         const kind = opt(o, "kind");
@@ -1441,13 +1469,16 @@ class Reader {
         const centerTitle = this.flag(o, type, "centerTitle");
         const dense = this.flag(o, type, "dense");
         const merge = this.appBarMerge(o);
+        // `divider: false` takes away the hairline at the bar's lower edge (default true).
+        const dv = o.divider;
+        const divider = dv === undefined || dv === null ? true : typeof dv === "boolean" ? dv : (this.log(`screen: appBar divider ${typeof dv} is not true or false, ignored`), true);
         let background = null;
         if (present(o, "backgroundColor")) {
           if (typeof o.backgroundColor === "string" && S.colorRoles.includes(o.backgroundColor)) background = o.backgroundColor;
           else this.log(`screen: appBar backgroundColor ${fmt(o.backgroundColor)} is not a color role${colorHint(o.backgroundColor)}, the default used`);
         }
         return (k) => {
-          if (!k) return { title, leading: null, actions: [], bottom: null, centerTitle, background, titleNode: null, mergeWithKinoBar: false };
+          if (!k) return { title, leading: null, actions: [], bottom: null, centerTitle, background, titleNode: null, mergeWithKinoBar: false, divider };
           const leading = this.barButton(opt(o, "leading"), "leading", depth);
           const actions = [];
           const raw = opt(o, "actions");
@@ -1479,7 +1510,7 @@ class Reader {
             }
           }
           if (merge && leading === null) this.log(`screen: appBar ${APP_BAR_MERGE} needs a leading IconButton, ignored`);
-          return { title, leading, actions, bottom, centerTitle, background, titleNode, mergeWithKinoBar: merge && leading !== null };
+          return { title, leading, actions, bottom, centerTitle, background, titleNode, mergeWithKinoBar: merge && leading !== null, divider };
         };
       }
       case "navigationBar": {

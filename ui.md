@@ -498,6 +498,7 @@ Keep the chosen tab in your own state from its `onChanged` event, and draw the m
 | `tabs` | `{ value, label, labelEn?, badge? }[]` | required | no | 1 to 500; a tab's `badge` sits beside its label ([shared properties](#shared-properties)) |
 | `value` | string | the first tab | no | the selected tab; NOT in `state.inputs`: keep it in your state from `onChanged` |
 | `onChanged` | action | none | no | its event's `value` is the tab's value |
+| `divider` | boolean | `true` | no | `false` takes away the line under the tabs |
 <!-- ui:props:tabs:end -->
 
 ```json
@@ -708,6 +709,7 @@ screen reader says, and may carry a `badge`), then an optional `bottom` `TabBar`
 texts yourself) takes the room left of the `actions` in the same row: a `TabBar` there scrolls sideways when it overflows,
 and on the TV its tabs and the actions are one row for the D-pad (Right past the last tab reaches the first action, Up from
 the body lands on the selected tab). `bottom` stays for the classic second row. See [Tabs in the app bar](#recipe-app-bar-tabs).
+**A logo instead of the name**: with `mergeWithKinoBar` the bar is the plugin's, so an `Image` as the `title` (a `data:image/png;base64,…` of your logo, `fit: "contain"`, `h: 32`, an `aspect` of the picture's own, and a `Text` as its `fallback` for a Kino that cannot read it) puts your logo where the name was. Paint the picture on the bar's own colour (an opaque PNG): a transparent one shows the app theme's fill behind it.
 
 <!-- ui:props:appBar:start -->
 | Property | Type | Default | Per size | Notes |
@@ -717,7 +719,8 @@ the body lands on the selected tab). `bottom` stays for the classic second row. 
 | `actions` | `IconButton[]` | none | no | at most 4, each with a `labelText`; a `badge` allowed |
 | `bottom` | a `TabBar` | none | no | under the row |
 | `centerTitle` | boolean | `false` | no | the title centred |
-| `dense` | boolean | `false` | no | additive, no new apiVersion: on a phone the bar has 4 dp above and below its row instead of 16 (a TV and a player panel keep theirs); also the one bar of `mergeWithKinoBar` |
+| `dense` | boolean | `false` | no | additive, no new apiVersion: on a phone the bar has 4 dp above and below its row instead of 16, on a TV 8 dp instead of 24 (a player panel keeps its own); also the one bar of `mergeWithKinoBar` |
+| `divider` | boolean | `true` | no | additive, no new apiVersion: `false` takes away the hairline at the bar's lower edge |
 | `backgroundColor` | a colour role | Kino's surface | no | its text and icons in the role's readable colour |
 | `mergeWithKinoBar` | boolean | `false` | no | apiVersion 19, the root Scaffold's only: with a `leading`, Kino draws one bar, your `leading` in Close's place and your `title` in your plugin's name's |
 <!-- ui:props:appBar:end -->
@@ -1018,7 +1021,7 @@ a hole.
 <!-- ui:props:image:start -->
 | Property | Type | Default | Per size | Notes |
 | --- | --- | --- | --- | --- |
-| `url` | https URL | required without `fallback` | no | a public https host (no declaration needed); with a `fallback`, no `url` draws the fallback (an empty or refused one too, logged) |
+| `url` | https URL | required without `fallback` | no | a public https host (no declaration needed), or `data:image/png|jpeg|webp|gif;base64,…` of at most ${n(S.dataImage.maxChars)} characters (a picture you hold yourself, such as a book's cover; an older Kino draws the fallback); with a `fallback`, no `url` draws the fallback (an empty or refused one too, logged) |
 | `alt` | string | none | no | what a screen reader says (`altEn` the English one) |
 | `aspect` | `16:9` \| `2:3` \| `1:1` \| `banner` \| `w:h` | the picture's own | yes | the box's shape; `w:h` is any width over height from 0.2 to 5, like `1.4:1` or `900:1300` |
 | `fit` | `cover` \| `contain` \| `width` | `cover` | yes | how the picture sits in its box: `cover` fills and crops, `contain` shows all of it, `width` takes the width and the picture's own height (the `aspect`, or 2:3, holds its place until it loads) |
@@ -1656,7 +1659,9 @@ A section's banner: a big picture, a title, a line and at most two buttons. The 
 | `title` | string | required | no | `titleEn` the English one |
 | `text` | string | none | no | `textEn` |
 | `image` | https URL | none | no | a public https picture |
+| `logo` | https URL | none | no | additive, no new apiVersion: a title's logo (a public https picture) drawn where the title's text is, when it loads; the text still names it for a screen reader and shows when the logo cannot |
 | `buttons` | button nodes | none | no | at most 2 |
+| `h` | a size of the scale | Kino's (240 dp, 320 on a TV) | yes | additive, no new apiVersion: the banner's height; a per-size map works (`{ compact: 200, expanded: 240 }`) |
 <!-- ui:props:heroCard:end -->
 
 ```json
@@ -3329,6 +3334,8 @@ Every node takes these besides its own and the style.
 | `key` | string | `auto-<n>` | no | unique on the screen; required on inputs, pop-ups, an `ExpansionTile` and a dismissible banner; the `auto-` prefix is Kino's |
 | `onTap` | action | none | no | a press (a button's is `onPressed`) |
 | `onLongPress` | action | none | no | a long press; keep it for extras reachable another way |
+| `onSwipeLeft` | action | none | no | a sideways swipe to the left (the next page): any node, at least 64 dp of drag; on the TV, Right once focus has nowhere further to go ([swipe](#swipe)) |
+| `onSwipeRight` | action | none | no | a sideways swipe to the right (the previous page); on the TV, Left once focus has nowhere further to go |
 | `arg` | string | none | no | the event's `arg` when the action is a bare event name (at most 4,096 characters) |
 | `enabled` | boolean | `true` | no | `false` draws it off; `ui` `enable`/`disable` change it |
 | `hidden` | boolean | `false` | no | `true` starts it hidden; `ui` `show`/`hide`/`toggle` change it |
@@ -3344,6 +3351,29 @@ Every node takes these besides its own and the style.
 | `canRequestFocus` | boolean | `false` | no | any node: on the TV a D-pad stop where the remote rests to read it (Kino's row look, no press); ignored where the node takes focus already and on the phone ([shared properties](#shared-properties)) |
 | `loading` | boolean | `false` | no | a button, a `FloatingActionButton`, a card or a `ListTile` with `onTap`: Kino's busy look (a spinner, no press, read as busy); Kino also draws it on the node pressed while its call runs long ([busy and slow presses](#busy)) |
 <!-- ui:common:end -->
+
+<a id="swipe"></a>
+#### Swipe: `onSwipeLeft` and `onSwipeRight`
+
+Any node can answer a sideways swipe, with one action each (the same shapes as `onTap`). The direction is the finger's: a swipe
+to the left is "the next page", to the right "the previous one" (the `pages` node's own turn follows the same rule). A drag of at
+least 64 dp counts; a vertical scroll is never read as one, and a node that scrolls sideways keeps its own scroll.
+
+On the TV there is no finger: `onSwipeLeft` answers Right and `onSwipeRight` answers Left, but only once focus has nowhere further
+to go that way, so a remote still moves between buttons first. Keep a button for the same step (swipe is a shortcut, not the only
+way: an older Kino ignores both properties, and a screen reader uses the buttons).
+
+```js
+export async function screen({ state }) {
+  const page = state.page ?? 0;
+  return { type: "Column", key: "reader", flex: 1, onSwipeLeft: "next", onSwipeRight: "prev",
+    children: [{ type: "Text", text: state.pages[page] }, { type: "Row", children: [
+      { type: "IconButton", icon: "arrow_back", labelText: "Anterior", onPressed: "prev" },
+      { type: "IconButton", icon: "arrow_forward", labelText: "Siguiente", onPressed: "next" } ] }] };
+}
+```
+
+Both are additive: no new apiVersion (Kino 0.9.82). The same release lets an `Image` take a `data:image/...;base64,` url.
 
 <a id="shared-properties"></a>
 ### Shared properties

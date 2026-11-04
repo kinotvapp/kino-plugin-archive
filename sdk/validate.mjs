@@ -94,6 +94,8 @@ export function consentLines(m, { authorFingerprint = null } = {}) {
   if (m.capabilities.includes(contract.segments.capability)) line(contract.segments.consentLine);
   // apiVersion 19 "lyrics": a plain line, not red (it learns the title and artist of what plays): PluginConsent / Lyrics consent text.
   if (m.capabilities.includes(contract.lyrics.capability)) line(contract.lyrics.consentLine);
+  // apiVersion 21 "files": a plain line (the person picks every file herself): PluginConsent / ConsentText.Files.
+  if (m.capabilities.includes(contract.files.capability)) line(contract.files.consentLine);
   // apiVersion 20 "visualBrowser": true (kino.visualBrowser): a warning line (contract.visualBrowser.consentLine, StringsEs.pluginConsent.visualBrowser);
   // Kino also asks in its own sheet at every open.
   if (m.visualBrowser) line(contract.visualBrowser.consentLine);

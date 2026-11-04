@@ -1,4 +1,4 @@
-// TypeScript declarations for Kino plugins (apiVersion 1 to 20; 20 adds the visualBrowser manifest key (kino.visualBrowser.open: a web window the person sees and drives, on the plugin's own hosts, to sign in or finish a step) and the plugin protocol (the manifest's provides and consumes blocks and kino.plugins.call: one plugin uses the doors another opens, through Kino); 19 adds the lyrics capability (the lyrics(query) export: a song's time-synced or plain lyrics for the music player's overlay); 18 adds the app themes (go.useTheme, go.setExperience, appThemes with price, experience and logo); 17 adds the stats operation of the library capability (kino.library.stats, a month's totals and top titles); 16 adds the coins capability (kino.coins: the person's Kino coins balance, and giving one coin for a post); 15 adds the identity capability (kino.identity.telegram: a per-plugin pseudonym of the person and the signed token that proves it), the notifications capability (kino.notifications: notices in the Home bell), library episodes (the latest season and episode of a watched series) and the pluginStore capability (the plugin is a source of plugins for Kino's store: storeSync, and storeList and storeSearch for a live store); 14 adds the screen capability (screen, screenEvent and the manifest's screen block: a full-screen canvas the plugin builds), library, playerPanelTab, playerControl, room (kino.room, a mailbox hosted on the person's device over the Internet), schedule (background jobs: the manifest's jobs and the job export) and the manifest's enhancements; 13 adds the socket capability (kino.ws, outbound WebSockets) and the byteSource capability (a stream whose bytes the plugin serves through its read export) and the storageLarge capability (a 16 MiB kino.storage for a plugin that keeps a catalog) and the catalog capability (kino.catalog, a searchable SQLite catalog of up to 100,000 items per plugin in a 64 MiB file) and the qrScan capability (kino.qr.scan, the phone's camera scanner for a QR code) and the settings form's qr setting (a QR whose text settingsStatus gives, refreshed every refreshMs) and the kino.crypto operations aesIge, modPow, gunzip, convert and aesIgeVerify and the imageSource capability (a poster, backdrop, still or hero image the plugin serves through its image export, KinoImageRef); 12 adds the syncProvider capability (syncPull, syncPush, syncStatus and the manifest's sync block); 11 adds the externalResolve capability (a stream's `external` hand-off to a resolver app, the manifest's externalResolver) and, from Kino 0.9.66, a stream's advisory `media` and its `portable` universal copy; 10 adds the playlists capability; 9 adds the player panel (panel, panelAction, playerEvent, the manifest's panel and settingsLayout), fetchHosts "any" for hand-written plugins, English setting texts and kino.meta by title; 8 adds the audio item kinds music and podcast; 7 adds tracking and segments; apiVersion 5 only adds the manifest's signature, 6 the plain-plugin SDK: typed and larger secrets, migrate, signed streams, the settings form, debug, telemetry, section, categories, theme and scopedSearch). Reference them from plugin.js
+// TypeScript declarations for Kino plugins (apiVersion 1 to 21; 21 adds the files capability (kino.files: files on the person's device, picked by the person, read by ranges and played through a kino-file: address); 20 adds the visualBrowser manifest key (kino.visualBrowser.open: a web window the person sees and drives, on the plugin's own hosts, to sign in or finish a step) and the plugin protocol (the manifest's provides and consumes blocks and kino.plugins.call: one plugin uses the doors another opens, through Kino); 19 adds the lyrics capability (the lyrics(query) export: a song's time-synced or plain lyrics for the music player's overlay); 18 adds the app themes (go.useTheme, go.setExperience, appThemes with price, experience and logo); 17 adds the stats operation of the library capability (kino.library.stats, a month's totals and top titles); 16 adds the coins capability (kino.coins: the person's Kino coins balance, and giving one coin for a post); 15 adds the identity capability (kino.identity.telegram: a per-plugin pseudonym of the person and the signed token that proves it), the notifications capability (kino.notifications: notices in the Home bell), library episodes (the latest season and episode of a watched series) and the pluginStore capability (the plugin is a source of plugins for Kino's store: storeSync, and storeList and storeSearch for a live store); 14 adds the screen capability (screen, screenEvent and the manifest's screen block: a full-screen canvas the plugin builds), library, playerPanelTab, playerControl, room (kino.room, a mailbox hosted on the person's device over the Internet), schedule (background jobs: the manifest's jobs and the job export) and the manifest's enhancements; 13 adds the socket capability (kino.ws, outbound WebSockets) and the byteSource capability (a stream whose bytes the plugin serves through its read export) and the storageLarge capability (a 16 MiB kino.storage for a plugin that keeps a catalog) and the catalog capability (kino.catalog, a searchable SQLite catalog of up to 100,000 items per plugin in a 64 MiB file) and the qrScan capability (kino.qr.scan, the phone's camera scanner for a QR code) and the settings form's qr setting (a QR whose text settingsStatus gives, refreshed every refreshMs) and the kino.crypto operations aesIge, modPow, gunzip, convert and aesIgeVerify and the imageSource capability (a poster, backdrop, still or hero image the plugin serves through its image export, KinoImageRef); 12 adds the syncProvider capability (syncPull, syncPush, syncStatus and the manifest's sync block); 11 adds the externalResolve capability (a stream's `external` hand-off to a resolver app, the manifest's externalResolver) and, from Kino 0.9.66, a stream's advisory `media` and its `portable` universal copy; 10 adds the playlists capability; 9 adds the player panel (panel, panelAction, playerEvent, the manifest's panel and settingsLayout), fetchHosts "any" for hand-written plugins, English setting texts and kino.meta by title; 8 adds the audio item kinds music and podcast; 7 adds tracking and segments; apiVersion 5 only adds the manifest's signature, 6 the plain-plugin SDK: typed and larger secrets, migrate, signed streams, the settings form, debug, telemetry, section, categories, theme and scopedSearch). Reference them from plugin.js
 // with `/// <reference path="./kino.d.ts" />` for editor help; Kino itself runs plain JavaScript.
 // The numbers in the comments come from contract.json, which is authoritative. The app checks that
 // every `kino` member declared here exists in its runtime and nothing else does (KinoDtsTest).
@@ -1326,6 +1326,12 @@ interface KinoScreenBase extends KinoScreenStyle {
   enabled?: boolean; hidden?: boolean;
   /** A tap on the node (a button's is `onPressed`). */
   onTap?: KinoScreenAction; onLongPress?: KinoScreenAction;
+  /**
+   * What a sideways swipe sends, by the direction the finger goes: `onSwipeLeft` turns to the next page, `onSwipeRight` to the previous
+   * one. Any node, not per size; a drag of at least 64 dp. On the TV they answer Right and Left once focus has nowhere further to go.
+   * Additive (Kino 0.9.82): an older Kino ignores them, so keep your buttons.
+   */
+  onSwipeLeft?: KinoScreenAction; onSwipeRight?: KinoScreenAction;
   /** The event arg of a shorthand-string action. */
   arg?: string;
   /** Drawn only on these devices / width classes; an unknown name drops the node. */
@@ -1497,7 +1503,7 @@ type KinoScreenNode =
   | (KinoScreenInput & KinoScreenFieldRules & { type: "Chips"; options: KinoScreenOption[]; multiple?: boolean; value?: string | string[]; minLength?: number; maxLength?: number })
   | (KinoScreenInput & KinoScreenFieldRules & { type: "Switch" | "Checkbox"; value?: boolean })
   | (KinoScreenInput & { type: "Slider"; min?: number; max?: number; step?: number; value?: number })
-  | (KinoScreenBase & { type: "TabBar"; tabs: KinoScreenOption[]; value?: string; onChanged?: KinoScreenAction })
+  | (KinoScreenBase & { type: "TabBar"; tabs: KinoScreenOption[]; value?: string; onChanged?: KinoScreenAction; /** additive, no new apiVersion: `false` takes away the line under the tabs (default `true`) */ divider?: boolean })
   | (KinoScreenBase & { type: "emptyState" | "errorState"; title: string; titleEn?: string; text?: string; textEn?: string; icon?: KinoIconName })
   // Kino's own components: data only, drawn with Home's cards and rows. Items are what `home` rows return (KinoItem),
   // read by the same rules (a series needs the episodes capability; posters and backdrops https only, else Kino's
@@ -1666,8 +1672,11 @@ type KinoScreenNode =
  * `dense` (additive, no new apiVersion): on a phone the bar has 4 dp above and below its row instead of 16 (56 dp in all); a TV
  * and a player panel ignore it. **Recommended for every screen of a plugin: `mergeWithKinoBar: true` + `dense: true`**, one compact
  * bar instead of two; both are plain booleans, so choose by window with `ctx.device` / `ctx.size` when you need to.
+ * `divider` (additive, no new apiVersion): `false` takes away the hairline at the bar's lower edge (default `true`). A logo instead
+ * of the name: with `mergeWithKinoBar`, an `Image` as the `title` (a `data:image/png;base64,…` address, `fit: "contain"`, `h: 32`
+ * or 40, and a `Text` as its `fallback`), painted on the bar's own colour.
  */
-type KinoScreenAppBar = KinoScreenBase & { type: "AppBar"; title?: string | KinoScreenNode; titleEn?: string; leading?: KinoScreenNode; actions?: KinoScreenNode[]; bottom?: KinoScreenNode; centerTitle?: boolean; dense?: boolean; backgroundColor?: KinoScreenColorRole; mergeWithKinoBar?: boolean };
+type KinoScreenAppBar = KinoScreenBase & { type: "AppBar"; title?: string | KinoScreenNode; titleEn?: string; leading?: KinoScreenNode; actions?: KinoScreenNode[]; bottom?: KinoScreenNode; centerTitle?: boolean; dense?: boolean; divider?: boolean; backgroundColor?: KinoScreenColorRole; mergeWithKinoBar?: boolean };
 /** Task 17 item G: a Scaffold's bottom bar of 2..5 items; `onChanged`'s `value` is the item's key (keep it in your state). */
 type KinoScreenNavigationBar = KinoScreenBase & { type: "NavigationBar"; items: { key: string; icon: KinoIconName; label: string; labelEn?: string; badge?: KinoScreenBadge }[]; value?: string; selectedIndex?: number; onChanged?: KinoScreenAction };
 
@@ -2850,6 +2859,35 @@ interface StoreSearchArg {
   cursor?: string;
 }
 
+/** What a handle of the `files` capability is (apiVersion 21): the kind a file has, from its mime type and then its extension. */
+type KinoFileKind = "video" | "audio" | "book" | "image" | "subtitle" | "other";
+
+/** A file the person picked (apiVersion 21). `id` is opaque: Kino keeps where the file is, you never see an address. */
+interface KinoFile {
+  id: string;
+  name: string;
+  /** Bytes. */
+  size: number;
+  mime: string;
+  kind: KinoFileKind;
+  /** True when the bytes were copied into your plugin's own store (`copy: true`); false: a reference to the original. */
+  copied: boolean;
+  /** Milliseconds since 1970 when the person picked it. */
+  addedAt: number;
+  /** The id of the folder it came from, for a file listed inside a picked folder. */
+  folder?: string;
+}
+
+/** A folder the person picked (apiVersion 21): one grant for everything under it. */
+interface KinoFileFolder {
+  id: string;
+  name: string;
+  addedAt: number;
+}
+
+/** The error codes of `kino.files`: `unavailable` (no picker on this device, or no press), `not_allowed` (a pick from a call the person did not start), `busy`, `timeout`, `invalid_request`, `gone` (moved, deleted or the grant lost), `too_large`, `denied` (not your handle), `quota`. */
+type KinoFilesErrorCode = "unavailable" | "not_allowed" | "busy" | "timeout" | "invalid_request" | "gone" | "too_large" | "denied" | "quota";
+
 /** What `kino.coins.balance()` answers (apiVersion 16). */
 interface KinoCoinsBalance {
   /** The person's Kino coins now. */
@@ -3420,6 +3458,38 @@ declare namespace kino {
   }
 
   /**
+   * apiVersion 21, capability "files" (a plain consent line): files that are on the person's device. `pick` and `pickFolder` open
+   * Kino's picker and only run from a press of the person's (a settings action, a `panelAction`, or a `screenEvent` that follows a
+   * tap or submit); everything else needs no press, because a handle exists only for what the person picked. You get opaque
+   * handles, never an address. By default a handle is a reference (the file stays where it is; a moved or deleted file rejects with
+   * `gone`); `pick({ copy: true })` copies the bytes into your plugin's own store instead (up to 64 MB a file, 1 GB in all).
+   * `read` and `readText` take a range (`start`, `end` exclusive), at most 2,000,000 bytes a call, like `kino.fetch`'s `maxBytes`:
+   * read a big book by its parts. `url(id)` is a `kino-file:<id>` address a stream or an audio track may carry, so the player
+   * plays the file; the host rules do not apply to it. Nothing here uploads or sends anything. Rejects with a KinoError whose
+   * `code` is a [KinoFilesErrorCode]. Present on every apiVersion 21 runtime that declares the capability: feature-detect with
+   * `typeof kino.files === "object"` (an older Kino has none).
+   */
+  namespace files {
+    /** Opens the picker; resolves to the handles the person picked (an empty list when they cancel). */
+    function pick(options?: { kinds?: KinoFileKind[]; multiple?: boolean; copy?: boolean }): Promise<KinoFile[]>;
+    /** Opens the folder picker; resolves to the folder, or null when the person cancels. */
+    function pickFolder(options?: { kinds?: KinoFileKind[] }): Promise<KinoFileFolder | null>;
+    /** Your handles, newest first; with `folder`, the files under that picked folder. */
+    function list(options?: { folder?: string; kinds?: KinoFileKind[] }): Promise<KinoFile[]>;
+    /** The folders the person picked for you. */
+    function folders(): Promise<KinoFileFolder[]>;
+    function info(id: string): Promise<KinoFile>;
+    /** Bytes `start` to `end` (exclusive, clamped to the file), at most 2,000,000. */
+    function read(id: string, range?: { start?: number; end?: number }): Promise<Uint8Array>;
+    /** The same range as UTF-8 text. */
+    function readText(id: string, range?: { start?: number; end?: number }): Promise<string>;
+    /** Drops the handle (and the copy of an imported file). */
+    function forget(id: string): Promise<void>;
+    /** `kino-file:<id>`: for a stream's or an audio track's `url`. */
+    function url(id: string): string;
+  }
+
+  /**
    * apiVersion 20, the plugin protocol (the manifest's `consumes`): asks a door another plugin opens, through Kino. `alias` is a
    * key of your `consumes`, `call` a name it lists, `arg` JSON (up to 64 KB) matching the call's `in`. Resolves to the answer
    * validated against the call's `out`; rejects with an Error whose `code` is a [KinoProtocolErrorCode]: `provider_missing` (not
@@ -3531,7 +3601,7 @@ declare namespace kino {
     /**
      * apiVersion 6, with `"browser": "pages"` in the manifest (`true` is capture-only and answers `not_allowed` here; the
      * person approves "Puede abrir páginas web ocultas para mostrar contenido y
-     * encontrar el video", in red): from `search`, `home`, `browse`, `episodes`, `section` or `resolve`, only
+     * encontrar el video", in red): from `search`, `home`, `browse`, `episodes`, `section`, `resolve` or `lyrics` (apiVersion 19: the lyrics the person opened; its 10 s call needs a `timeoutMs` of about 7000), only
      * while the person is using the app (never a background call), loads `url` in the same hidden web view and returns its
      * HTML once the page is past the site's automatic browser check (Cloudflare's "Just a moment…") and matches `waitFor`.
      * Kino never clicks, taps, types or scrolls in it and never solves a captcha: a page that asks for a human answers

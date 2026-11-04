@@ -76,6 +76,18 @@ test("appThemes: the spec's example parses", () => {
   assert.equal(t.adjustable.background, true);
 });
 
+test("appThemes: a logo decor parses like the app's", () => {
+  const withLogo = (logo) => parseAppThemes([{ ...example, logo }]);
+  const ok = withLogo({ decor: { paths: [{ d: "M -70 -96 C -70 -200 70 -200 70 -96 Z", fill: "#ffc933" }, { d: "M 0 0 L 9 9 Z", fill: "accent" }] } });
+  assert.equal(ok.ok, true);
+  assert.deepEqual(ok.themes[0].logo.decor.map((p) => p.fill), ["#FFC933", "accent"]);
+  assert.equal(ok.themes[0].logo.wordmark, null);
+  for (const bad of [{ decor: {} }, { decor: { paths: [] } }, { decor: [] }, { decor: { paths: [{ d: "M0 0 <script>", fill: "accent" }] } },
+    { decor: { paths: [{ d: "M0 0z", fill: "red" }] } }, { decor: { paths: [{ d: "M0 0z", fill: "accent" }], x: 1 } }]) {
+    assert.equal(withLogo(bad).ok, false, JSON.stringify(bad));
+  }
+});
+
 test("appThemes: format refusals match the app's", () => {
   const cases = [
     [[theme("aa", { shape: { cornerRadius: 4 } })], /unknown token "shape.cornerRadius"/],
@@ -114,7 +126,7 @@ test("appThemes: an out-of-range number parses and the resolver drops it", () =>
 
 test("appThemes: the same warnings as AppThemeResolver, word for word", () => {
   const w = (t, opts) => resolveAppTheme(parseAppThemes([t]).themes[0], opts).warnings;
-  assert.deepEqual(w(theme("aa", { colors: { background: "#7A7A7A" } })), ["background: is too light (the background must be dark for now); Kino's is used"]);
+  assert.deepEqual(w(theme("aa", { colors: { background: "#7A7A7A" } })), ["background: Kino's accent doesn't stand out on it; Kino's is used"]);
   assert.deepEqual(w(theme("aa", { colors: { accent: "#0B1E3F" } })), ["colors.accent: doesn't stand out on the background (at least 3:1); Kino's colors are used for accent and onAccent"]);
   assert.deepEqual(w(theme("aa", { colors: { accent: "#1DB954", onAccent: "#FFFFFF" } })), ["colors.onAccent: isn't readable on the accent (at least 4.5:1); Kino's colors are used for accent and onAccent"]);
   assert.deepEqual(w(theme("aa", { colors: { textPrimary: "#202020" } })), ["colors.textPrimary/textSecondary: not readable (at least 4.5:1) on the background and surface; Kino's text colors are used"]);
@@ -178,4 +190,14 @@ test("a theme with a screen and no settings needs no hosts", () => {
   assert.equal(validateManifest(JSON.stringify(base)).ok, true);
   const asks = { ...base, settings: [{ key: "a", label: "A", type: "text" }] };
   assert.equal(validateManifest(JSON.stringify(asks)).ok, false);
+});
+
+test("a light background is kept when the theme brings readable text, and refused when it does not", () => {
+  const w = (t) => resolveAppTheme(parseAppThemes([t]).themes[0]);
+  const ok = w(theme("aa", { colors: { background: "#F4EFE6", surface: "#FFFFFF", surfaceHigh: "#E8E0D2", textPrimary: "#2B2118", textSecondary: "#5E5246", accent: "#B4532A", onAccent: "#FFFFFF" } }));
+  assert.deepEqual(ok.warnings, []);
+  assert.equal(ok.tokens["colors.background"], "#F4EFE6");
+  const noText = w(theme("aa", { colors: { background: "#F4EFE6" } }));
+  assert.deepEqual(noText.warnings, ["background: is light, and Kino's text would not be readable on it; the theme must bring its own readable text colors (colors.textPrimary and colors.textSecondary); Kino's is used"]);
+  assert.equal(noText.tokens["colors.background"], undefined);
 });

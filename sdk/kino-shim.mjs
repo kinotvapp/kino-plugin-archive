@@ -17,7 +17,7 @@ import { aiOriginAllowed, currentQrOrigin, kitCall, kitJobRequest, qrScanOriginA
 import { answerFor as visualBrowserAnswer, parseOptions as visualBrowserOptions, VISUAL_BROWSER_ONLY_FROM } from "./visual-browser.mjs";
 import { gunzipSync } from "node:zlib";
 import { createCipheriv, createDecipheriv, createHash, createHmac, createPublicKey, diffieHellman, generateKeyPairSync, pbkdf2Sync, randomBytes, randomUUID, timingSafeEqual, sign as nodeSign, verify as nodeVerify } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { allowsByteSource, allowsImageRefs, anyFetchRefusal, BYTE_STREAM_INVALID, byteSourceOf, readAnswer, readRangeProblem, anyHostBudget, contract, featureApiVersion, fetchAnyHost, hostMatches, imageAnswer, imageRefOf, isUserServer, kb, schemeAllowed, syncCallCap } from "./contract.mjs";
@@ -857,7 +857,7 @@ function deviceFor(device, env) {
  * kino.device (Kino 0.9.55, contract.kinoDevice): [device] ("phone" or "tv", run.mjs --device), else env KINO_DEVICE,
  * else "phone". Anything else throws: a typo must not silently test the other UI.
  */
-export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", device = undefined, storageFile = null, cookiesFile = null, secretsFile = null, config = {}, record = null, replay = null, fetchImpl = globalThis.fetch, metaFixture = undefined, tmdbKey = undefined, tmdbFixture = undefined, nuvioFixture = undefined, libraryFixture = undefined, libraryRevoked = false, callFunction = null, env = process.env, now = Date.now, syncCall = false, qrScan = undefined, visualBrowser = undefined, deliverScreenEvent = undefined, room = undefined, roomRevoked = false, ai = undefined, aiRevoked = false, identityRevoked = false, entryFile = null, noticesFile = null, notificationsRevoked = false, coinsRevoked = false, shared = undefined, jobsOn = [], protocol = undefined } = {}) {
+export function createKino(manifest, { appVersion = "sdk", filesDir = null, lang = "es-CO", device = undefined, storageFile = null, cookiesFile = null, secretsFile = null, config = {}, record = null, replay = null, fetchImpl = globalThis.fetch, metaFixture = undefined, tmdbKey = undefined, tmdbFixture = undefined, nuvioFixture = undefined, libraryFixture = undefined, libraryRevoked = false, callFunction = null, env = process.env, now = Date.now, syncCall = false, qrScan = undefined, visualBrowser = undefined, deliverScreenEvent = undefined, room = undefined, roomRevoked = false, ai = undefined, aiRevoked = false, identityRevoked = false, entryFile = null, noticesFile = null, notificationsRevoked = false, coinsRevoked = false, shared = undefined, jobsOn = [], protocol = undefined } = {}) {
   const f = contract.fetch;
   // [syncCall]: this kino runs a syncProvider's syncPull/syncPush (contract.fetch.syncCall): its requests and responses may
   // carry the declared blob, ceil(sync.maxBlobBytes * 4/3) + envelopeChars, like the app; every other call keeps the defaults.
@@ -2089,6 +2089,110 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", devic
     return Object.freeze({ scan });
   })();
 
+  // --- kino.files (apiVersion 21, capability "files"): the app's PluginFilesBridge behind its prelude wrapper. Node has no picker:
+  // the files that are in the folder named by the `filesDir` option of createKino (else KINO_FILES_DIR, else ./.kino-files) are what
+  // "the person picks": `pick` hands out the files there in name order (all of them with multiple, else the next one not handed out
+  // yet), `pickFolder` the next sub-folder. Where a pick may start is the QR rule (qrScanOriginAllowed). Handles, limits and error
+  // codes are contract.files. `copy: true` is accepted and the handle says `copied`; nothing is copied (the folder is the store). ---
+  const filesApi = (() => {
+    if (!(manifest.capabilities || []).includes(contract.files.capability)) return null;
+    const F = contract.files;
+    const root = filesDir ?? process.env.KINO_FILES_DIR ?? ".kino-files";
+    const EXT = {
+      book: ["epub", "mobi", "azw", "azw3", "pdf", "cbz", "cbr", "fb2", "djvu", "txt", "rtf"],
+      video: ["mp4", "mkv", "webm", "avi", "mov", "m4v", "ts", "mpg", "mpeg", "wmv", "flv", "3gp"],
+      audio: ["mp3", "flac", "ogg", "oga", "m4a", "opus", "wav", "aac", "wma", "mka"],
+      image: ["jpg", "jpeg", "png", "webp", "gif", "bmp", "avif", "heic"],
+      subtitle: ["srt", "vtt", "ass", "ssa", "sub"],
+    };
+    const kindOf = (name) => {
+      const ext = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1).toLowerCase() : "";
+      for (const k of Object.keys(EXT)) if (EXT[k].includes(ext)) return k;
+      return "other";
+    };
+    const handles = new Map();
+    const folders = new Map();
+    const err = (code, message) => kinoError(code, message);
+    const cleanKinds = (kinds) => {
+      if (kinds === undefined) return null;
+      if (!Array.isArray(kinds) || kinds.some((k) => !F.kinds.includes(k))) throw err("invalid_request", `kino.files: kinds are ${F.kinds.join(", ")}`);
+      return kinds;
+    };
+    const wanted = (kinds, kind) => kinds === null || kinds.includes(kind);
+    const idOf = (id) => {
+      if (typeof id !== "string" || id.length < 1 || id.length > 64) throw err("invalid_request", "kino.files: the id must be a string");
+      return id;
+    };
+    const handleOf = (h) => Object.freeze({ id: h.id, name: h.name, size: h.size, mime: "", kind: h.kind, copied: h.copied, addedAt: h.addedAt, ...(h.folder ? { folder: h.folder } : {}) });
+    const filesIn = (dir) => {
+      if (!existsSync(dir)) return [];
+      return readdirSync(dir).sort().filter((n) => statSync(join(dir, n)).isFile()).map((n) => ({ name: n, path: join(dir, n), size: statSync(join(dir, n)).size }));
+    };
+    const mint = (f, extra) => {
+      const known = [...handles.values()].find((h) => h.path === f.path && (h.folder ?? null) === (extra.folder ?? null));
+      if (known) return known;
+      const h = { id: `f${handles.size + 1}${Math.abs([...f.path].reduce((a, c) => (a * 31 + c.charCodeAt(0)) | 0, 7)).toString(16)}`, name: f.name, path: f.path, size: f.size, kind: kindOf(f.name), copied: extra.copied === true, addedAt: Date.now(), folder: extra.folder };
+      handles.set(h.id, h);
+      return h;
+    };
+    const gesture = () => {
+      if (!qrScanOriginAllowed(currentQrOrigin())) throw err("not_allowed", "kino.files.pick only runs from a settings action, panelAction or screenEvent the person pressed");
+    };
+    const need = (id) => handles.get(idOf(id)) ?? (() => { throw err("denied", "kino.files: no file with that id belongs to this plugin"); })();
+    const bytesOf = (id, options) => {
+      const h = need(id);
+      if (options !== undefined && (options === null || typeof options !== "object")) throw err("invalid_request", "kino.files.read takes { start, end }");
+      const size = existsSync(h.path) ? statSync(h.path).size : -1;
+      if (size < 0) throw err("gone", "kino.files: the file is gone (it was moved or deleted)");
+      const start = Math.min(Math.max(Math.floor(Number(options?.start ?? 0)), 0), size);
+      const end = Math.min(Math.max(Math.floor(Number(options?.end ?? size)), start), size);
+      if (end - start > F.maxReadBytes) throw err("too_large", `kino.files: a read is at most ${F.maxReadBytes} bytes; ask for a smaller range`);
+      return readFileSync(h.path).subarray(start, end);
+    };
+    return Object.freeze({
+      pick: async (options) => {
+        const kinds = cleanKinds(options?.kinds);
+        gesture();
+        const all = filesIn(root).filter((f) => wanted(kinds, kindOf(f.name)));
+        const fresh = all.filter((f) => ![...handles.values()].some((h) => h.path === f.path && !h.folder));
+        const chosen = options?.multiple === true ? all.slice(0, F.maxPickAtOnce) : (fresh[0] ?? all[0] ? [fresh[0] ?? all[0]] : []);
+        return Object.freeze(chosen.map((f) => handleOf(mint(f, { copied: options?.copy === true }))));
+      },
+      pickFolder: async (options) => {
+        cleanKinds(options?.kinds);
+        gesture();
+        const dirs = existsSync(root) ? readdirSync(root).sort().filter((n) => statSync(join(root, n)).isDirectory()) : [];
+        const next = dirs.find((n) => !folders.has(n)) ?? dirs[0];
+        if (next === undefined) return null;
+        if (!folders.has(next)) folders.set(next, { id: `d${folders.size + 1}`, name: next, path: join(root, next), addedAt: Date.now() });
+        const f = folders.get(next);
+        return Object.freeze({ id: f.id, name: f.name, addedAt: f.addedAt });
+      },
+      list: async (options) => {
+        const kinds = cleanKinds(options?.kinds);
+        if (options?.folder !== undefined) {
+          const f = [...folders.values()].find((d) => d.id === idOf(options.folder));
+          if (!f) throw err("denied", "kino.files: no folder with that id belongs to this plugin");
+          return Object.freeze(filesIn(f.path).filter((x) => wanted(kinds, kindOf(x.name))).map((x) => handleOf(mint(x, { folder: f.id }))));
+        }
+        return Object.freeze([...handles.values()].filter((h) => !h.folder && wanted(kinds, h.kind)).sort((a, b) => b.addedAt - a.addedAt).map(handleOf));
+      },
+      folders: async () => Object.freeze([...folders.values()].map((f) => Object.freeze({ id: f.id, name: f.name, addedAt: f.addedAt }))),
+      info: async (id) => handleOf(need(id)),
+      read: async (id, options) => new Uint8Array(bytesOf(id, options)),
+      readText: async (id, options) => Buffer.from(bytesOf(id, options)).toString("utf8"),
+      forget: async (id) => {
+        const key = idOf(id);
+        if (handles.delete(key)) return;
+        const d = [...folders.entries()].find(([, f]) => f.id === key);
+        if (!d) throw err("denied", "kino.files: no file with that id belongs to this plugin");
+        folders.delete(d[0]);
+        for (const [k, h] of handles) if (h.folder === key) handles.delete(k);
+      },
+      url: (id) => `${F.urlScheme}${idOf(id)}`,
+    });
+  })();
+
   // --- kino.visualBrowser (apiVersion 20, manifest "visualBrowser": true): the app's PluginVisualBrowser behind its prelude wrapper.
   // Node has no window: the `visualBrowser` option of createKino is the person, `async (ask) =>` the window's result
   // `{ status, finalUrl?, cookies?, html? }` (or null for a closed window; it may throw). `ask` is what Kino's sheet would show: { options, hosts }.
@@ -2254,6 +2358,8 @@ export function createKino(manifest, { appVersion = "sdk", lang = "es-CO", devic
     ...(featureApiVersion(manifest) >= contract.kinoNotifications.apiVersion ? { notifications: Object.freeze({ post: notificationsApi.post, clear: notificationsApi.clear }) } : {}),
     // apiVersion 16 (contract.kinoCoins): present on every apiVersion 16 kino (typeof kino.coins === "object").
     ...(featureApiVersion(manifest) >= contract.kinoCoins.apiVersion ? { coins: Object.freeze({ balance: coinsApi.balance, give: coinsApi.give }) } : {}),
+    // apiVersion 21 (contract.files): present on every apiVersion 21 kino that declares the capability (typeof kino.files === "object").
+    ...(featureApiVersion(manifest) >= contract.files.apiVersion && filesApi ? { files: filesApi } : {}),
     // apiVersion 14 (contract.kinoShared, Task 8q-2): one simulated device's store ([shared], createSharedDevices().phone or
     // .tv; a fresh one when none is given). Present on every apiVersion 14 kino, like the app's (typeof kino.shared === "object").
     ...(featureApiVersion(manifest) >= contract.kinoShared.apiVersion ? { shared: kitSharedApi(manifest, shared ?? createSharedStore({ now }), { now }) } : {}),
