@@ -1,5 +1,5 @@
 {
- "$comment": "Shared by plugins/sdk/test/player-slot.test.mjs and the app's SlotParserTest (sharedCases): a playerSlot answer (raw) against the declared elements, and the frame Kino keeps (null = no frame: the last one stays). Text is the list of lines; refreshMs is the clamped value or null.",
+ "$comment": "Shared by plugins/sdk/test/player-slot.test.mjs and the app's SlotParserTest (sharedCases): a playerSlot answer (raw) against the declared elements, and the frame Kino keeps (null = no frame: the last one stays). Text is the list of lines (plus size when not normal, weight when known, color and background as #RRGGBBAA); left and top are the nudge in dp, present when not 0; refreshMs is the clamped value or null.",
  "elements": [
   {
    "id": "a",
@@ -561,6 +561,329 @@
    "name": "nullIsNoFrame",
    "raw": null,
    "frame": null
+  },
+  {
+   "name": "textKeepsAValidSizeColorAndBackground",
+   "raw": {
+    "items": [
+     {
+      "id": "a",
+      "text": "12:30",
+      "size": "large",
+      "color": "#ffcc00",
+      "background": "#00000080"
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "a",
+      "text": [
+       "12:30"
+      ],
+      "size": "large",
+      "color": "#FFCC00FF",
+      "background": "#00000080"
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "textIgnoresAnInvalidSizeColorAndBackgroundOneByOne",
+   "raw": {
+    "items": [
+     {
+      "id": "a",
+      "text": "x",
+      "size": "huge",
+      "color": "red",
+      "background": "#12345"
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "a",
+      "text": [
+       "x"
+      ]
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "textLettersNeverLessThanHalfOpaque",
+   "raw": {
+    "items": [
+     {
+      "id": "a",
+      "text": "x",
+      "color": "#FFFFFF10"
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "a",
+      "text": [
+       "x"
+      ],
+      "color": "#FFFFFF80"
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "textColorDroppedWhenItReadsBadlyOnAnOpaquePill",
+   "raw": {
+    "items": [
+     {
+      "id": "a",
+      "text": "x",
+      "color": "#101010",
+      "background": "#000000"
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "a",
+      "text": [
+       "x"
+      ],
+      "background": "#000000FF"
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "textColorDroppedWhenItReadsBadlyOnKinosDarkPill",
+   "raw": {
+    "items": [
+     {
+      "id": "a",
+      "text": "x",
+      "color": "#202020"
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "a",
+      "text": [
+       "x"
+      ]
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "textDarkColorKeptOnALightOpaquePill",
+   "raw": {
+    "items": [
+     {
+      "id": "a",
+      "text": "x",
+      "color": "#202020",
+      "background": "#FFFFFF"
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "a",
+      "text": [
+       "x"
+      ],
+      "color": "#202020FF",
+      "background": "#FFFFFFFF"
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "textKeepsAnyColorOnATransparentBackground",
+   "raw": {
+    "items": [
+     {
+      "id": "a",
+      "text": "x",
+      "color": "#202020",
+      "background": "#00000000"
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "a",
+      "text": [
+       "x"
+      ],
+      "color": "#202020FF",
+      "background": "#00000000"
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "everyKindKeepsAClampedNudge",
+   "raw": {
+    "items": [
+     {
+      "id": "a",
+      "text": "x",
+      "left": -9999,
+      "top": 9999
+     },
+     {
+      "id": "b",
+      "icon": "star",
+      "left": 12.9,
+      "top": -3
+     },
+     {
+      "id": "d",
+      "label": "Go",
+      "left": "3",
+      "top": null
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "a",
+      "text": [
+       "x"
+      ],
+      "left": -400,
+      "top": 300
+     },
+     {
+      "id": "b",
+      "icon": "star",
+      "left": 12,
+      "top": -3
+     },
+     {
+      "id": "d",
+      "label": "Go"
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "textOnALightOpaquePillGetsBlackLetters",
+   "raw": {
+    "items": [
+     {
+      "id": "a",
+      "text": "x",
+      "background": "#FFFFFF"
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "a",
+      "text": [
+       "x"
+      ],
+      "color": "#000000FF",
+      "background": "#FFFFFFFF"
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "textWithABadColorOnALightOpaquePillGetsBlackLetters",
+   "raw": {
+    "items": [
+     {
+      "id": "a",
+      "text": "x",
+      "color": "#EEEEEE",
+      "background": "#FFFFFF"
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "a",
+      "text": [
+       "x"
+      ],
+      "color": "#000000FF",
+      "background": "#FFFFFFFF"
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "textKeepsAKnownWeightAndIgnoresAnUnknownOne",
+   "raw": {
+    "items": [
+     {
+      "id": "a",
+      "text": "x",
+      "weight": "light"
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "a",
+      "text": [
+       "x"
+      ],
+      "weight": "light"
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "textIgnoresAnUnknownWeight",
+   "raw": {
+    "items": [
+     {
+      "id": "a",
+      "text": "x",
+      "weight": "heavy"
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "a",
+      "text": [
+       "x"
+      ]
+     }
+    ],
+    "refreshMs": null
+   }
   }
  ]
 }

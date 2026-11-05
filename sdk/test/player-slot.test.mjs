@@ -28,10 +28,10 @@ const manifest = (over = {}) => ({
 const check = (m) => validateManifest(JSON.stringify(m));
 const refused = (m) => { const r = check(m); assert.equal(r.ok, false, JSON.stringify(r)); return r; };
 
-test("the clock example's manifest is valid and declares one fixed text element", { skip: NEEDS_KINO_REPO }, () => {
+test("the clock example's manifest is valid and declares one overlay text element", { skip: NEEDS_KINO_REPO }, () => {
   const r = validateManifest(readFileSync(join(CLOCK, "kino-plugin.json"), "utf8"));
   assert.equal(r.ok, true, JSON.stringify(r));
-  assert.deepEqual(r.manifest.slot, { elements: [{ id: "clock", kind: "text", mode: "fixed" }], hasFixed: true });
+  assert.deepEqual(r.manifest.slot, { elements: [{ id: "clock", kind: "text", mode: "overlay" }], hasFixed: false });
   assert.deepEqual(requiredExports(r.manifest.capabilities, r.manifest.settings, r.manifest).sort(), ["playerSlot", "playerSlotAction"]);
 });
 
@@ -185,10 +185,10 @@ test("run.mjs refuses the slot modes for a manifest without a slot", () => {
   assert.match(r.stderr, /does not declare "slot"/);
 });
 
-test("validate accepts the clock example: no problems, the red consent line and the slot note", { skip: NEEDS_KINO_REPO }, async () => {
+test("validate accepts the clock example: no problems, no consent line (overlay) and the slot note", { skip: NEEDS_KINO_REPO }, async () => {
   const r = await validate(CLOCK);
   assert.deepEqual(r.problems, []);
-  assert.ok(r.consent.some((l) => l.text === P.fixedConsentLine.es));
+  assert.equal(r.consent.some((l) => l.text === P.fixedConsentLine.es), false);
   assert.ok(r.notes.some((n) => n.startsWith("playerSlot: up to 3 elements")));
   const frame = await validate(CLOCK, { run: "playerSlot" });
   assert.deepEqual(frame.problems, []);
@@ -201,6 +201,14 @@ test("the clock's text for fixed instants, in both languages, and the committed 
   assert.equal(clockText(at, "es-CO"), "21:05\nmié 4 nov");
   assert.equal(clockText(at, "en-US"), "21:05\nWed Nov 4");
   assert.equal(clockText(new Date(2026, 0, 9, 7, 30), undefined), "07:30\nvie 9 ene");
+  // A time zone: a fixed offset in minutes east of UTC; "auto", empty or nonsense read as the device's own.
+  const { offsetMinutes } = await import(pathToFileURL(join(CLOCK, "src", "clock.js")).href);
+  const utc = new Date(Date.UTC(2026, 10, 4, 23, 30));
+  assert.equal(clockText(utc, "en-US", offsetMinutes("-5")), "18:30\nWed Nov 4");
+  assert.equal(clockText(utc, "es-CO", offsetMinutes("5.5")), "05:00\njue 5 nov");
+  assert.equal(clockText(utc, "es-CO", offsetMinutes("0")), "23:30\nmié 4 nov");
+  for (const v of ["auto", "", undefined, null, "x", "99", "-13"]) assert.equal(offsetMinutes(v), null, String(v));
+  assert.equal(offsetMinutes("5.5"), 330);
   const { bundle } = await import(pathToFileURL(join(CLOCK, "scripts", "build.mjs")).href);
   assert.equal(readFileSync(join(CLOCK, "plugin.js"), "utf8").replace(/\r\n/g, "\n"), bundle());
 });

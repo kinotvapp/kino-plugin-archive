@@ -877,7 +877,7 @@ interface KinoSlotElement {
  * plus `live`. The title's own plugin gets the panel's whole context (`kind`, `ref`, `title`, ids, position, its saved values...) with
  * `live: false`; another plugin gets the contributed-panel one (`foreign: true`, an opaque `ref`, `source`); on an En vivo channel the
  * provider confirmed, the live panel's (`kind: "live"`, `channel`...) with `live: true`. For a title that reaches no other plugin (18+,
- * something no plugin owns such as one of Kino's own sources, a title Kino cannot confirm) and a live channel Kino cannot confirm, the **bare** context:
+ * something no plugin owns, a title Kino cannot confirm) and a live channel Kino cannot confirm, the **bare** context:
  * only `live`, `foreign: true`, `device`, `lang` and `features` -- **no `kind`**, not even movie or series. Read `live` and `lang`
  * (such as "es-CO"); treat everything else as possibly missing.
  */
@@ -898,11 +898,28 @@ interface KinoSlotContext {
  * (an https address on a public host) for an image, `label` (at most 40 characters) and/or `icon` for a button. Anything else is
  * dropped, not repaired; a repeated id keeps the first valid item.
  */
-type KinoSlotItem =
-  | { id: string; text: string }
+type KinoSlotItem = KinoSlotNudge & (
+  | { id: string; text: string; size?: KinoSlotTextSize; weight?: KinoSlotTextWeight; color?: string; background?: string }
   | { id: string; icon: string }
   | { id: string; image: string }
-  | { id: string; label?: string; icon?: string };
+  | { id: string; label?: string; icon?: string });
+
+/** A text's weight: Inter 200, 300, 400, 500, 600 or 700 for every line (absent: Kino's own, the first line Medium and the next Regular). */
+type KinoSlotTextWeight = "extralight" | "light" | "normal" | "medium" | "semibold" | "bold";
+
+/** A text's size: 12, 14 (the default), 18 or 24 sp. */
+type KinoSlotTextSize = "small" | "normal" | "large" | "xlarge";
+
+/**
+ * Any slot item may carry a nudge from its place in the row, in whole dp: `left` moves it right (negative: left), `top` moves it
+ * down (negative: up). Clamped to -400..200 and -40..300; anything that is not a number counts as 0.
+ *
+ * A `text` may also set `color` (the letters) and `background` (the pill), each "#RRGGBB" or "#RRGGBBAA". An invalid field is
+ * ignored on its own. The letters never get less than half opacity, a `color` under 2:1 contrast against an opaque pill (or Kino's
+ * dark one when there is no `background`) is dropped, and Kino's white letters turn black on a light opaque pill. A `background`
+ * with alpha 0 draws no pill.
+ */
+interface KinoSlotNudge { left?: number; top?: number }
 
 /**
  * What `playerSlot(context)` returns. Kino keeps the items in declared order. If the answer is not an object with an `items` list the

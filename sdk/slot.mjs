@@ -15,11 +15,14 @@ const wire = (v) => {
   const s = JSON.stringify(v);
   return s === undefined ? null : JSON.parse(s);
 };
+const HEX = new RegExp(SLOT.textColorPattern);
+const OPAQUE_ALPHA = 240; // a pill this opaque (0xF0 of 255) is checked against the letters' colour
+const KINO_PILL = [0, 0, 0, 255]; // Kino's own pill under a text that asks for no background (black at 35 %), checked as black
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const clampLong = (n, lo, hi) => (n < lo ? lo : n > hi ? hi : n);
 
 /**
- * SlotParser.parse: a `playerSlot` answer `{ items: [ { id, text | icon | image | label+icon } ], refreshMs }` against the manifest's
+ * SlotParser.parse: a `playerSlot` answer `{ items: [ { id, text | icon | image | label+icon, left?, top?, size?, weight?, color?, background? } ], refreshMs }` against the manifest's
  * declared [elements] (`[{ id, kind, mode }]`). Returns `{ frame, dropped }`: `frame` is `{ items, refreshMs }` (items in declared
  * order, `refreshMs` clamped or null) or null when the answer is not an object with an `items` list (Kino keeps the last frame);
  * `dropped` says why an item was left out. Nothing is repaired: an undeclared id, a kind that differs from the declared one, an
@@ -55,13 +58,63 @@ const why = (kind) => ({
   button: "send a \"label\" and/or an \"icon\" from the predefined names",
 }[kind]);
 
+/** The kit's item: Kino's own fields plus the nudge (`left`, `top`: only when not zero). */
 function itemOf(el, o) {
+  const item = baseItemOf(el, o);
+  if (!item) return null;
+  const left = nudge(o.left, SLOT.placeLimits.left);
+  const top = nudge(o.top, SLOT.placeLimits.top);
+  return { ...item, ...(left !== 0 ? { left } : {}), ...(top !== 0 ? { top } : {}) };
+}
+
+/** SlotParser.place: a number is truncated to a whole dp and clamped; anything else is 0. */
+const nudge = (v, [lo, hi]) => (typeof v === "number" && Number.isFinite(v) ? clampLong(Math.trunc(v), lo, hi) : 0);
+
+/** "#RRGGBB" or "#RRGGBBAA" as [r, g, b, a] (0 to 255), or null. */
+export function parseHex(v) {
+  if (typeof v !== "string" || !HEX.test(v)) return null;
+  const n = (i) => parseInt(v.slice(i, i + 2), 16);
+  return [n(1), n(3), n(5), v.length === 9 ? n(7) : 255];
+}
+
+const hex8 = (c) => "#" + c.map((x) => x.toString(16).padStart(2, "0")).join("").toUpperCase();
+
+/** WCAG contrast ratio of two colours' RGB (alpha ignored: SlotParser.contrast). */
+export function contrast(a, b) {
+  const lum = ([r, g, bl]) => {
+    const ch = (c) => { const x = c / 255; return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); };
+    return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(bl);
+  };
+  const la = lum(a);
+  const lb = lum(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+/**
+ * SlotParser.look: a text's `size`, `color` and `background`, each ignored on its own when not valid. The letters never get less
+ * than `textMinAlpha` of opacity, and a `color` that reads badly on its pill (the opaque `background`, or Kino's dark one when none
+ * is given) is dropped. Returns the fields to add to the item: `size` only when not "normal", `weight` only when valid, the colours as "#RRGGBBAA".
+ */
+export function textLook(o) {
+  const size = SLOT.textSizes.includes(o.size) ? o.size : "normal";
+  let color = parseHex(o.color);
+  if (color && color[3] < SLOT.textMinAlpha) color = [color[0], color[1], color[2], SLOT.textMinAlpha];
+  const weight = SLOT.textWeights.includes(o.weight) ? o.weight : null;
+  const background = parseHex(o.background);
+  const pill = background === null ? KINO_PILL : background[3] >= OPAQUE_ALPHA ? background : null;
+  if (color && pill && contrast(color, pill) < SLOT.textMinContrast) color = null;
+  // Kino's own white letters on a light opaque pill would vanish: they go black there.
+  if (!color && background && pill && contrast([255, 255, 255], pill) < SLOT.textMinContrast) color = [0, 0, 0, 255];
+  return { ...(size !== "normal" ? { size } : {}), ...(weight ? { weight } : {}), ...(color ? { color: hex8(color) } : {}), ...(background ? { background: hex8(background) } : {}) };
+}
+
+function baseItemOf(el, o) {
   const { id } = el;
   if (el.kind === "text") {
     if (typeof o.text !== "string") return null;
     const s = o.text.replace(TEXT_SCRUB, "").slice(0, SLOT.textMaxChars);
     const lines = s.split("\n").map(kotlinTrim).filter((l) => l !== "").slice(0, SLOT.textMaxLines);
-    return lines.length ? { id, text: lines } : null;
+    return lines.length ? { id, text: lines, ...textLook(o) } : null;
   }
   if (el.kind === "icon") return iconOf(o.icon) ? { id, icon: o.icon } : null;
   if (el.kind === "image") {
