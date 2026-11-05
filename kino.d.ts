@@ -1,4 +1,4 @@
-// TypeScript declarations for Kino plugins (apiVersion 1 to 21; 21 adds the files capability (kino.files: files on the person's device, picked by the person, read by ranges and played through a kino-file: address); 20 adds the visualBrowser manifest key (kino.visualBrowser.open: a web window the person sees and drives, on the plugin's own hosts, to sign in or finish a step) and the plugin protocol (the manifest's provides and consumes blocks and kino.plugins.call: one plugin uses the doors another opens, through Kino); 19 adds the lyrics capability (the lyrics(query) export: a song's time-synced or plain lyrics for the music player's overlay); 18 adds the app themes (go.useTheme, go.setExperience, appThemes with price, experience and logo); 17 adds the stats operation of the library capability (kino.library.stats, a month's totals and top titles); 16 adds the coins capability (kino.coins: the person's Kino coins balance, and giving one coin for a post); 15 adds the identity capability (kino.identity.telegram: a per-plugin pseudonym of the person and the signed token that proves it), the notifications capability (kino.notifications: notices in the Home bell), library episodes (the latest season and episode of a watched series) and the pluginStore capability (the plugin is a source of plugins for Kino's store: storeSync, and storeList and storeSearch for a live store); 14 adds the screen capability (screen, screenEvent and the manifest's screen block: a full-screen canvas the plugin builds), library, playerPanelTab, playerControl, room (kino.room, a mailbox hosted on the person's device over the Internet), schedule (background jobs: the manifest's jobs and the job export) and the manifest's enhancements; 13 adds the socket capability (kino.ws, outbound WebSockets) and the byteSource capability (a stream whose bytes the plugin serves through its read export) and the storageLarge capability (a 16 MiB kino.storage for a plugin that keeps a catalog) and the catalog capability (kino.catalog, a searchable SQLite catalog of up to 100,000 items per plugin in a 64 MiB file) and the qrScan capability (kino.qr.scan, the phone's camera scanner for a QR code) and the settings form's qr setting (a QR whose text settingsStatus gives, refreshed every refreshMs) and the kino.crypto operations aesIge, modPow, gunzip, convert and aesIgeVerify and the imageSource capability (a poster, backdrop, still or hero image the plugin serves through its image export, KinoImageRef); 12 adds the syncProvider capability (syncPull, syncPush, syncStatus and the manifest's sync block); 11 adds the externalResolve capability (a stream's `external` hand-off to a resolver app, the manifest's externalResolver) and, from Kino 0.9.66, a stream's advisory `media` and its `portable` universal copy; 10 adds the playlists capability; 9 adds the player panel (panel, panelAction, playerEvent, the manifest's panel and settingsLayout), fetchHosts "any" for hand-written plugins, English setting texts and kino.meta by title; 8 adds the audio item kinds music and podcast; 7 adds tracking and segments; apiVersion 5 only adds the manifest's signature, 6 the plain-plugin SDK: typed and larger secrets, migrate, signed streams, the settings form, debug, telemetry, section, categories, theme and scopedSearch). Reference them from plugin.js
+// TypeScript declarations for Kino plugins (apiVersion 1 to 22; 22 adds the progress capability (kino.progress: how far along the person is in something that is not a video, kept by Kino and read back with `kino.progress.list`; Kino draws nothing from it, the plugin builds its own shelf); 21 adds the files capability (kino.files: files on the person's device, picked by the person, read by ranges and played through a kino-file: address); 20 adds the visualBrowser manifest key (kino.visualBrowser.open: a web window the person sees and drives, on the plugin's own hosts, to sign in or finish a step) and the plugin protocol (the manifest's provides and consumes blocks and kino.plugins.call: one plugin uses the doors another opens, through Kino); 19 adds the lyrics capability (the lyrics(query) export: a song's time-synced or plain lyrics for the music player's overlay); 18 adds the app themes (go.useTheme, go.setExperience, appThemes with price, experience and logo); 17 adds the stats operation of the library capability (kino.library.stats, a month's totals and top titles); 16 adds the coins capability (kino.coins: the person's Kino coins balance, and giving one coin for a post); 15 adds the identity capability (kino.identity.telegram: a per-plugin pseudonym of the person and the signed token that proves it), the notifications capability (kino.notifications: notices in the Home bell), library episodes (the latest season and episode of a watched series) and the pluginStore capability (the plugin is a source of plugins for Kino's store: storeSync, and storeList and storeSearch for a live store); 14 adds the screen capability (screen, screenEvent and the manifest's screen block: a full-screen canvas the plugin builds), library, playerPanelTab, playerControl, room (kino.room, a mailbox hosted on the person's device over the Internet), schedule (background jobs: the manifest's jobs and the job export) and the manifest's enhancements; 13 adds the socket capability (kino.ws, outbound WebSockets) and the byteSource capability (a stream whose bytes the plugin serves through its read export) and the storageLarge capability (a 16 MiB kino.storage for a plugin that keeps a catalog) and the catalog capability (kino.catalog, a searchable SQLite catalog of up to 100,000 items per plugin in a 64 MiB file) and the qrScan capability (kino.qr.scan, the phone's camera scanner for a QR code) and the settings form's qr setting (a QR whose text settingsStatus gives, refreshed every refreshMs) and the kino.crypto operations aesIge, modPow, gunzip, convert and aesIgeVerify and the imageSource capability (a poster, backdrop, still or hero image the plugin serves through its image export, KinoImageRef); 12 adds the syncProvider capability (syncPull, syncPush, syncStatus and the manifest's sync block); 11 adds the externalResolve capability (a stream's `external` hand-off to a resolver app, the manifest's externalResolver) and, from Kino 0.9.66, a stream's advisory `media` and its `portable` universal copy; 10 adds the playlists capability; 9 adds the player panel (panel, panelAction, playerEvent, the manifest's panel and settingsLayout), fetchHosts "any" for hand-written plugins, English setting texts and kino.meta by title; 8 adds the audio item kinds music and podcast; 7 adds tracking and segments; apiVersion 5 only adds the manifest's signature, 6 the plain-plugin SDK: typed and larger secrets, migrate, signed streams, the settings form, debug, telemetry, section, categories, theme and scopedSearch). Reference them from plugin.js
 // with `/// <reference path="./kino.d.ts" />` for editor help; Kino itself runs plain JavaScript.
 // The numbers in the comments come from contract.json, which is authoritative. The app checks that
 // every `kino` member declared here exists in its runtime and nothing else does (KinoDtsTest).
@@ -1418,6 +1418,21 @@ interface KinoScreenFieldRules { required?: boolean; errorText?: string; errorTe
 interface KinoScreenTextRules extends KinoScreenFieldRules { minLength?: number; pattern?: string }
 
 /**
+ * Kino 0.9.83, additive (no new apiVersion; an older Kino asks for the picture without them): the request headers of an `Image`'s
+ * `url`, for a site that serves its pictures only to requests that carry its own page as `Referer` (and a browser `User-Agent`).
+ * Only these two names, each a text of 1 to 512 characters. They need an https `url`, and are sent only when the picture's host
+ * is one of your manifest's `hosts` (a `*.` pattern counts); a `Referer` on a host you did not declare is left out. Without a
+ * `User-Agent` Kino sends `Kino/<version>`. A header that is not valid is dropped and logged (Registro).
+ *
+ * @example
+ * { type: "Image", url: page.imageUrl, aspect: "2:3", headers: { Referer: "https://m440.in/", "User-Agent": "Mozilla/5.0" } }
+ */
+interface KinoScreenImageHeaders {
+  Referer?: string;
+  "User-Agent"?: string;
+}
+
+/**
  * One node of a screen tree: depth at most 10, at most 600 nodes, lists of at most 500 items, plain text of at most 2000
  * characters (`...En` the English twin). An invalid node is dropped and logged; the rest is drawn.
  */
@@ -1457,7 +1472,7 @@ type KinoScreenNode =
    * hold only Column, Row, Stack, Card, Spacer, SizedBox, Divider, Text, Icon, Badge, Skeleton and Image, at any depth, and
    * nothing in it is pressed (`onTap`/`onLongPress` there are ignored). Without one a failed picture shows Kino's mark.
    */
-  | (KinoScreenBase & { type: "Image"; url?: string; aspect?: KinoScreenResponsive<"16:9" | "2:3" | "1:1" | "banner" | `${number}:${number}`>; alt?: string; altEn?: string; fallback?: KinoScreenNode; fit?: KinoScreenResponsive<"cover" | "contain" | "width">; focus?: KinoScreenResponsive<"top" | "center" | "bottom"> })
+  | (KinoScreenBase & { type: "Image"; url?: string; aspect?: KinoScreenResponsive<"16:9" | "2:3" | "1:1" | "banner" | `${number}:${number}`>; alt?: string; altEn?: string; fallback?: KinoScreenNode; fit?: KinoScreenResponsive<"cover" | "contain" | "width">; focus?: KinoScreenResponsive<"top" | "center" | "bottom">; headers?: KinoScreenImageHeaders })
   | (KinoScreenBase & { type: "Icon"; name: KinoIconName })
   | (KinoScreenBase & { type: "Badge"; text: string; textEn?: string })
   | (KinoScreenBase & { type: "LinearProgressIndicator"; value?: number; labelText?: string; labelTextEn?: string })
@@ -2888,6 +2903,55 @@ interface KinoFileFolder {
 /** The error codes of `kino.files`: `unavailable` (no picker on this device, or no press), `not_allowed` (a pick from a call the person did not start), `busy`, `timeout`, `invalid_request`, `gone` (moved, deleted or the grant lost), `too_large`, `denied` (not your handle), `quota`. */
 type KinoFilesErrorCode = "unavailable" | "not_allowed" | "busy" | "timeout" | "invalid_request" | "gone" | "too_large" | "denied" | "quota";
 
+/** What you tell Kino about one element the person is part way through (apiVersion 22, capability "progress"). */
+interface KinoProgressSet {
+  /** The element: 1 to 128 characters of `A-Z a-z 0-9 . _ ~ -`, unique within your plugin (a chapter, a book, an episode). */
+  id: string;
+  /** How far along the element is as a whole, 0 to 1; you decide what "whole" is. */
+  fraction: number;
+  /** The element's title, for your own shelf (at most 200 characters). Optional. */
+  title?: string;
+  /** A short line about where the person is, at most 80 characters: "Cap. 87 · hoja 12 de 40". */
+  label?: string;
+  /** The same in English, at most 80 characters. */
+  labelEn?: string;
+  /** An image for your own shelf: an https address (the rule of a screen's Image) or a KinoImageRef of your imageSource capability. */
+  poster?: string | KinoImageRef;
+  /** Anything you need to come back to the place: any JSON value (a string, number, boolean, object or array), at most 1024 bytes once serialized. It is your own opaque data: Kino never reads it, it only hands it back as you set it (`get`, `list`). A `go.screen` route and args is the usual use. */
+  resume?: unknown;
+  /** True marks the element finished now. */
+  done?: boolean;
+  /** 0 to 1, default 0.9: Kino marks the element finished when `fraction` reaches this (unless you give `done`). */
+  doneAt?: number;
+}
+
+/** What `kino.progress.get` answers for an element you have set. */
+interface KinoProgressEntry {
+  /** The element's id (set by `list`; `get` answers the same shape). */
+  id: string;
+  fraction: number;
+  title?: string;
+  poster?: string;
+  label?: string;
+  /** The English line you set with `labelEn`. */
+  labelEn?: string;
+  resume?: unknown;
+  done: boolean;
+  /** Milliseconds since 1970 of the last `set`. */
+  updatedAtMs: number;
+}
+
+/** The options of `kino.progress.list`. */
+interface KinoProgressListOptions {
+  /** 1 to 100, default 50. */
+  limit?: number;
+  /** Only elements set at or after this time, milliseconds since 1970; a finite number >= 0. */
+  sinceMs?: number;
+}
+
+/** The error codes of `kino.progress`: `not_allowed` (the plugin does not declare the capability, the call is in a scheduled job that runs for a profile other than the active one, or Kino could not keep it right now), `bad_request` (a bad id, fraction, label, poster or doneAt), `too_large` (the `resume` is over 1024 bytes). */
+type KinoProgressErrorCode = "not_allowed" | "bad_request" | "too_large";
+
 /** What `kino.coins.balance()` answers (apiVersion 16). */
 interface KinoCoinsBalance {
   /** The person's Kino coins now. */
@@ -3487,6 +3551,47 @@ declare namespace kino {
     function forget(id: string): Promise<void>;
     /** `kino-file:<id>`: for a stream's or an audio track's `url`. */
     function url(id: string): string;
+  }
+
+  /**
+   * apiVersion 22, capability "progress" (no approval line: it keeps only your plugin's own data about the person's own reading):
+   * tell Kino how far along the person is in something that is not a video. Kino draws nothing from it (no Home row, no card):
+   * you build your own shelf (a "keep reading" row on your screen) from `list`, and `resume` is your own opaque data (up to 1 KB)
+   * that Kino never reads.
+   * Call `set` as often as you like, even on every page: Kino keeps the latest per element and writes at most every 2 seconds
+   * (and when the screen closes or the app goes to the background); at most 20 calls a second, the rest are coalesced, not
+   * errors; 500 elements per plugin, the oldest by last activity dropped. An element is finished with `done: true` or when
+   * `fraction` reaches `doneAt` (default 0.9); a later `set` with a lower fraction reopens it. A scheduled job may call it, but
+   * not a job that runs for a profile other than the active one (`perProfile` jobs): there it rejects with `not_allowed`. Rejects with a
+   * KinoError whose `code` is a [KinoProgressErrorCode]. Feature-detect with `typeof kino.progress === "object"` (an older Kino
+   * has none); declare the capability as an enhancement (`enhancements["22"]`) to keep running on a Kino that does not have it.
+   *
+   * @example
+   * // A reader: save the place on each page that is turned.
+   * async function onPage(chapter, page, pages) {
+   *   await kino.progress.set({
+   *     id: "ch-" + chapter.id,
+   *     title: chapter.mangaTitle,
+   *     fraction: page / pages,
+   *     label: "Cap. " + chapter.number + " · hoja " + page + " de " + pages,
+   *     labelEn: "Ch. " + chapter.number + " · page " + page + " of " + pages,
+   *     poster: chapter.cover,
+   *     resume: { screen: "reader", args: { chapter: chapter.id, page } },
+   *   });
+   * }
+   */
+  namespace progress {
+    /** Saves how far along an element is. Resolves when Kino has taken it (not when it is on disk). */
+    function set(entry: KinoProgressSet): Promise<void>;
+    /** What you last set for the element, or null when there is none (or the person cleared it). */
+    function get(id: string): Promise<KinoProgressEntry | null>;
+    /** Forgets the element. */
+    function clear(id: string): Promise<void>;
+    /**
+     * Your elements, the most recently set first. `limit` 1 to 100 (default 50); `sinceMs` a finite number >= 0 keeps only those
+     * set at or after that time (milliseconds since 1970). Finished elements are included (see `done`).
+     */
+    function list(options?: KinoProgressListOptions): Promise<KinoProgressEntry[]>;
   }
 
   /**

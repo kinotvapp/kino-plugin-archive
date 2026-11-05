@@ -1026,6 +1026,7 @@ a hole.
 | `aspect` | `16:9` \| `2:3` \| `1:1` \| `banner` \| `w:h` | the picture's own | yes | the box's shape; `w:h` is any width over height from 0.2 to 5, like `1.4:1` or `900:1300` |
 | `fit` | `cover` \| `contain` \| `width` | `cover` | yes | how the picture sits in its box: `cover` fills and crops, `contain` shows all of it, `width` takes the width and the picture's own height (the `aspect`, or 2:3, holds its place until it loads) |
 | `focus` | `top` \| `center` \| `bottom` | `center` | yes | the part of the picture that stays when `cover` crops it |
+| `headers` | `{ Referer?, User-Agent? }` | none | no | the request headers the picture is asked with, for a site that answers only to its own page: only `Referer` (an https address) and `User-Agent`, each a text of up to 512 characters; sent only when the picture's host is in your manifest's `hosts` (and so is the Referer's); an older Kino asks without them ([Pictures that need a Referer](#image-headers)) |
 | `fallback` | node | none | no | drawn in the image's box when the picture fails or there is no `url`: only `Column`, `Row`, `Stack`, `Card`, `Spacer`, `Divider`, `Text`, `Icon`, `Badge`, `Skeleton`, `Image`, at any depth, never pressed |
 <!-- ui:props:image:end -->
 
@@ -1047,6 +1048,24 @@ export async function screen({ state }) {
 `cover`): `cover` fills the box and crops, `contain` shows all of it, and `width` takes the box's width and the picture's own
 height, so a page or a long strip is never cut. With `width` the `aspect` (any `w:h`, like `"1.4:1"`) only holds the place
 until the picture loads. `focus` (`top`, `center`, `bottom`) picks the part that stays when `cover` crops.
+
+<a id="image-headers"></a>
+
+**Pictures that need a Referer** (`headers`; additive, no new `apiVersion`, Kino 0.9.83; an older Kino asks for the picture without
+them). Some sites (manga readers above all) serve their pictures only to a request that comes from their own page, with a
+browser `User-Agent`, and answer 403 to anything else: the cover and the pages stay grey. Give the `Image` the headers the
+site wants:
+
+```json
+{ "type": "Image", "url": "https://img.m440.in/p/12/001.jpg", "fit": "width", "aspect": "2:3",
+  "headers": { "Referer": "https://m440.in/", "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126 Mobile Safari/537.36" } }
+```
+
+Only `Referer` (an https address) and `User-Agent` are taken, each a text of 1 to 512 characters. They are sent **only when the
+picture's host is one of your manifest's `hosts`** (a `*.example.com` pattern counts), and the `Referer` only when its own host
+is declared too: a plugin cannot make Kino present a forged page to a site it never named. Without a `User-Agent` Kino sends
+`Kino/<version>`. The picture still downloads in Kino (cached, four at a time), not through your code, so there is no size
+limit besides the image cache's. A header that is not valid is dropped and logged.
 
 - **TV:** an image is not focused unless it (or what holds it) has an action.
 - **Phone and TV:** the same.

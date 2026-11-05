@@ -2089,6 +2089,105 @@ export function createKino(manifest, { appVersion = "sdk", filesDir = null, lang
     return Object.freeze({ scan });
   })();
 
+  // --- kino.progress (apiVersion 22, capability "progress"): the app's PluginProgress (the argument rules), PluginProgressStore
+  // (what is kept) and PluginProgressBridge (the answers), in memory for this run. Kino draws nothing from it: the plugin builds
+  // its own shelf from `list`, and `resume` is its own opaque JSON that is handed back as it was set. Limits and codes are
+  // contract.kinoProgress. The kit writes nothing to disk, so "at most every 2 s" and the 20 sets a second (coalesced in the app,
+  // never an error) have nothing to do here. A poster is kept only when it is an https address; anything else costs only the poster. ---
+  const progressApi = (() => {
+    if (!(manifest.capabilities || []).includes(contract.kinoProgress.capability)) return null;
+    const G = contract.kinoProgress;
+    const MAX_TITLE_CHARS = 200; // PluginOutput.MAX_TITLE_CHARS, the app's cap for an item's title
+    const idRe = new RegExp(G.idPattern);
+    const rows = new Map(); // id -> { fraction ppm, title, poster, label, labelEn, resume (JSON text), done, at }
+    const err = (code, message) => kinoError(code, `kino.progress: ${message}`);
+    const bad = (message) => err("bad_request", message);
+    const ppm = (f) => Math.min(1_000_000, Math.max(0, Math.round(f * 1_000_000)));
+    const unit = (v) => (typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1 ? v : null);
+    const text = (o, key, max) => {
+      const v = o[key];
+      if (v === undefined || v === null) return null;
+      if (typeof v !== "string") throw bad(`${key} must be a string`);
+      if (v.length > max) throw bad(`${key} is over ${max} characters`);
+      return v;
+    };
+    const idOf = (id) => {
+      if (typeof id !== "string" || !idRe.test(id)) throw bad("id must be 1 to 128 characters of A-Z a-z 0-9 . _ ~ -");
+      return id;
+    };
+    const view = (id, r) => ({
+      id, fraction: r.ppm / 1_000_000, done: r.done, updatedAtMs: r.at,
+      ...(r.title !== null ? { title: r.title } : {}),
+      ...(r.poster !== null ? { poster: r.poster } : {}),
+      ...(r.label !== null ? { label: r.label } : {}),
+      ...(r.labelEn !== null ? { labelEn: r.labelEn } : {}),
+      ...(r.resume !== null ? { resume: JSON.parse(r.resume) } : {}),
+    });
+    const set = async (o) => {
+      if (o === null || typeof o !== "object" || Array.isArray(o)) throw bad("the argument must be an object");
+      const id = idOf(o.id);
+      const fraction = unit(o.fraction);
+      if (fraction === null) throw bad("fraction must be a finite number from 0 to 1");
+      const title = text(o, "title", MAX_TITLE_CHARS);
+      const label = text(o, "label", G.maxLabelChars);
+      const labelEn = text(o, "labelEn", G.maxLabelChars);
+      // The app seals a KinoImageRef of this plugin ({ source: "plugin", handle }) into an address of its own and keeps an https
+      // string; the kit keeps the same two (a ref as a stand-in string). Anything else costs only the poster.
+      const ref = o.poster !== null && typeof o.poster === "object" && o.poster.source === "plugin" && typeof o.poster.handle === "string" && o.poster.handle ? `kino-image:plugin:${o.poster.handle}` : null;
+      const poster = ref ?? (typeof o.poster === "string" && /^https:\/\/[^\s/]+/i.test(o.poster) ? o.poster : null);
+      let resume = null;
+      if (o.resume !== undefined && o.resume !== null) {
+        let s;
+        try { s = JSON.stringify(o.resume); } catch { s = undefined; }
+        if (typeof s !== "string") throw bad("resume must be a JSON value");
+        if (Buffer.byteLength(s, "utf8") > G.maxResumeBytes) throw err("too_large", `resume is over ${G.maxResumeBytes} bytes`);
+        resume = s;
+      }
+      if (o.done !== undefined && o.done !== null && typeof o.done !== "boolean") throw bad("done must be a boolean");
+      const doneAt = o.doneAt === undefined || o.doneAt === null ? null : unit(o.doneAt);
+      if (o.doneAt !== undefined && o.doneAt !== null && doneAt === null) throw bad("doneAt must be a finite number from 0 to 1");
+      const done = typeof o.done === "boolean" ? o.done : fraction >= (doneAt ?? G.doneAtDefault);
+
+      const live = rows.get(id);
+      const next = { ppm: ppm(fraction), title: title ?? live?.title ?? null, poster: poster ?? live?.poster ?? null, label, labelEn, resume, done, at: now() };
+      if (live && ["ppm", "title", "poster", "label", "labelEn", "resume", "done"].every((k) => live[k] === next[k])) return;
+      rows.delete(id); // a re-set moves to the end, so ties in the activity time keep the order the sets came in
+      rows.set(id, next);
+      // Over the cap, the oldest by last activity go (the first of equals is the one set earliest).
+      while (rows.size > G.maxElements) {
+        let oldest = null;
+        for (const [k, r] of rows) if (oldest === null || r.at < rows.get(oldest).at) oldest = k;
+        rows.delete(oldest);
+      }
+    };
+    const get = async (id) => {
+      const r = rows.get(idOf(id));
+      return r ? Object.freeze(view(id, r)) : null;
+    };
+    const clear = async (id) => { rows.delete(idOf(id)); };
+    const list = async (options) => {
+      let limit = G.listLimitDefault;
+      let since = 0;
+      if (options !== undefined && options !== null) {
+        if (typeof options !== "object" || Array.isArray(options)) throw bad("the options must be an object");
+        if (options.limit !== undefined && options.limit !== null) {
+          const l = options.limit;
+          if (typeof l !== "number" || !Number.isInteger(l) || l < 1 || l > G.listLimitMax) throw bad(`limit must be a whole number from 1 to ${G.listLimitMax}`);
+          limit = l;
+        }
+        if (options.sinceMs !== undefined && options.sinceMs !== null) {
+          const s = options.sinceMs;
+          if (typeof s !== "number" || !Number.isFinite(s) || s < 0) throw bad("sinceMs must be a finite number >= 0");
+          since = s;
+        }
+      }
+      return [...rows].filter(([, r]) => r.at >= since)
+        .sort(([ia, a], [ib, b]) => b.at - a.at || (ia < ib ? -1 : ia > ib ? 1 : 0))
+        .slice(0, limit).map(([id, r]) => Object.freeze(view(id, r)));
+    };
+    return Object.freeze({ set, get, clear, list });
+  })();
+
   // --- kino.files (apiVersion 21, capability "files"): the app's PluginFilesBridge behind its prelude wrapper. Node has no picker:
   // the files that are in the folder named by the `filesDir` option of createKino (else KINO_FILES_DIR, else ./.kino-files) are what
   // "the person picks": `pick` hands out the files there in name order (all of them with multiple, else the next one not handed out
@@ -2360,6 +2459,8 @@ export function createKino(manifest, { appVersion = "sdk", filesDir = null, lang
     ...(featureApiVersion(manifest) >= contract.kinoCoins.apiVersion ? { coins: Object.freeze({ balance: coinsApi.balance, give: coinsApi.give }) } : {}),
     // apiVersion 21 (contract.files): present on every apiVersion 21 kino that declares the capability (typeof kino.files === "object").
     ...(featureApiVersion(manifest) >= contract.files.apiVersion && filesApi ? { files: filesApi } : {}),
+    // apiVersion 22 (contract.kinoProgress): present on every apiVersion 22 kino that declares the capability (typeof kino.progress === "object").
+    ...(featureApiVersion(manifest) >= contract.kinoProgress.apiVersion && progressApi ? { progress: progressApi } : {}),
     // apiVersion 14 (contract.kinoShared, Task 8q-2): one simulated device's store ([shared], createSharedDevices().phone or
     // .tv; a fresh one when none is given). Present on every apiVersion 14 kino, like the app's (typeof kino.shared === "object").
     ...(featureApiVersion(manifest) >= contract.kinoShared.apiVersion ? { shared: kitSharedApi(manifest, shared ?? createSharedStore({ now }), { now }) } : {}),
@@ -2464,7 +2565,7 @@ export function signingLane(kino) {
   const refused = (api) => () => { throw why(api); };
   const methods = (names, api) => Object.freeze(Object.fromEntries(names.map((n) => [n, refused(api)])));
   // The app's lane host is no catalog or QR host: sign() has no kino.catalog and no kino.qr at all.
-  const { catalog: _noCatalog, qr: _noQr, visualBrowser: _noVisualBrowser, ...laneKino } = kino;
+  const { catalog: _noCatalog, qr: _noQr, visualBrowser: _noVisualBrowser, progress: _noProgress, ...laneKino } = kino;
   return Object.freeze({
     ...laneKino,
     fetch: async () => { throw kinoError("host_not_allowed", "sign can't use the network"); },

@@ -38,7 +38,7 @@ const codeOf = async (promise) => { try { await promise; } catch (e) { return e.
 
 test("the contract carries the protocol: apiVersion 20 from Kino 0.9.81, the app's limits and error codes", () => {
   const P = contract.protocol;
-  assert.equal(contract.maxApiVersion, 21);
+  assert.equal(contract.maxApiVersion, 22);
   assert.equal(contract.apiVersionFromApp["20"], "0.9.81");
   assert.deepEqual([P.provides.maxDoors, P.provides.maxCallsPerDoor, P.provides.maxStreamsPerDoor, P.consumes.maxEntries], [4, 16, 8, 8]);
   assert.deepEqual([P.call.timeoutMs, P.call.maxCalls, P.call.windowMs, P.call.maxPayloadBytes], [10000, 30, 10000, 65536]);
