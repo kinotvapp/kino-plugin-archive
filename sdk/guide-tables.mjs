@@ -20,6 +20,7 @@ const J = c.kinoJobs;
 const A = c.kinoAi;
 const SH = c.kinoShared;
 const PR = c.protocol;
+const PS = c.playerSlot;
 const PROP_CANON = Object.fromEntries(Object.entries(S.aliases.props).map(([flutter, old]) => [old, flutter]));
 /** The documented (Flutter-style) spelling of a property the contract names by its older name. */
 const canon = (p) => PROP_CANON[p] || p;
@@ -82,6 +83,8 @@ const GO_TEXT = {
 const CONSENTS = () => [
   ["screen", null], ["library", c.kinoLibrary], ["playerPanelTab", c.manifest.panel.contributes], ["playerControl", c.kinoPlayerControl],
   ["room", R], ["schedule", J], ["ai", A], ["shared", SH],
+  // apiVersion 15: only a `fixed` element asks; its lines are named differently in contract.json.
+  ["playerSlot", { consentLine: PS.fixedConsentLine, switchLabel: PS.switchLabel }],
 ];
 function screenLimitRows() {
   const used = new Set();
@@ -145,6 +148,7 @@ export const TABLES = {
     [`\`kino.room\` (apiVersion ${R.apiVersion})`, `a payload at most ${n(R.limits.maxPayloadBytes)} bytes and ${R.limits.maxPayloadDepth} levels; ${R.limits.perSecond} messages a second, ${R.limits.perMinute} and ${kb(R.limits.bytesPerMinute)} a minute per member; ${R.limits.minMembers} to ${R.limits.maxMembers} members; ${R.limits.minTtlMin} to ${R.limits.maxTtlMin} minutes (default ${R.limits.defaultTtlMin}); mailbox ${R.limits.mailboxEvents} events or ${R.limits.mailboxMs / 60000} minutes; ${R.limits.maxJoined} joined and ${R.limits.maxHosted} hosted per device, ${R.limits.maxSlotsPerPlugin} per plugin; ${R.limits.joinFailuresBeforeLock} wrong codes lock joins for ${R.limits.lockMs / 1000} s, doubling up to ${R.limits.maxLockMs / 60000} minutes; closed after ${R.limits.backgroundCloseMinutes} minutes in the background (a hosted room shows Kino's notification meanwhile)`],
     [`Jobs (\`schedule\`, apiVersion ${J.apiVersion})`, `1 to ${J.manifest.maxJobs} jobs, every ${J.manifest.minEveryMin} to ${n(J.manifest.maxEveryMin)} minutes; one run at most ${J.limits.runTimeoutMs / 1000} s, ${J.limits.maxFetches} requests made one at a time, ${kb(J.limits.maxResponseBytes)} of answers and ${kb(J.limits.maxStorageWriteBytes)} written to \`kino.storage\`; ${J.limits.maxRunsPerDay} runs a day per plugin; a failure waits ${J.limits.backoffBaseMin} minutes, doubling up to ${J.limits.backoffMaxMin / 60} h, and ${J.limits.failuresToPause} in a row pause the job; from apiVersion ${J.limits.aiApiVersion} a plugin with \`ai\` approved gets ${J.limits.aiRunTimeoutMs / 1000} s and ${J.limits.aiMaxRequests} requests`],
     [`\`kino.ai\` (apiVersion ${A.apiVersion})`, `a prompt at most ${n(A.limits.maxPromptBytes)} bytes, \`system\` ${n(A.limits.maxSystemBytes)}; the reply cut at \`maxChars\` (1 to ${n(A.limits.maxChars)}, default ${n(A.limits.defaultMaxChars)}); ${A.limits.perMinute} asks in any minute, ${A.limits.perDay} a day and ${A.limits.maxInFlight} at a time per plugin; ${A.limits.devicePerDay} a day and ${A.limits.deviceMaxInFlight} at a time for every plugin of the device together; ${A.limits.timeoutMs / 1000} s an ask`],
+    [`Player slot (\`playerSlot\`, apiVersion ${PS.apiVersion})`, `1 to ${PS.maxElements} elements in the manifest (all plugins together: ${PS.maxElements} on screen, \`fixed\` first); a \`text\` at most ${PS.textMaxLines} lines (${n(PS.textMaxChars)} characters), a button's \`label\` ${PS.labelMaxChars}; \`refreshMs\` raised to ${n(PS.refreshMsFloor)} or lowered to ${n(PS.refreshMsCeiling)} ms; \`playerSlot\` and \`playerSlotAction\` ${c.timeoutsMs.playerSlot / 1000} s each; until the first answer a failed \`playerSlot\` is retried ${PS.firstFrameRetries} times, ${PS.firstFrameRetryMs / 1000} s apart`],
     [`\`kino.shared\` (apiVersion ${SH.apiVersion})`, `${SH.limits.maxKeys} keys of at most ${SH.limits.maxKeyChars} characters per plugin; a value at most ${kb(SH.limits.maxValueBytes)} and ${SH.limits.maxDepth} levels, ${kb(SH.limits.maxPluginBytes)} in all; ${SH.limits.writesPerMinute} writes a minute; a key's new value travels at most once every ${SH.limits.syncEveryMs / 1000} s`],
     [`\`kino.plugins.call\` (apiVersion ${PR.apiVersion})`, `a request and an answer at most ${kb(PR.call.maxPayloadBytes)} of JSON; ${PR.call.timeoutMs / 1000} s a call; ${PR.call.maxCalls} calls in any ${PR.call.windowMs / 1000} s per door; a manifest holds at most ${PR.provides.maxDoors} doors (each ${PR.provides.maxCallsPerDoor} calls and ${PR.provides.maxStreamsPerDoor} streams) and ${PR.consumes.maxEntries} \`consumes\` entries; a stream polls every ${PR.provides.streamEverySeconds.min} s at least; ${PR.streams.maxSubscriptionsPerConsumer} live subscriptions per plugin; not in a background job`],
   ]),
@@ -199,8 +203,8 @@ export const TABLES = {
   screenLimits: () => table(["What", "Limit"], screenLimitRows()),
   screenConsents: () => table(["Capability", "What the person reads", "Red, waits for approval", "The person's switch (your tab in Ajustes)"], CONSENTS().map(([cap, block]) => [
     `\`${cap}\``,
-    block?.consentLine ? `"${block.consentLine.es}" ("${block.consentLine.en}")` : "nothing: no line of its own",
-    c.capabilities.needsApproval.includes(cap) ? "yes" : "no",
+    block?.consentLine ? `${cap === "playerSlot" ? "with a `fixed` element: " : ""}"${block.consentLine.es}" ("${block.consentLine.en}")` : "nothing: no line of its own",
+    cap === "playerSlot" ? "yes, only when an element is `fixed` (an overlay-only slot asks nothing)" : c.capabilities.needsApproval.includes(cap) ? "yes" : "no",
     block?.switchLabel ? `"${block.switchLabel.es}" ("${block.switchLabel.en}")` : "none",
   ])),
   settings: () => table(["type", "value", "can be `required`", "can have a `default`", "longest value"], Object.entries(c.settings.types).map(([t, v]) => [

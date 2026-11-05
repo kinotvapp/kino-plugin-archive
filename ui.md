@@ -24,6 +24,7 @@ app enforces; [`kino.d.ts`](kino.d.ts) types every node (`KinoScreenNode`). To s
 | [Navigation](#navigation) | [`title`](#go-title) · [`play`](#go-play) · [`search`](#go-search) · [`browse`](#go-browse) · [`section`](#go-section) · [`categories`](#go-categories) · [`close`](#go-close) · [`screen`](#go-screen) · [`titleByIds`](#go-title-by-ids) · [`url`](#go-url) · [`copy`](#go-copy) · [`liveChannel`](#go-live-channel) · [`syncProvider`](#go-sync-provider) · [Routes](#route) |
 | [Data and behavior](#data) | [State](#state) · [Inputs](#inputs) · [Events](#events) · [Answers](#answer) · [Timers](#every) · [Per-size values](#responsive) · [Flutter-style names](#aliases) · [Style](#style) · [Common properties](#common-properties) · [Box and text properties](#box-props) · [Animations](#animate) · [Tokens](#tokens) · [Limits](#limits) |
 | [Player panel](#panel) | [Legacy and screen mode](#panel-screen-mode) · [Contributed tabs](#panel-tab) · [Pinned panel](#pinned-panel) · [Layout fill: a chat tab](#layout-fill-a-chat-tab) |
+| [Player slot](#player-slot) | [The four elements](#player-slot) |
 | [Recipes](#recipes) | [News card grid](#recipe-news-grid) · [Settings form with validation](#recipe-settings-form) · [Confirmation pop-up](#recipe-confirm) · [Tabs with chips](#recipe-tabs-chips) · [Button matrix](#recipe-matrix) · [App bar, tabs and a floating button](#recipe-scaffold) · [Tabs in the app bar](#recipe-app-bar-tabs) · [A search view that Back closes first](#recipe-search-back) · [A reader](#recipe-reader) · [A carousel](#recipe-carousel) · [A card in Kino's Home that opens your screen](#recipe-home-opens-screen) · [Search inside the field](#recipe-search-field) · [Filters in a bottom sheet](#recipe-filter-sheet) |
 | [Screenshots](#screenshots) | How the pictures on this page are captured |
 
@@ -3664,6 +3665,26 @@ export async function panel(context) {
   when the size or the root's children change. A `panel` root's own `layout` is ignored (logged): put it beside `root`.
 - **Full screens** already draw the root at the screen's size with no scroll of their own (what `fill` does), whatever
   `layout` says. Any other value is logged and read as `scroll`.
+
+<a id="player-slot"></a>
+## Player slot
+
+The player slot (apiVersion 23: the manifest's `slot` block and the `playerSlot` and `playerSlotAction` exports) draws up to three
+small elements in the top-right corner of the TV player. It is a **restricted subset** of this page: not a tree and not the screen
+kit's nodes, but four fixed kinds, each declared in the manifest and filled by `playerSlot(context)` with a plain object. Kino
+draws them with its own look, so none of the style properties above (`padding`, `color`, `style`...) applies. The guide's
+[player slot section](README.md#15-the-player-slot-playerslot-apiversion-23) has every rule (modes, consent, the context, live
+channels, the press answer).
+
+| `kind` | Like | You answer | What Kino draws |
+| --- | --- | --- | --- |
+| `text` | [Text](#text) | `{ id, text }`: a string, newlines split lines | At most 2 lines of the player's small text, white with a shadow, ellipsis past the width. Not focusable. |
+| `icon` | [Icon](#icon) | `{ id, icon }`: one of the [icon names](#icon-names) | The icon at 28 dp. Not focusable. |
+| `image` | [Image](#image) | `{ id, image }`: an https address on a public host | The picture about 40 dp high and at most 120 dp wide. Not focusable. |
+| `button` | [Buttons](#button) | `{ id, label?, icon? }`: at least one of the two | A round button (icon only) or a pill (with a label), focusable on the remote; OK calls `playerSlotAction({ id, context })`. |
+
+Elements keep the order you declared, `overlay` ones to the left of `fixed` ones, so a fixed element never moves when the overlay
+ones come and go. Left and Right on the remote walk the buttons; there is no focus `ring` or `key` to set.
 
 <a id="recipes"></a>
 ## Recipes

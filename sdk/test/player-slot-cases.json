@@ -1,0 +1,566 @@
+{
+ "$comment": "Shared by plugins/sdk/test/player-slot.test.mjs and the app's SlotParserTest (sharedCases): a playerSlot answer (raw) against the declared elements, and the frame Kino keeps (null = no frame: the last one stays). Text is the list of lines; refreshMs is the clamped value or null.",
+ "elements": [
+  {
+   "id": "a",
+   "kind": "text",
+   "mode": "overlay"
+  },
+  {
+   "id": "b",
+   "kind": "icon",
+   "mode": "overlay"
+  },
+  {
+   "id": "c",
+   "kind": "image",
+   "mode": "fixed"
+  },
+  {
+   "id": "d",
+   "kind": "button",
+   "mode": "overlay"
+  }
+ ],
+ "cases": [
+  {
+   "name": "keepsDeclaredIdsInDeclaredOrder",
+   "raw": {
+    "items": [
+     {
+      "id": "d",
+      "label": "Go"
+     },
+     {
+      "id": "b",
+      "icon": "star"
+     },
+     {
+      "id": "a",
+      "text": "hi"
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "a",
+      "text": [
+       "hi"
+      ]
+     },
+     {
+      "id": "b",
+      "icon": "star"
+     },
+     {
+      "id": "d",
+      "label": "Go"
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "dropsItemsWithUndeclaredId",
+   "raw": {
+    "items": [
+     {
+      "id": "zz",
+      "text": "x"
+     },
+     {
+      "id": "a",
+      "text": "y"
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "a",
+      "text": [
+       "y"
+      ]
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "dropsItemWhoseKindDiffersFromDeclared",
+   "raw": {
+    "items": [
+     {
+      "id": "a",
+      "icon": "star"
+     },
+     {
+      "id": "b",
+      "text": "t"
+     }
+    ]
+   },
+   "frame": {
+    "items": [],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "textIsClampedToTwoLines",
+   "raw": {
+    "items": [
+     {
+      "id": "a",
+      "text": "one\ntwo\nthree"
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "a",
+      "text": [
+       "one",
+       "two"
+      ]
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "textLinesAreTrimmedAndBlankOnesGoAway",
+   "raw": {
+    "items": [
+     {
+      "id": "a",
+      "text": "  one  \n\n   \n two "
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "a",
+      "text": [
+       "one",
+       "two"
+      ]
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "textKeepsNoControlCharacters",
+   "raw": {
+    "items": [
+     {
+      "id": "a",
+      "text": "ab\u0000c‮d"
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "a",
+      "text": [
+       "abcd"
+      ]
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "aTextWithNothingLeftIsDropped",
+   "raw": {
+    "items": [
+     {
+      "id": "a",
+      "text": " \n "
+     }
+    ]
+   },
+   "frame": {
+    "items": [],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "refreshMsBelowTheFloorIsRaised",
+   "raw": {
+    "items": [],
+    "refreshMs": 10
+   },
+   "frame": {
+    "items": [],
+    "refreshMs": 2000
+   }
+  },
+  {
+   "name": "refreshMsAboveTheCeilingIsLowered",
+   "raw": {
+    "items": [],
+    "refreshMs": 999999
+   },
+   "frame": {
+    "items": [],
+    "refreshMs": 60000
+   }
+  },
+  {
+   "name": "refreshMsInRangeIsKept",
+   "raw": {
+    "items": [],
+    "refreshMs": 5000
+   },
+   "frame": {
+    "items": [],
+    "refreshMs": 5000
+   }
+  },
+  {
+   "name": "refreshMsIsTruncated",
+   "raw": {
+    "items": [],
+    "refreshMs": 2500.9
+   },
+   "frame": {
+    "items": [],
+    "refreshMs": 2500
+   }
+  },
+  {
+   "name": "refreshMsThatIsNotANumberMeansNever",
+   "raw": {
+    "items": [],
+    "refreshMs": "5000"
+   },
+   "frame": {
+    "items": [],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "aNullRefreshMsMeansNever",
+   "raw": {
+    "items": [],
+    "refreshMs": null
+   },
+   "frame": {
+    "items": [],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "httpsImageOnAPublicHostIsKept",
+   "raw": {
+    "items": [
+     {
+      "id": "c",
+      "image": "https://example.com/a.png"
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "c",
+      "image": "https://example.com/a.png"
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "httpImageIsDropped",
+   "raw": {
+    "items": [
+     {
+      "id": "c",
+      "image": "http://example.com/a.png"
+     }
+    ]
+   },
+   "frame": {
+    "items": [],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "anImageOnTheHomeNetworkIsDropped",
+   "raw": {
+    "items": [
+     {
+      "id": "c",
+      "image": "https://192.168.1.2/a.png"
+     }
+    ]
+   },
+   "frame": {
+    "items": [],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "anImageThatIsNotTextIsDropped",
+   "raw": {
+    "items": [
+     {
+      "id": "c",
+      "image": 5
+     }
+    ]
+   },
+   "frame": {
+    "items": [],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "anUnknownIconIsDropped",
+   "raw": {
+    "items": [
+     {
+      "id": "b",
+      "icon": "nope"
+     }
+    ]
+   },
+   "frame": {
+    "items": [],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "aButtonWithNeitherLabelNorIconIsDropped",
+   "raw": {
+    "items": [
+     {
+      "id": "d"
+     }
+    ]
+   },
+   "frame": {
+    "items": [],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "aButtonWithOnlyAnIconIsKept",
+   "raw": {
+    "items": [
+     {
+      "id": "d",
+      "icon": "star"
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "d",
+      "icon": "star"
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "aButtonWithAnUnknownIconAndNoLabelIsDropped",
+   "raw": {
+    "items": [
+     {
+      "id": "d",
+      "icon": "nope"
+     }
+    ]
+   },
+   "frame": {
+    "items": [],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "aButtonWithBothKeepsBoth",
+   "raw": {
+    "items": [
+     {
+      "id": "d",
+      "label": "Go",
+      "icon": "star"
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "d",
+      "label": "Go",
+      "icon": "star"
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "aButtonLabelIsCutAtFortyCharacters",
+   "raw": {
+    "items": [
+     {
+      "id": "d",
+      "label": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "d",
+      "label": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "theFirstValidItemWinsOnADuplicateId",
+   "raw": {
+    "items": [
+     {
+      "id": "a",
+      "text": "one"
+     },
+     {
+      "id": "a",
+      "text": "two"
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "a",
+      "text": [
+       "one"
+      ]
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "anInvalidFirstItemDoesNotUseUpTheId",
+   "raw": {
+    "items": [
+     {
+      "id": "a"
+     },
+     {
+      "id": "a",
+      "text": "second"
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "a",
+      "text": [
+       "second"
+      ]
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "itemsThatAreNotObjectsAreSkipped",
+   "raw": {
+    "items": [
+     1,
+     "x",
+     null,
+     [
+      2
+     ],
+     {
+      "id": "a",
+      "text": "ok"
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "a",
+      "text": [
+       "ok"
+      ]
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "anIdThatIsNotTextIsSkipped",
+   "raw": {
+    "items": [
+     {
+      "id": 1,
+      "text": "x"
+     },
+     {
+      "id": null,
+      "text": "y"
+     },
+     {
+      "id": "a",
+      "text": "ok"
+     }
+    ]
+   },
+   "frame": {
+    "items": [
+     {
+      "id": "a",
+      "text": [
+       "ok"
+      ]
+     }
+    ],
+    "refreshMs": null
+   }
+  },
+  {
+   "name": "aMissingItemsListIsNoFrame",
+   "raw": {
+    "refreshMs": 5000
+   },
+   "frame": null
+  },
+  {
+   "name": "itemsThatIsNotAListIsNoFrame",
+   "raw": {
+    "items": "x"
+   },
+   "frame": null
+  },
+  {
+   "name": "anArrayIsNoFrame",
+   "raw": [
+    1,
+    2
+   ],
+   "frame": null
+  },
+  {
+   "name": "nullIsNoFrame",
+   "raw": null,
+   "frame": null
+  }
+ ]
+}

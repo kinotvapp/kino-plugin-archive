@@ -84,6 +84,14 @@
 //   node sdk/run.mjs --provider <provider dir> [--cursor '<json>'] <consumer dir> screenEvent protocol <alias>.<stream>
 //   node sdk/run.mjs <provider dir> proto <door>.<call> ['<arg json>']
 //   node sdk/run.mjs <provider dir> proto <door>.<stream> ['<cursor json>']
+// The player slot (apiVersion 23, the "playerSlot" capability): playerSlot calls the export with the title's own plugin's panel
+//   context plus live: false and prints what Kino keeps of the answer (the frame: items in declared order, refreshMs clamped);
+//   playerSlotAction <ref> <button id> calls it with { id, context } and prints the request Kino acts on ({ openPanel, player }
+//   after the same reader and press rules as a panel's player). The ref is "-" with --live-channel or --bare. --foreign <id>[:<name>]
+//   gives the context of a title another plugin owns, --live-channel <provider>:<code>[:<name>] an En vivo channel's, --bare
+//   the one a private title gets (live, foreign, device, lang, features: no kind), with --live-channel for a live one.
+//   node sdk/run.mjs [--context '<json>'] <plugin dir> playerSlot [ref]
+//   node sdk/run.mjs [--context '<json>'] <plugin dir> playerSlotAction <ref> <button id>
 // Describing other titles (apiVersion 6, the "meta" capability): the query as the app builds it, Kino's verdict field by
 // field, and how the info page would use it (within the app's 6 s)
 //   node sdk/run.mjs <plugin dir> meta tt0133093 [movie|series]          (KINO_LANG=es: the person's language)
@@ -144,6 +152,7 @@ import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { parseSlotFrame, slotActionRequest, slotBareContext, slotContext, slotForeignContext, slotLiveContext } from "./slot.mjs";
 import { checkOutput, checkSettingsOutput, contract, featureApiVersion, liveChannelGoOf, liveChannelGoRefusal, syncProviderGoRefusal, markSearchHits, maskSetPasswords, readRangeProblem, segmentSkip, STORE_FUNCTIONS, validateManifest } from "./contract.mjs";
 import { contrast, formatRatio, resolvePalette } from "./palette.mjs";
 import { askImage, askRead, createKino, errorReport, signingLane } from "./kino-shim.mjs";
@@ -163,6 +172,8 @@ const SETTINGS_FUNCTIONS = ["settingsStatus", "action", "validateSettings"];
 const PANEL_FUNCTIONS = ["panel", "panelAction", "playerEvent"];
 // apiVersion 14's screen canvas: the manifest's "screen" block decides, and Kino calls them with a context or an event.
 const SCREEN_FUNCTIONS = ["screen", "screenEvent"];
+// apiVersion 23's player slot: the manifest's "slot" block decides, and Kino calls them with a context.
+const SLOT_FUNCTIONS = [contract.playerSlot.exports.slot, contract.playerSlot.exports.action];
 /** What set off a screen event in the app (ScreenEventKind): the person's tap, a field's change, or a submit. */
 export const SCREEN_EVENT_TRIGGERS = ["tap", "change", "submit"];
 
@@ -193,6 +204,7 @@ const USAGE = "usage: node sdk/run.mjs [--config k=v] [--record f | --replay f] 
   + "       node sdk/run.mjs [--context '<json>'] [--state '<json>'] --provider <folder> <consumer folder> <screen | screenEvent <name> ...>   (plugin protocol: the provider answers kino.plugins.call)\n"
   + "       node sdk/run.mjs [--state '<json>'] --provider <folder> [--cursor '<json>'] <consumer folder> screenEvent protocol <alias>.<stream>   (one poll of the stream, from null or the cursor)\n"
   + "       node sdk/run.mjs <provider folder> <proto <door>.<call> ['<arg json>'] | proto <door>.<stream> ['<cursor json>']>   (a provider on its own, with the app's checks and error codes)\n"
+  + "       node sdk/run.mjs [--context '<json>'] [--foreign <id>[:<name>] | --live-channel <provider>:<code>[:<name>]] [--bare] <plugin folder> <playerSlot [ref] | playerSlotAction <ref> <button id>>\n"
   + "       node sdk/run.mjs [--size <bytes>] <plugin folder> read <handle> <offset> <length>   (byteSource: one range, as Kino's proxy asks it)\n"
   + "       node sdk/run.mjs [--out <file>] <plugin folder> image <handle>   (imageSource: the picture, written to a file)\n"
   + "       node sdk/run.mjs [--context '<json>'] <plugin folder> job [jobId] [scheduled|manual]   (schedule: one background run, with Kino's caps)\n"
@@ -258,7 +270,7 @@ function fail(message) {
 }
 
 export function parseArgs(argv) {
-  const opts = { config: {}, record: null, replay: null, raw: false, epg: null, live: false, retry: null, within: null, context: null, state: null, device: null, size: null, out: null, screen: false, foreign: null, liveChannel: null, trigger: null, providers: [], cursor: undefined, lang: null };
+  const opts = { config: {}, record: null, replay: null, raw: false, epg: null, live: false, retry: null, within: null, context: null, state: null, device: null, size: null, out: null, screen: false, bare: false, foreign: null, liveChannel: null, trigger: null, providers: [], cursor: undefined, lang: null };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -272,6 +284,7 @@ export function parseArgs(argv) {
     else if (a === "--provider") opts.providers.push(argv[++i] || "");
     else if (a === "--raw") opts.raw = true;
     else if (a === "--screen") opts.screen = true;
+    else if (a === "--bare") opts.bare = true;
     else if (a === "--foreign") {
       // Task 8k: the plugin whose title plays (its public id and name): the context is a contributed panel's.
       const v = argv[++i] || "";
@@ -380,7 +393,7 @@ async function main() {
   if (fn === "notifications") return notificationsCommand(targetArg);
   if (fn === "proto") return protoCommand(targetArg, rest);
   if (opts.cursor !== undefined && !(fn === "screenEvent" && rest[0] === "protocol")) return fail("--cursor only applies to screenEvent protocol <alias>.<stream> (for a provider on its own: proto <door>.<stream> '<cursor json>')");
-  if (!targetArg || !(FUNCTIONS.includes(fn) || SETTINGS_FUNCTIONS.includes(fn) || PANEL_FUNCTIONS.includes(fn) || SCREEN_FUNCTIONS.includes(fn) || STORE_FUNCTIONS.includes(fn) || fn === "sign" || fn === "theme" || Object.values(LIVE).includes(fn))) return fail(USAGE);
+  if (!targetArg || !(FUNCTIONS.includes(fn) || SETTINGS_FUNCTIONS.includes(fn) || PANEL_FUNCTIONS.includes(fn) || SCREEN_FUNCTIONS.includes(fn) || SLOT_FUNCTIONS.includes(fn) || STORE_FUNCTIONS.includes(fn) || fn === "sign" || fn === "theme" || Object.values(LIVE).includes(fn))) return fail(USAGE);
   if (opts.record && opts.replay) return fail("--record and --replay can't be used together");
   const target = resolve(targetArg);
   let stat;
@@ -409,13 +422,14 @@ async function main() {
   }
   // A screen declared through an apiVersion 14 enhancement counts (featureApiVersion): only an older Kino skips it.
   if (SCREEN_FUNCTIONS.includes(fn) && !(featureApiVersion(manifest) >= contract.manifest.screen.apiVersion && manifest.screen)) return fail(`the manifest does not declare "screen" (apiVersion ${contract.manifest.screen.apiVersion}, or an "enhancements" block for it, and the "screen" capability with its "screen" block): Kino shows no screen for this plugin`);
+  if (SLOT_FUNCTIONS.includes(fn) && !(featureApiVersion(manifest) >= contract.playerSlot.apiVersion && manifest.slot)) return fail(`the manifest does not declare "slot" (apiVersion ${contract.playerSlot.apiVersion}, or an "enhancements" block for it, and the "${contract.playerSlot.capability}" capability with its "slot" block): Kino draws nothing for this plugin`);
   if (fn === "categories" && !(manifest.apiVersion >= contract.output.categories.apiVersion && manifest.capabilities.includes("browse"))) return fail("categories needs apiVersion 6 and the browse capability");
   if ((fn === "storeList" || fn === "storeSearch") && manifest.pluginStore?.mode !== "live") return fail(`${fn} is for a live store: declare "pluginStore": { "mode": "live" } in kino-plugin.json`);
   const capability = Object.values(LIVE).includes(fn) ? "channels" : STORE_FUNCTIONS.includes(fn) ? contract.kinoStore.capability : fn === "sign" ? "resolve" : fn === contract.tracking.export ? contract.tracking.capability : fn;
   // `subtitles` may be exported by any plugin without the capability (Kino asks whoever exports it).
   const anyPlugin = contract.capabilities.anyPluginExports.includes(fn);
   if (fn === "meta" && !manifest.capabilities.includes("meta")) return fail(NO_META_CAPABILITY);
-  if (!anyPlugin && !SETTINGS_FUNCTIONS.includes(fn) && !PANEL_FUNCTIONS.includes(fn) && !SCREEN_FUNCTIONS.includes(fn) && fn !== "section" && fn !== "categories" && !manifest.capabilities.includes(capability)) return fail(`the manifest does not declare "${capability}" in capabilities`);
+  if (!anyPlugin && !SETTINGS_FUNCTIONS.includes(fn) && !PANEL_FUNCTIONS.includes(fn) && !SCREEN_FUNCTIONS.includes(fn) && !SLOT_FUNCTIONS.includes(fn) && fn !== "section" && fn !== "categories" && !manifest.capabilities.includes(capability)) return fail(`the manifest does not declare "${capability}" in capabilities`);
   // "catalogOnly": true (Kino 0.9.54): Kino never calls resolve (nor sign); it still runs here, for the older Kino it serves.
   if (manifest.catalogOnly && capability === "resolve") process.stderr.write(`· ${CATALOG_ONLY_RESOLVE_NOTE}\n`);
 
@@ -525,6 +539,15 @@ async function main() {
       saveTape();
       if (opts.raw) { process.stdout.write(JSON.stringify(answer === undefined ? null : answer, null, 2) + "\n"); return 0; }
       return printScreenAnswer(fn, answer, request.context, manifest, writeConfig, fn === "screenEvent" ? { name: request.event.name, trigger } : null);
+    }
+    if (SLOT_FUNCTIONS.includes(fn)) {
+      // Built before the call: a bad argument is the command's fault (exit 2), not the plugin's.
+      let request;
+      try { request = slotRequest(fn, rest, opts, manifest); } catch (e) { return fail(e.message); }
+      const answer = await callSlot(plugin, fn, request);
+      saveTape();
+      if (opts.raw) { process.stdout.write(JSON.stringify(answer === undefined ? null : answer, null, 2) + "\n"); return 0; }
+      return printSlotAnswer(fn, answer, request, manifest);
     }
     const out = await call(plugin, fn, rest, opts);
     saveTape();
@@ -741,6 +764,73 @@ export function lyricsArg(rest) {
   if (last !== undefined && /^\d+$/.test(last) && Number(last) > 0) { out.durationMs = Number(last); more.pop(); }
   if (more[0]) out.album = more[0];
   return out;
+}
+
+// ---------- the player slot (apiVersion 23) ----------
+
+/**
+ * One slot call as the app makes it: `playerSlot(context)` or `playerSlotAction({ id, context })`. [rest]: `[ref]` for playerSlot,
+ * `<ref> <button id>` for playerSlotAction (ref `-` where the context has none). The context is the title's own plugin's
+ * (`live: false`), or with --foreign another plugin's, with --live-channel an En vivo channel's, with --bare the one a title
+ * that reaches no plugin gets; `--context` merges over it. Throws on a bad argument.
+ */
+export function slotRequest(fn, rest, opts, manifest) {
+  const P = contract.playerSlot;
+  const ref = rest[0] === undefined || rest[0] === "" ? "demo" : String(rest[0]);
+  if (opts.foreign && opts.liveChannel) throw new Error("--live-channel and --foreign do not go together");
+  const over = opts.context || {};
+  let context;
+  if (opts.bare) {
+    context = slotBareContext({ live: !!opts.liveChannel });
+  } else if (opts.liveChannel) {
+    context = slotLiveContext(opts.liveChannel, { device: "tv", lang: fakeContext(ref).lang });
+  } else if (opts.foreign) {
+    context = slotForeignContext(ref, manifest.id, { pluginId: opts.foreign.pluginId, name: opts.foreign.name });
+  } else {
+    context = slotContext(ref);
+  }
+  context = { ...context, ...over };
+  if (fn === P.exports.slot) return { context };
+  const id = rest[1];
+  if (!id) throw new Error(`${fn} needs the id of the button that was pressed`);
+  const button = manifest.slot.elements.find((e) => e.id === id && e.kind === "button");
+  if (!button) throw new Error(`${fn}: "${String(id).slice(0, 40)}" is not a declared button of this manifest (Kino only calls it for a button on screen)`);
+  return { context, event: { id: String(id), context } };
+}
+
+/** The plugin's slot export called with the app's argument, within the app's 5 s. */
+export async function callSlot(plugin, fn, { context, event }, timeoutMs = contract.timeoutsMs[fn]) {
+  let timer;
+  const late = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${fn} did not answer within ${timeoutMs / 1000} s: Kino stops waiting`)), timeoutMs);
+  });
+  try {
+    return await Promise.race([Promise.resolve().then(() => (fn === contract.playerSlot.exports.slot ? plugin[fn](context) : plugin[fn](event))), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Prints what the app keeps of a slot export's [answer] (`· dropped: <reason>` on stderr, the result on stdout); the exit code. */
+function printSlotAnswer(fn, answer, request, manifest) {
+  if (fn === contract.playerSlot.exports.slot) {
+    const r = parseSlotFrame(answer, manifest.slot.elements);
+    r.dropped.forEach((d) => stderr(`· dropped: ${d}`));
+    if (!r.frame) { stderr("✗ the answer is not an object with an \"items\" list: Kino keeps the last frame (none the first time) and tries again"); return 1; }
+    if (r.frame.refreshMs === null) stderr("· no refreshMs: Kino asks once and does not refresh");
+    process.stdout.write(JSON.stringify(r.frame, null, 2) + "\n");
+    return 0;
+  }
+  const live = request.context.live === true;
+  const control = manifest.capabilities.includes(contract.kinoPlayerControl.capability) && process.env.KINO_PLAYER_CONTROL_REVOKED !== "1";
+  const kept = slotActionRequest(answer, { live, contributed: live || request.context.foreign === true, control }, (l) => stderr(`· dropped: ${l}`));
+  if (!kept) stderr("· nothing to do: Kino does nothing");
+  else {
+    if (kept.openPanel) stderr("· openPanel: Kino opens this plugin's player panel (it does not change tab if the panel is already open)");
+    if (kept.player?.pause !== undefined || kept.player) stderr(`· player: goes through the panel's gate (${contract.kinoPlayerControl.perMinute} controlled a minute, one seek or pause a second, nothing under a Kino dialog)`);
+  }
+  process.stdout.write(JSON.stringify(kept, null, 2) + "\n");
+  return 0;
 }
 
 // ---------- the player panel (apiVersion 9) ----------

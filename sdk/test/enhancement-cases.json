@@ -52,7 +52,7 @@
       "name": "only screen and library may be added",
       "manifest": { "enhancements": { "14": { "capabilities": ["screen", "download"], "screen": { "label": "Inicio" } } } },
       "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [],
-      "dropped": ["enhancements.14: the \"download\" capability can't be added by an enhancement (only screen, library, playerPanelTab, playerControl, room, schedule, shared, ai, files and progress)"]
+      "dropped": ["enhancements.14: the \"download\" capability can't be added by an enhancement (only screen, library, playerPanelTab, playerControl, room, schedule, shared, ai, files, progress and playerSlot)"]
     },
     {
       "name": "capabilities must be a list of names",
@@ -64,7 +64,7 @@
       "name": "a field an enhancement can't carry drops the block",
       "manifest": { "enhancements": { "14": { "capabilities": ["screen"], "screen": { "label": "Inicio" }, "section": { "label": "Panel" } } } },
       "ok": true, "capabilities": ["resolve", "search"], "screen": null, "settings": [], "applied": [],
-      "dropped": ["enhancements.14: \"section\" can't be enhanced (only capabilities, screen, settings, panel, jobs and visualBrowser)"]
+      "dropped": ["enhancements.14: \"section\" can't be enhanced (only capabilities, screen, settings, panel, jobs, visualBrowser and slot)"]
     },
     {
       "name": "a tab in the player panel added for a Kino that knows it (Task 8k)",

@@ -58,8 +58,8 @@ test("an older Kino never reads the key: the manifest without enhancements, what
 
 test("contract.json: what a block may carry, and every capability it may add came with the first Kino that reads them", () => {
   const E = contract.manifest.enhancements;
-  assert.deepEqual(E.fields, ["capabilities", "screen", "settings", "panel", "jobs", "provides", "consumes", "visualBrowser"]);
-  assert.deepEqual(E.capabilities, ["screen", "library", "playerPanelTab", "playerControl", "room", "schedule", "shared", "ai", "files", "progress"]);
+  assert.deepEqual(E.fields, ["capabilities", "screen", "settings", "panel", "jobs", "provides", "consumes", "visualBrowser", "slot"]);
+  assert.deepEqual(E.capabilities, ["screen", "library", "playerPanelTab", "playerControl", "room", "schedule", "shared", "ai", "files", "progress", "playerSlot"]);
   assert.equal(E.fromApiVersion, 14);
   for (const c of E.capabilities) assert.ok(contract.capabilities.apiVersions[c] >= E.fromApiVersion, c);
   assert.ok(contract.apiVersionFromApp[String(E.fromApiVersion)]);

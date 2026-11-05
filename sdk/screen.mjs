@@ -254,7 +254,7 @@ const fits = (o) => bytes(o) <= LIMITS.maxStateBytes;
 
 const KOTLIN_SPACE = /[\p{Zs}\p{Zl}\p{Zp}\t\n\u000B\f\r\u001C-\u001F]/u;
 /** Kotlin's String.trim(): Kotlin's whitespace at both ends (U+FEFF is not one; U+001C..U+001F are). */
-function kotlinTrim(s) {
+export function kotlinTrim(s) {
   let a = 0;
   let b = s.length;
   while (a < b && KOTLIN_SPACE.test(s[a])) a++;

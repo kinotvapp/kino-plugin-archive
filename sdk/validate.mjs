@@ -29,6 +29,7 @@ import { loadPlugin, missingGlobalLines, scanMissingGlobals } from "./sandbox.mj
 import { call, callMeta, callPanel, markLiveSearch, metaQueryForItem, panelRequest, parseArgs, resolveFirstLiveRef, signExportProblem, unmarkedSearchNote } from "./run.mjs";
 import { loadPlaylist } from "./live-playlist.mjs";
 import { checkPanelOutput, langOf, PANEL_EXTRA_ICONS, PANEL_ICONS, PANEL_ICON_DEFAULT, panelIconKnown, panelIconProblem, settingsLayout } from "./panel.mjs";
+import { parseSlotFrame, slotActionRequest, slotContext } from "./slot.mjs";
 import { checkPanelScreen, checkScreenTimers, isPanelScreen, PANEL_SCREEN, printScreenTree } from "./screen.mjs";
 import { fingerprint, normalizeBinding, verifyEntry } from "./seal.mjs";
 
@@ -73,6 +74,8 @@ export function consentLines(m, { authorFingerprint = null } = {}) {
   if (m.capabilities.includes(contract.manifest.panel.contributes.capability)) line(contract.manifest.panel.contributes.consentLine.es, true);
   // apiVersion 14 "playerControl" (PluginConsent.extraLines, Task 8j): it can pause, resume and move the video by itself: red.
   if (m.capabilities.includes(contract.kinoPlayerControl.capability)) line(contract.kinoPlayerControl.consentLine.es, true);
+  // apiVersion 23 "playerSlot" (PluginConsent.extraLines): only a `fixed` element asks (it holds a place in the player): red.
+  if (m.slot?.hasFixed) line(contract.playerSlot.fixedConsentLine.es, true);
   // apiVersion 14 "room" (PluginConsent.extraLines, Task 8l): people on the Internet reach this device while a room is open: red.
   if (m.capabilities.includes(contract.kinoRoom.capability)) line(contract.kinoRoom.consentLine.es, true);
   // apiVersion 14 "schedule" (PluginConsent.extraLines, Task 8q): it runs by itself in the background, on the person's internet and battery: red.
@@ -169,6 +172,33 @@ export const UI_FUNCTIONS = ["section", "categories", "settingsStatus", "action"
  * never make (no "section" in the manifest, categories without apiVersion 6 and browse, an action key no `action`
  * setting has, a function not exported) is a problem.
  */
+/**
+ * `--run playerSlot [ref]` and `--run playerSlotAction <ref> <id>`: the slot's two exports called with the app's context (the
+ * title's own plugin's, a full one with `live: false`) and their answers read as the app reads them: `{ problems, drops, notes,
+ * output }`. A call Kino would never make (no `slot` block, an action id that is not a declared button) is a problem.
+ */
+export async function runSlot(plugin, run, args, m) {
+  const problems = [], drops = [], notes = [];
+  const out = (o) => ({ problems, drops, notes, output: o });
+  const P = contract.playerSlot;
+  if (!m.slot || !(m.apiVersion >= P.apiVersion || m.enhancementsApplied.some((k) => k >= P.apiVersion))) { problems.push(`the manifest does not declare "slot" (apiVersion ${P.apiVersion}, with the "${P.capability}" capability): Kino draws nothing for this plugin`); return out(null); }
+  if (typeof plugin[run] !== "function") { problems.push(`the plugin doesn't export ${run}()`); return out(null); }
+  const context = slotContext(args[0] || "demo");
+  if (run === P.exports.slot) {
+    const answer = await plugin.playerSlot(context);
+    const r = parseSlotFrame(answer, m.slot.elements);
+    if (!r.frame) { problems.push(`${run}: not an object with an "items" list: Kino keeps the last frame (none, the first time)`); return out(null); }
+    drops.push(...r.dropped);
+    return out(r.frame);
+  }
+  const id = args[1];
+  const button = m.slot.elements.find((e) => e.id === id && e.kind === "button");
+  if (!button) { problems.push(`${run} needs the id of a declared button (${m.slot.elements.filter((e) => e.kind === "button").map((e) => e.id).join(", ") || "this manifest declares none"})`); return out(null); }
+  const answer = await plugin.playerSlotAction({ id, context });
+  const request = slotActionRequest(answer, { contributed: false, control: (m.capabilities || []).includes(contract.kinoPlayerControl.capability) }, (l) => drops.push(l));
+  return out(request ?? null);
+}
+
 /**
  * `--run panel <ref> [tab]`: `panel(context)` called with the app's context (an apiVersion 14 plugin's carries `state` and
  * `size` too) and its result read as the app reads it, in whichever format it comes: `{ problems, drops, notes, output }`. A
@@ -559,6 +589,13 @@ export async function validate(dirArg, { run = null, args = [], config = {}, rep
     const P = contract.kinoPlayerControl;
     notes.push(`playerControl: your player actions also count from a panel result's own player (refreshMs) and from playerEvent, and a contributed tab may also ${P.contributedWithControl.filter((f) => f !== "seekToMs").join(" and ")}; Kino announces each one the person did not cause, drops it under a Kino dialog or while they seek, keeps only pause on live, and allows ${P.perMinute} a minute. The person may refuse it or switch it off: work without it. Try it: KINO_PLAYER_CONTROL_REVOKED=1 node sdk/run.mjs <this folder> panel <ref>`);
   }
+  if ((m.capabilities || []).includes(contract.playerSlot.capability) && m.slot) {
+    // apiVersion 23: what the slot is and is not, so the author does not count on more.
+    const P = contract.playerSlot;
+    const fixed = m.slot.elements.filter((e) => e.mode === "fixed").map((e) => e.id);
+    notes.push(`playerSlot: up to ${P.maxElements} elements over the video on a TV (never on a phone), shared with every other plugin (fixed first); ${P.exports.slot}(context) is called when the player opens (retried ${P.firstFrameRetries} times, ${P.firstFrameRetryMs / 1000} s apart, if it fails before the first answer) and again after each answer's refreshMs (${P.refreshMsFloor} to ${P.refreshMsCeiling} ms; no refreshMs, no refresh), never counting toward "No responde"; a press calls ${P.exports.action}({ id, context }) and does. A title Kino cannot share (18+, owned by no plugin) gets a bare context (live, foreign, device, lang, features: no kind, ref or title): read context.live. ${fixed.length ? `"${fixed.join('", "')}" ${fixed.length > 1 ? "are" : "is"} fixed: the person approves it with a red line, an update that adds one asks again, and they can switch the plugin off in Ajustes. ` : ""}On a live channel the elements marked overlay show only with the channel card and are reached with the Menu key, a press can only pause there, and only with the approved playerControl (a slot-only plugin cannot declare it); ${P.liveDropped.join(", ")} are dropped. Try it: node sdk/run.mjs <this folder> ${P.exports.slot} <ref> and node sdk/run.mjs <this folder> ${P.exports.action} <ref> <button id>`);
+    if (m.apiVersion < P.apiVersion) notes.push(`playerSlot needs apiVersion ${P.apiVersion}`);
+  }
   if ((m.capabilities || []).includes(contract.kinoRoom.capability)) {
     // Task 8l: what a room is and is not, so the author builds failover and polling into the plugin.
     const R = contract.kinoRoom;
@@ -621,6 +658,10 @@ export async function validate(dirArg, { run = null, args = [], config = {}, rep
   const screenApi = contract.manifest.screen.apiVersion;
   if (m.apiVersion < screenApi && declared.screen !== undefined) {
     notes.push(`"screen" needs apiVersion ${screenApi} (Kino ${contract.apiVersionFromApp[String(screenApi)]}): at apiVersion ${m.apiVersion} Kino ignores it. To offer it to newer Kinos without cutting older ones off, put it in "enhancements": { "${screenApi}": { "capabilities": ["screen"], "screen": { … } } }`);
+  }
+  const slotApi = contract.playerSlot.apiVersion;
+  if (m.apiVersion < slotApi && declared.slot !== undefined) {
+    notes.push(`"slot" needs apiVersion ${slotApi} (Kino ${contract.apiVersionFromApp[String(slotApi)]}): at apiVersion ${m.apiVersion} Kino ignores it. To offer it to newer Kinos without cutting older ones off, put it in "enhancements": { "${slotApi}": { "capabilities": ["playerSlot"], "slot": { … } } }`);
   }
   // The screen as written: the newest enhancement that carries one, else the manifest's own.
   const declaredScreen = [...m.enhancementsApplied].reverse().map((k) => declared.enhancements?.[String(k)]?.screen).find((s) => s !== undefined) ?? declared.screen;
@@ -700,7 +741,13 @@ export async function validate(dirArg, { run = null, args = [], config = {}, rep
     }
     // The player panel (`--run panel <ref> [tab]`): either format, read as the app reads it (Task 8i: a screen-format result's
     // tree with the panel's limits, any other result as the legacy panel).
-    if (run === "panel" && !problems.length) {
+    if ((run === contract.playerSlot.exports.slot || run === contract.playerSlot.exports.action) && !problems.length) {
+      const r = await runSlot(plugin, run, args, m);
+      problems.push(...r.problems);
+      drops.push(...r.drops);
+      notes.push(...r.notes);
+      output = r.output;
+    } else if (run === "panel" && !problems.length) {
       const r = await runPanel(plugin, args, m, servers);
       problems.push(...r.problems);
       drops.push(...r.drops);

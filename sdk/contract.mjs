@@ -542,6 +542,7 @@ function enhance(json, key, block, current, opts, exports) {
   if (has(block, "jobs")) candidate.jobs = block.jobs;
   // apiVersion 20: the web window the person drives, offered to a Kino that has it by a plugin on an older apiVersion.
   if (has(block, "visualBrowser")) candidate.visualBrowser = block.visualBrowser;
+  if (has(block, "slot")) candidate.slot = block.slot;
   candidate.apiVersion = key;
   const r = validateManifestObject(candidate, opts);
   if (!r.ok) return `${r.field}: ${r.message}`;
@@ -569,6 +570,7 @@ function enhance(json, key, block, current, opts, exports) {
     // Task 18 (G1): the jobs of a `schedule` an enhancement added (the check at [key] makes each need the other).
     jobs: r.manifest.jobs || [],
     visualBrowser: has(block, "visualBrowser") ? r.manifest.visualBrowser : current.visualBrowser,
+    slot: has(block, "slot") ? r.manifest.slot : current.slot,
     enhancementsApplied: [...current.enhancementsApplied, key],
   };
   // Task 18 (G13): the apiVersion the settings list was read at (the block's key when it carried one); kept out of the manifest's
@@ -883,6 +885,29 @@ function validateManifestObject(o, { knownPermissions = contract.permissions } =
       };
     }
   }
+  // apiVersion 23: the player slot's elements (PluginManifest.kt). The block and the capability need each other; below 23 both
+  // are unknown. 1 to maxElements elements, each { id, kind, mode }, ids unique.
+  let slot = null;
+  if (o.apiVersion >= contract.playerSlot.apiVersion) {
+    const P = contract.playerSlot;
+    if (!caps.includes(P.capability)) {
+      if (o.slot !== undefined) return bad("slot", P.needsCapabilityMessage);
+    } else {
+      if (o.slot === undefined) return bad("capabilities", P.capabilityNeedsMessage);
+      if (o.slot === null || typeof o.slot !== "object" || Array.isArray(o.slot)) return bad("slot", P.notObjectMessage);
+      const list = o.slot.elements;
+      if (!Array.isArray(list) || list.length < 1 || list.length > P.maxElements) return bad("slot", P.badElementsMessage);
+      const idPattern = re(P.idPattern);
+      const elements = [];
+      for (const e of list) {
+        if (e === null || typeof e !== "object" || Array.isArray(e)) return bad("slot", P.badElementMessage);
+        if (typeof e.id !== "string" || !idPattern.test(e.id) || !P.kinds.includes(e.kind) || !P.modes.includes(e.mode)) return bad("slot", P.badElementMessage);
+        elements.push({ id: e.id, kind: e.kind, mode: e.mode });
+      }
+      if (new Set(elements.map((e) => e.id)).size !== elements.length) return bad("slot", P.duplicateIdMessage);
+      slot = { elements, hasFixed: elements.some((e) => e.mode === "fixed") };
+    }
+  }
   // apiVersion 9: where the settings go (rows, columns, cards). A list here; validate.mjs and panel.mjs judge the rest.
   if (o.settingsLayout !== undefined && o.apiVersion >= m.settingsLayout.apiVersion && !Array.isArray(o.settingsLayout)) return bad("settingsLayout", 'The "settingsLayout" field must be a list');
   // apiVersion 6: the palette. Format only; the guardrails run where it is used.
@@ -992,7 +1017,7 @@ function validateManifestObject(o, { knownPermissions = contract.permissions } =
   }
   // Below apiVersion 9 the English keys are unknown: dropped here, so nothing downstream (the form, englishCoverage) sees them.
   const settingsOut = o.apiVersion >= contract.settings.english.apiVersion ? o.settings || [] : withoutEnglish(o.settings || []);
-  const out = { ...o, hosts: [...new Set(hosts)], capabilities: caps, permissions: o.permissions || [], settings: settingsOut, insecureHosts, liveStreamHostsAny, streamHostsAny, fetchHostsAny, discoverable, categories, debug, telemetry, browser, browserPages, visualBrowser, section, panel, screen, theme, appThemes, secrets, secretKeyEncodings, catalogOnly };
+  const out = { ...o, hosts: [...new Set(hosts)], capabilities: caps, permissions: o.permissions || [], settings: settingsOut, insecureHosts, liveStreamHostsAny, streamHostsAny, fetchHostsAny, discoverable, categories, debug, telemetry, browser, browserPages, visualBrowser, section, panel, screen, slot, theme, appThemes, secrets, secretKeyEncodings, catalogOnly };
   // The parsed `recommends` (deduplicated, as written); none when it declares none.
   if (recommends.length) out.recommends = recommends; else delete out.recommends;
   // Task 8q: the parsed jobs (labels scrubbed, options sorted); none below apiVersion 14 or without `schedule`.
