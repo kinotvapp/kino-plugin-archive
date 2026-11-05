@@ -1057,8 +1057,8 @@ browser `User-Agent`, and answer 403 to anything else: the cover and the pages s
 site wants:
 
 ```json
-{ "type": "Image", "url": "https://img.m440.in/p/12/001.jpg", "fit": "width", "aspect": "2:3",
-  "headers": { "Referer": "https://m440.in/", "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126 Mobile Safari/537.36" } }
+{ "type": "Image", "url": "https://img.mangasite.example/p/12/001.jpg", "fit": "width", "aspect": "2:3",
+  "headers": { "Referer": "https://mangasite.example/", "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126 Mobile Safari/537.36" } }
 ```
 
 Only `Referer` (an https address) and `User-Agent` are taken, each a text of 1 to 512 characters. They are sent **only when the

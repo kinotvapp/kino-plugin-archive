@@ -1425,7 +1425,7 @@ interface KinoScreenTextRules extends KinoScreenFieldRules { minLength?: number;
  * `User-Agent` Kino sends `Kino/<version>`. A header that is not valid is dropped and logged (Registro).
  *
  * @example
- * { type: "Image", url: page.imageUrl, aspect: "2:3", headers: { Referer: "https://m440.in/", "User-Agent": "Mozilla/5.0" } }
+ * { type: "Image", url: page.imageUrl, aspect: "2:3", headers: { Referer: "https://mangasite.example/", "User-Agent": "Mozilla/5.0" } }
  */
 interface KinoScreenImageHeaders {
   Referer?: string;
