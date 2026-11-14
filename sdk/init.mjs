@@ -15,7 +15,7 @@
 // Writes kino-plugin.json, plugin.js (every function, commented), README.md, test/plugin.test.mjs
 // (a replay-based test: record once with --record, then it runs offline) and a .gitignore for the
 // kit's local stand-ins (.kino-storage.json, .kino-cookies.json, .kino-secrets.json). Never overwrites a file.
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -865,7 +865,7 @@ test("search answers offline, and Kino drops nothing", { skip: !existsSync(fixtu
 });
 `;
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {
   const argv = process.argv.slice(2);
   const [folder, ...rest] = argv;
   if (argv.includes("--help") || argv.includes("-h")) {

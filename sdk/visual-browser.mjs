@@ -99,6 +99,36 @@ const names = (raw, where) => {
   return { list: [...out] };
 };
 
+/** VisualBrowser.storageKeys: the localStorage keys of `collect.localStorage` / `doneWhen.localStorage` (no control character). */
+const storageKeys = (raw, where) => {
+  if (raw === undefined || raw === null) return { list: [] };
+  if (!Array.isArray(raw)) return { error: `${where} must be a list of localStorage keys` };
+  if (raw.length > V().maxLocalStorageKeys) return { error: `${where} holds more than ${V().maxLocalStorageKeys} keys` };
+  const out = new Set();
+  for (const n of raw) {
+    if (typeof n !== "string") return { error: `${where} must be a list of localStorage keys` };
+    if (!n || n.length > V().maxLocalStorageKeyChars || /[\u0000-\u001f\u007f]/.test(n)) {
+      return { error: `${where}: "${n.slice(0, 40)}" is not a localStorage key (1 to ${V().maxLocalStorageKeyChars} characters, without control characters)` };
+    }
+    out.add(n);
+  }
+  return { list: [...out] };
+};
+
+/** VisualBrowser.selectLocalStorage: the keys of [names] found in [found], in [names]'s order, cut at maxLocalStorageChars (never in half). */
+export function selectLocalStorage(names, found) {
+  const out = {};
+  let chars = 0;
+  for (const n of names) {
+    const v = found[n];
+    if (typeof v !== "string") continue;
+    if (chars + n.length + v.length > V().maxLocalStorageChars) break;
+    out[n] = v;
+    chars += n.length + v.length;
+  }
+  return out;
+}
+
 /**
  * VisualBrowser.parse: `{ options }` or `{ error }` (the message the app throws as `bad_args`). [declared] the manifest's hosts,
  * [secretSettings] the keys of its password settings.
@@ -116,12 +146,15 @@ export function parseOptions(o, declared, secretSettings) {
     if (refusedTitleChar(o.title)) return bad("title holds a control or formatting character");
     title = o.title.trim() || null;
   }
-  let doneCookies = [], doneUrlMatches = null;
+  let doneCookies = [], doneLocalStorage = [], doneUrlMatches = null;
   if (o.doneWhen !== undefined && o.doneWhen !== null) {
     if (typeof o.doneWhen !== "object" || Array.isArray(o.doneWhen)) return bad("doneWhen must be an object");
     const r = names(o.doneWhen.cookies, "doneWhen.cookies");
     if (r.error) return bad(r.error);
     doneCookies = r.list;
+    const rs = storageKeys(o.doneWhen.localStorage, "doneWhen.localStorage");
+    if (rs.error) return bad(rs.error);
+    doneLocalStorage = rs.list;
     const m = o.doneWhen.urlMatches;
     if (m !== undefined && m !== null) {
       if (typeof m !== "string") return bad("doneWhen.urlMatches must be a string");
@@ -129,13 +162,16 @@ export function parseOptions(o, declared, secretSettings) {
       doneUrlMatches = m;
     }
   }
-  let collectCookies = [], html = false, finalUrl = false, storeAs = null;
+  let collectCookies = [], collectLocalStorage = [], html = false, finalUrl = false, storeAs = null;
   if (o.collect !== undefined && o.collect !== null) {
     const c = o.collect;
     if (typeof c !== "object" || Array.isArray(c)) return bad("collect must be an object");
     const r = names(c.cookies, "collect.cookies");
     if (r.error) return bad(r.error);
     collectCookies = r.list;
+    const rl = storageKeys(c.localStorage, "collect.localStorage");
+    if (rl.error) return bad(rl.error);
+    collectLocalStorage = rl.list;
     if (c.html !== undefined && c.html !== null) { if (typeof c.html !== "boolean") return bad("collect.html must be true or false"); html = c.html; }
     if (c.finalUrl !== undefined && c.finalUrl !== null) { if (typeof c.finalUrl !== "boolean") return bad("collect.finalUrl must be true or false"); finalUrl = c.finalUrl; }
     if (c.storeAs !== undefined && c.storeAs !== null) {
@@ -180,7 +216,7 @@ export function parseOptions(o, declared, secretSettings) {
     if (typeof o.timeoutMs !== "number" || Number.isNaN(o.timeoutMs)) return bad("timeoutMs must be a number");
     timeoutMs = Math.trunc(Math.min(C.maxTimeoutMs, Math.max(C.minTimeoutMs, o.timeoutMs)));
   }
-  return { options: { url: o.url, title, doneCookies, doneUrlMatches, collectCookies, collectHtml: html, collectFinalUrl: finalUrl, storeAs, userAgent, timeoutMs, hasDoneWhen: doneCookies.length > 0 || doneUrlMatches !== null } };
+  return { options: { url: o.url, title, doneCookies, doneUrlMatches, doneLocalStorage, collectCookies, collectLocalStorage, collectHtml: html, collectFinalUrl: finalUrl, storeAs, userAgent, timeoutMs, hasDoneWhen: doneCookies.length > 0 || doneUrlMatches !== null || doneLocalStorage.length > 0 } };
 }
 
 /**
@@ -201,7 +237,7 @@ export function cutForSettings(text, limits) {
 }
 
 /**
- * PluginVisualBrowser.answer: what the script gets from the window's result [r] `{ status, finalUrl?, cookies?, html? }`; with
+ * PluginVisualBrowser.answer: what the script gets from the window's result [r] `{ status, finalUrl?, cookies?, html?, localStorage? }`; with
  * storeAs, [store] is called with (pieces, then) -- pieces is `{ setting: text }` for `setting` then each `spill` setting (empty strings
  * for the ones the text does not reach), the kit's stand-in for the app's ONE save after the call;
  * [then] is `{ event, arg: { stored: [names] } }` when `storeAs.thenEvent` was given and [fromScreen] (the call is a plugin
@@ -213,6 +249,8 @@ export function answerFor(options, r, store, secretMaxChars, fromScreen = false)
   const out = { status };
   if (options.collectFinalUrl && typeof r.finalUrl === "string") out.finalUrl = r.finalUrl;
   if (options.collectHtml && status === "done" && typeof r.html === "string") out.html = r.html.slice(0, C.maxHtmlChars);
+  // The page's own localStorage, only the keys named and only for `done`; the script gets the values (storeAs keeps to the cookies).
+  if (status === "done" && options.collectLocalStorage.length) out.localStorage = selectLocalStorage(options.collectLocalStorage, r.localStorage || {});
   if (status === "done" && options.collectCookies.length) {
     const cookies = {};
     for (const [k, v] of Object.entries(r.cookies || {})) if (options.collectCookies.includes(k) && typeof v === "string") cookies[k] = v;

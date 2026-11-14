@@ -230,15 +230,35 @@ export function protocolWarnings(rawManifest) {
 
 const exportOf = (door, name) => `proto_${door}_${name}`;
 
+/** The consumer a provider is told about when the kit has no consumer folder (`proto`, or a test). */
+export const KIT_CALLER = Object.freeze({ id: "kit-consumer", repo: null, name: "Kit consumer", adult: false });
+
+/**
+ * Who is calling, from a consumer folder's raw manifest: its id and name, `repo` as given (`--repo` or the git origin) or
+ * null, `adult` when its categories hold "adult" or its screen is marked 18+ (the app also counts the install record and a
+ * name signal, which the kit cannot know).
+ */
+export function callerOf(manifest, repo = null) {
+  return {
+    id: String(manifest?.id ?? KIT_CALLER.id),
+    repo: repo ?? null,
+    name: String(manifest?.name ?? KIT_CALLER.name),
+    adult: (Array.isArray(manifest?.categories) && manifest.categories.includes("adult")) || manifest?.screen?.adult === true,
+  };
+}
+
 /**
  * Answers a consumer's `kino.plugins.call(alias, call, arg)` from provider plugins loaded from folders. [consumer] is the
  * consumer's `consumes` (parseConsumes); each provider is `{ id (its manifest's), doors (parseProvides), plugin (its exports) }`. The kit has no
  * repositories to match, so a use is served by the first provider that has the use's door; the app matches the use's `repo`
  * and never a fork. Same order of checks and same codes as the app: not_declared, provider_missing, provider_failed (the export
  * is missing), rate_limited, bad_input, then the provider runs (at most the contract's timeout; a throw is provider_failed)
- * and its answer is checked: bad_output.
+ * and its answer is checked: bad_output. The provider's export gets `(arg, ctx)`; `ctx.caller` is [caller] (see [callerOf]).
  */
-export function createProtocolCaller({ consumes, providers, now = Date.now, timeoutMs = P.call.timeoutMs, log = () => {} }) {
+export function createProtocolCaller({ consumes, providers, caller = KIT_CALLER, now = Date.now, timeoutMs = P.call.timeoutMs, log = () => {} }) {
+  // What Kino tells a provider about who is calling (the app's protocolEnvelope): the second argument of every proto_*
+  // export. The consumer never sets it, and each call gets a fresh copy.
+  const ctxOf = () => ({ caller: { id: caller.id, repo: caller.repo ?? null, name: caller.name, adult: caller.adult === true } });
   const windows = new Map();
   const admit = (bucket, max) => {
     const t = now();
@@ -263,7 +283,7 @@ export function createProtocolCaller({ consumes, providers, now = Date.now, time
     const late = new Promise((_, reject) => { timer = setTimeout(() => reject(protocolError("timeout", `the provider did not answer within ${timeoutMs / 1000} s`)), timeoutMs); });
     let answer;
     try {
-      answer = await Promise.race([Promise.resolve().then(() => provider.plugin[name](JSON.parse(JSON.stringify(argument === undefined ? null : argument)))), late]);
+      answer = await Promise.race([Promise.resolve().then(() => provider.plugin[name](JSON.parse(JSON.stringify(argument === undefined ? null : argument)), ctxOf())), late]);
     } catch (e) {
       if (e?.code === "timeout") throw e;
       log(`provider ${name} threw: ${e?.message ?? e}`);

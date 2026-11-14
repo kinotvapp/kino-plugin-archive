@@ -6,7 +6,7 @@ import { contract, validateManifest } from "../contract.mjs";
 import { consentLines } from "../validate.mjs";
 import { createKino } from "../kino-shim.mjs";
 import { kitCall, kitScreenCall } from "../kit-call.mjs";
-import { answerFor, cutForSettings, effectiveUserAgent, formatStored, globMatches, navigationAllowed, parseOptions, selectCookies, stripWebViewMarker } from "../visual-browser.mjs";
+import { answerFor, selectLocalStorage, cutForSettings, effectiveUserAgent, formatStored, globMatches, navigationAllowed, parseOptions, selectCookies, stripWebViewMarker } from "../visual-browser.mjs";
 
 const hosts = ["accounts.google.com", "music.youtube.com", "*.example.org"];
 const secrets = ["cookieHeader"];
@@ -18,7 +18,7 @@ const manifest = (extra = {}) => ({ id: "ytm", name: "YT", version: "1.0.0", api
 test("visualBrowser: the contract's numbers", () => {
   const V = contract.visualBrowser;
   assert.equal(V.apiVersion, 20);
-  assert.equal(contract.maxApiVersion, 23);
+  assert.equal(contract.maxApiVersion, 26);
   assert.deepEqual([V.maxTimeoutMs, V.minTimeoutMs, V.maxCookies, V.maxCookieChars, V.maxHtmlChars], [600000, 5000, 64, 16384, 2000000]);
   assert.deepEqual(V.errorCodes, ["bad_args", "forbidden", "unavailable", "busy", "store_failed"]);
   assert.deepEqual(V.fromFunctions, contract.qr.fromFunctions);
@@ -107,6 +107,25 @@ test("visualBrowser: cookies are selected by name, capped and never cut in half"
   assert.deepEqual(JSON.parse(formatStored({ SID: "s=1" }, "json")), { SID: "s=1" });
 });
 
+test("visualBrowser: localStorage keys are parsed, selected by name, capped and returned only for done", () => {
+  const o = ok({ url: "https://accounts.google.com/x", doneWhen: { localStorage: ["token"] }, collect: { localStorage: ["token", "user", "token"] } });
+  assert.deepEqual(o.doneLocalStorage, ["token"]);
+  assert.deepEqual(o.collectLocalStorage, ["token", "user"]);
+  assert.equal(o.hasDoneWhen, true);
+  assert.match(bad({ url: "https://accounts.google.com/x", collect: { localStorage: "token" } }), /list of localStorage keys/);
+  assert.match(bad({ url: "https://accounts.google.com/x", collect: { localStorage: ["a\nb"] } }), /not a localStorage key/);
+  assert.match(bad({ url: "https://accounts.google.com/x", collect: { localStorage: [""] } }), /not a localStorage key/);
+  assert.match(bad({ url: "https://accounts.google.com/x", doneWhen: { localStorage: Array.from({ length: 33 }, (_, i) => `k${i}`) } }), /more than/);
+  assert.deepEqual(Object.keys(selectLocalStorage(["b", "a", "missing"], { a: "1", b: "2", extra: "x" })), ["b", "a"]);
+  const big = Array.from({ length: 20 }, (_, i) => `k${i + 1}`);
+  const capped = selectLocalStorage(big, Object.fromEntries(big.map((k) => [k, "x".repeat(10000)])));
+  assert.equal(Object.keys(capped).length, 6);
+  const a = answerFor(o, { status: "done", localStorage: { token: "t0k", other: "o" } }, () => assert.fail("no storeAs"), {});
+  assert.deepEqual(a.localStorage, { token: "t0k" });
+  assert.equal("localStorage" in answerFor(ok({ url: "https://accounts.google.com/x" }), { status: "done", localStorage: { token: "t" } }, () => {}, {}), false);
+  assert.equal("localStorage" in answerFor(o, { status: "closed", localStorage: { token: "t" } }, () => {}, {}), false);
+});
+
 test("visualBrowser: with storeAs the answer carries names, never values", () => {
   const o = ok({ url: "https://accounts.google.com/x", collect: { cookies: ["SID", "HSID", "GONE"], storeAs: { setting: "cookieHeader", format: "header" } } });
   const stored = [];
@@ -130,7 +149,7 @@ test("visualBrowser: the manifest key exists from apiVersion 20 and is a boolean
   assert.equal(v({ visualBrowser: false }).manifest.visualBrowser, false);
   assert.equal(v({ visualBrowser: true }, 19).manifest.visualBrowser, false);
   assert.deepEqual(v({ visualBrowser: "yes" }), { ok: false, field: "visualBrowser", message: contract.visualBrowser.notBooleanMessage });
-  assert.equal(v({}, 24).ok, false);
+  assert.equal(v({}, 27).ok, false);
   assert.ok(consentLines(v({}).manifest).some((l) => l.text === contract.visualBrowser.consentLine));
   assert.ok(!consentLines(v({ visualBrowser: false }).manifest).some((l) => l.text === contract.visualBrowser.consentLine));
 });

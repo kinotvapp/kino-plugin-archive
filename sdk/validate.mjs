@@ -15,7 +15,7 @@
 // Exit code 0 = Kino would accept it; 1 = it wouldn't (the reasons are on stderr).
 import { sharedSecretWords } from "./shared.mjs";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -785,6 +785,12 @@ export async function validate(dirArg, { run = null, args = [], config = {}, rep
         }
         const noSign = run === "resolve" ? signExportProblem(output, plugin) : null;
         if (noSign) problems.push(noSign);
+        // A DRM list (apiVersion 24): Kino tries the options in order and plays the first the device supports.
+        if (run === "resolve" && Array.isArray(output.drmOptions)) {
+          const host = (u) => { try { return new URL(u).hostname; } catch { return "?"; } };
+          const line = (d, i) => `${i + 1}. ${d.type === "clearkey" ? `clearkey (${Object.keys(d.keys).length} key${Object.keys(d.keys).length === 1 ? "" : "s"}, no license server)` : `widevine (license: ${host(d.licenseUrl)})`}`;
+          notes.push(`drm options, in the order a phone tries them: ${output.drmOptions.map(line).join("; ")}`);
+        }
         // A search hit is 18+ by its own marks and the plugin's categories (as in the app): unmarked ones get a warning.
         if (run === "liveSearch") {
           const marked = await markLiveSearch(plugin, output, m, servers);
@@ -829,7 +835,7 @@ export async function validate(dirArg, { run = null, args = [], config = {}, rep
   return { ok: problems.length === 0, problems, drops, output, consent, notes, warnings };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {
   // --repo is validate's own (run.mjs's parser doesn't know it): taken out before the rest is read.
   const argv = process.argv.slice(2);
   const repoAt = argv.indexOf("--repo");

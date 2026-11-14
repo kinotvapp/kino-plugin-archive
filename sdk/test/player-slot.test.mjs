@@ -223,7 +223,7 @@ test("the guide: the playerSlot consent row, the limits row, and the README name
   const readme = readFileSync(join(DOCS, "README.md"), "utf8");
   const field = (name) => readme.split("\n").find((r) => r.startsWith(`| \`${name}\` |`));
   assert.ok(field("capabilities").includes("`playerSlot`") && field("capabilities").includes("`apiVersion: 23`"), "the capabilities row");
-  assert.ok(field("apiVersion").includes(`\`1\` to \`${contract.maxApiVersion}\``) && contract.maxApiVersion === 23, "the apiVersion row");
+  assert.ok(field("apiVersion").includes(`\`1\` to \`${contract.maxApiVersion}\``) && contract.maxApiVersion === 26, "the apiVersion row");
   assert.ok(readme.includes("## 15. The player slot (`playerSlot`, apiVersion 23)"));
   // The README's lines are the ones the app shows.
   for (const text of [P.fixedConsentLine.es, P.fixedConsentLine.en, P.switchLabel.es, P.openPanelKey, ...P.liveDropped, ...P.bareContextFields]) assert.ok(readme.includes(text), text);

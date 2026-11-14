@@ -5,7 +5,7 @@
 // invalid node, style value, action or field is dropped with a reason. Like panel.mjs it reads the answer the way org.json
 // does (the answer crosses to Kino as JSON), and like the Kotlin it walks a JSON object's keys SORTED wherever the walk
 // can log, so the lines come out in the same order. plugins/sdk/test/screen-cases.json is the case table both sides share.
-import { contract, isUserServer, javaDouble, screenGoOf, screenItems, titleByIdsOf, urlGoOf, copyGoOf, liveChannelGoOf, useThemeGoOf, setExperienceGoOf, installPluginGoOf } from "./contract.mjs";
+import { contract, isUserServer, javaDouble, screenGoOf, screenItems, titleByIdsOf, urlGoOf, copyGoOf, liveChannelGoOf, useThemeGoOf, setExperienceGoOf, installPluginGoOf, pluginGoOf } from "./contract.mjs";
 import { badgeOf, cappedLog, colorHint, httpsImage, panelAccentOf, panelMessageOf, panelPlayerOf, panelRefreshOf, panelTabsOf } from "./panel.mjs";
 
 // ---------- limits and name tables (ScreenLimits, ScreenWidgets; numbers come from the contract file) ----------
@@ -45,6 +45,18 @@ function imageHeaders(o, url, log) {
   if (raw === undefined || raw === null) return {};
   if (typeof raw !== "object" || Array.isArray(raw)) { log("screen: image headers is not an object, ignored"); return {}; }
   if (!url.startsWith("https://")) { log("screen: image headers without an https url, ignored"); return {}; }
+  return parseImageHeaders(raw, log);
+}
+
+/** PluginScreenOutput.nodeImageHeaders: a composite node's `headers` (heroCard, titleRail, titleGrid, titleCard), the same rules for every picture of the node. */
+function nodeImageHeaders(o, log) {
+  const raw = o[S.imageHeaders.field];
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw !== "object" || Array.isArray(raw)) { log("screen: image headers is not an object, ignored"); return {}; }
+  return parseImageHeaders(raw, log);
+}
+
+function parseImageHeaders(raw, log) {
   const out = {};
   for (const key of Object.keys(raw)) {
     const name = S.imageHeaders.names.find((n) => n.toLowerCase() === key.toLowerCase());
@@ -1143,7 +1155,8 @@ class Reader {
         if (item === undefined) return fail("needs a valid item");
         const size = this.cardSize(o, type);
         // No tap of its own (or an invalid one, logged): the title's page, inside this plugin.
-        return () => ({ item, size, defaultTap: { ui: [], event: null, go: { title: { ref: item.ref, kind: item.kind, id: item.id } } } });
+        const headers = nodeImageHeaders(o, (m) => this.log(m));
+        return () => ({ item, size, headers, defaultTap: { ui: [], event: null, go: { title: { ref: item.ref, kind: item.kind, id: item.id } } } });
       }
       case "titleRail": case "titleGrid": {
         let title = "";
@@ -1160,7 +1173,8 @@ class Reader {
         const paging = this.paging(o, type, flatHere ? LIMITS.maxFlatTitles : LIMITS.maxListItems);
         if (type === "titleGrid") {
           const columns = this.int(o, type, "columns", 1, LIMITS.maxGridColumns, TITLE_GRID_COLUMNS);
-          return () => ({ items, columns, paging });
+          const headers = nodeImageHeaders(o, (m) => this.log(m));
+          return () => ({ items, columns, paging, headers });
         }
         let more = null;
         const r = opt(o, "ref");
@@ -1169,7 +1183,8 @@ class Reader {
           else this.log(`screen: titleRail ref must be 1 to ${LIMITS.maxRefChars} characters, dropped`);
         }
         const size = this.cardSize(o, type);
-        return () => ({ title, items, more, size, paging });
+        const headers = nodeImageHeaders(o, (m) => this.log(m));
+        return () => ({ title, items, more, size, paging, headers });
       }
       case "banner": {
         const text = t("text");
@@ -1211,7 +1226,8 @@ class Reader {
           logo = httpsImage({ url: typeof lg === "string" ? lg : "" }, []) || null;
           if (logo === null) this.log("screen: heroCard logo is not https on a public host, dropped");
         }
-        return (k) => ({ title, text, image, logo, buttons: k ? this.heroButtons(o, depth) : [] });
+        const headers = nodeImageHeaders(o, (m) => this.log(m));
+        return (k) => ({ title, text, image, logo, headers, buttons: k ? this.heroButtons(o, depth) : [] });
       }
       case POPUP: {
         const kind = opt(o, "kind");
@@ -2635,6 +2651,12 @@ class Reader {
       const g = installPluginGoOf(v, (why) => this.log(`${where} go.installPlugin ${why}, dropped`));
       return g === null ? null : { installPlugin: g };
     }
+    if (k === "plugin") {
+      const min = contract.manifest.screen.goPlugin.apiVersion;
+      if (this.apiVersion < min) return bad(`needs apiVersion ${min}`);
+      const g = pluginGoOf(v, (why) => this.log(`${where} go.plugin ${why}, dropped`));
+      return g === null ? null : { plugin: g };
+    }
     if (k === "section" || k === "categories" || k === "close" || k === "syncProvider") return v === true ? { [k]: true } : bad("must be true");
     if (!isObj(v)) return bad("is not an object");
     if (k === "search") {
@@ -3105,7 +3127,7 @@ export function checkPanelScreen(value, lang = "es", { allowSeries = true, setti
  * pause and panel; dialog, sheet, menu and route are dropped (not honoured inside the panel), patch, values and save too (legacy
  * fields), each logged. `null` is the empty answer, anything but an object is null.
  */
-export function checkPanelScreenAnswer(value, lang = "es", { allowSeries = true, settings } = {}) {
+export function checkPanelScreenAnswer(value, lang = "es", { allowSeries = true, settings, apiVersion } = {}) {
   const dropped = [];
   const v = wire(value);
   const answer = cappedLog((line) => dropped.push(line), "panel", (capped) => {
@@ -3120,12 +3142,13 @@ export function checkPanelScreenAnswer(value, lang = "es", { allowSeries = true,
     }
     const model = settingsModel(settings);
     // Its `ui` operations are read with the rest, as every screen answer's (Task 7i-2).
-    const a = answerOf(kept, lang, capped, allowSeries, model);
+    const a = answerOf(kept, lang, capped, allowSeries, model, apiVersion);
     // PanelSession.go: a theme changes only from the plugin's own full screen.
     if (a.go?.useTheme) { capped("panel: go.useTheme is honoured only on the plugin's own screen, dropped"); a.go = null; }
     if (a.go?.setExperience) { capped("panel: go.setExperience is honoured only on the plugin's own screen, dropped"); a.go = null; }
     // apiVersion 19: the plugin store is reached only from the plugin's own full screen, never from the player.
     if (a.go?.installPlugin) { capped("panel: go.installPlugin is honoured only on the plugin's own screen, dropped"); a.go = null; }
+    if (a.go?.plugin) { capped("panel: go.plugin is honoured only on the plugin's own screen, dropped"); a.go = null; }
     let panel = null;
     const p = opt(v, "panel");
     if (isObj(p)) panel = p;

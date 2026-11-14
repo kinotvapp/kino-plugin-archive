@@ -278,6 +278,58 @@ export function installPluginGoOf(v, bad) {
 }
 
 /**
+ * PluginScreenOutput.pluginGoOf (apiVersion 20): a `go.plugin`'s value, only `repo`, `route`, `args` and `query`. `repo` is a
+ * GitHub `owner/name[/path]` (no URL, no pinned `@ref`; `@HEAD` is the default branch), returned as `address`, the canonical
+ * form. `route` is a go.screen route, `args` an object within the go.screen cap, `query` a string of at most `maxQueryChars`.
+ * Or null with [bad] told the first reason. `args` stays an object here (the app keeps its JSON string).
+ */
+export function pluginGoOf(v, bad) {
+  const P = contract.manifest.screen.goPlugin;
+  const S = contract.manifest.screen.limits;
+  if (v === null || typeof v !== "object" || Array.isArray(v)) { bad("is not an object"); return null; }
+  if (Object.keys(v).some((k) => !P.fields.includes(k))) { bad(`takes only ${P.fields.join(", ")}`); return null; }
+  const address = githubAddressOf(v.repo, P.maxRepoChars);
+  if (address === null) { bad(`repo must be a GitHub owner/name (a sub-path is allowed, a URL or an @ref is not), at most ${P.maxRepoChars} characters`); return null; }
+  const out = { address };
+  const absent = (x) => x === undefined || x === null;
+  if (!absent(v.route)) {
+    if (typeof v.route !== "string" || !GO_ROUTE.test(v.route)) { bad(`route must be 1 to ${S.maxGoRouteChars} letters, digits or . _ ~ -`); return null; }
+    out.route = v.route;
+  }
+  if (!absent(v.args)) {
+    if (typeof v.args !== "object" || Array.isArray(v.args)) { bad("args is not an object"); return null; }
+    if (Buffer.byteLength(JSON.stringify(v.args).replace(/\//g, "\\/"), "utf8") > S.maxGoArgsBytes) { bad(`args is over ${S.maxGoArgsBytes} bytes`); return null; }
+    out.args = v.args;
+  }
+  if (!absent(v.query)) {
+    if (typeof v.query !== "string" || v.query.length > P.maxQueryChars) { bad(`query must be a string of at most ${P.maxQueryChars} characters`); return null; }
+    out.query = v.query;
+  }
+  return out;
+}
+
+/**
+ * PluginAddress.parse(text).canonical for a GitHub `owner/name[/path]` with no URL and no pinned ref, at most [maxChars]
+ * characters; null for anything else.
+ */
+export function githubAddressOf(text, maxChars) {
+  if (typeof text !== "string" || text.length > maxChars || text.includes("://")) return null;
+  let s = text.trim().replace(/\/+$/, "");
+  const at = s.lastIndexOf("@");
+  if (at >= 0) {
+    if (s.slice(at + 1) !== "HEAD") return null;
+    s = s.slice(0, at);
+  }
+  const parts = s.split("/");
+  if (parts.length < 2) return null;
+  const name = parts[1].replace(/\.git$/, "");
+  if (!ADDRESS_OWNER.test(parts[0]) || !ADDRESS_NAME.test(name) || name === "." || name === "..") return null;
+  const path = parts.slice(2);
+  if (path.some((seg) => !ADDRESS_NAME.test(seg) || seg === "." || seg === "..")) return null;
+  return [parts[0], name, ...path].join("/");
+}
+
+/**
  * PluginAddress.bareRepoOf: [text] as a plain GitHub `owner/name` (a `go.installPlugin`'s `repo`, a manifest's `recommends`), case
  * kept, at most [maxChars] characters; null for a URL (anything with `://`), a sub-path, a `@ref` or anything that is no string.
  * A trailing `/` or `.git` is dropped.
@@ -543,6 +595,7 @@ function enhance(json, key, block, current, opts, exports) {
   // apiVersion 20: the web window the person drives, offered to a Kino that has it by a plugin on an older apiVersion.
   if (has(block, "visualBrowser")) candidate.visualBrowser = block.visualBrowser;
   if (has(block, "slot")) candidate.slot = block.slot;
+  if (has(block, "openFrom")) candidate.openFrom = block.openFrom;
   candidate.apiVersion = key;
   const r = validateManifestObject(candidate, opts);
   if (!r.ok) return `${r.field}: ${r.message}`;
@@ -571,6 +624,7 @@ function enhance(json, key, block, current, opts, exports) {
     jobs: r.manifest.jobs || [],
     visualBrowser: has(block, "visualBrowser") ? r.manifest.visualBrowser : current.visualBrowser,
     slot: has(block, "slot") ? r.manifest.slot : current.slot,
+    openFromRoutes: has(block, "openFrom") ? r.manifest.openFromRoutes : current.openFromRoutes,
     enhancementsApplied: [...current.enhancementsApplied, key],
   };
   // Task 18 (G13): the apiVersion the settings list was read at (the block's key when it carried one); kept out of the manifest's
@@ -908,6 +962,19 @@ function validateManifestObject(o, { knownPermissions = contract.permissions } =
       slot = { elements, hasFixed: elements.some((e) => e.mode === "fixed") };
     }
   }
+  // apiVersion 20: the screen routes other plugins' cards may open (PluginManifest.kt openFromRoutes). They are this plugin's own
+  // screens, so the capability is needed; the routes are read like a go.screen route.
+  let openFromRoutes = [];
+  if (o.openFrom !== undefined) {
+    const P = m.openFrom;
+    if (o.apiVersion < P.apiVersion) return bad("openFrom", P.needsApiMessage);
+    if (o.openFrom === null || typeof o.openFrom !== "object" || Array.isArray(o.openFrom)) return bad("openFrom", P.notObjectMessage);
+    if (!caps.includes("screen")) return bad("openFrom", P.needsScreenMessage);
+    const list = o.openFrom[P.routesField];
+    if (!Array.isArray(list) || list.length < 1 || list.length > P.maxRoutes) return bad("openFrom", P.badRoutesMessage);
+    if (!list.every((r) => typeof r === "string" && GO_ROUTE.test(r)) || new Set(list).size !== list.length) return bad("openFrom", P.badRoutesMessage);
+    openFromRoutes = [...list];
+  }
   // apiVersion 9: where the settings go (rows, columns, cards). A list here; validate.mjs and panel.mjs judge the rest.
   if (o.settingsLayout !== undefined && o.apiVersion >= m.settingsLayout.apiVersion && !Array.isArray(o.settingsLayout)) return bad("settingsLayout", 'The "settingsLayout" field must be a list');
   // apiVersion 6: the palette. Format only; the guardrails run where it is used.
@@ -926,7 +993,7 @@ function validateManifestObject(o, { knownPermissions = contract.permissions } =
   // apiVersion 18: the app themes. Format only; resolveAppTheme applies the guardrails.
   let appThemes = [];
   if (o.appThemes !== undefined && o.apiVersion >= m.appThemes.apiVersion) {
-    const parsed = parseAppThemes(o.appThemes);
+    const parsed = parseAppThemes(o.appThemes, o.apiVersion);
     if (!parsed.ok) return bad("appThemes", parsed.message);
     appThemes = parsed.themes;
   }
@@ -1017,7 +1084,7 @@ function validateManifestObject(o, { knownPermissions = contract.permissions } =
   }
   // Below apiVersion 9 the English keys are unknown: dropped here, so nothing downstream (the form, englishCoverage) sees them.
   const settingsOut = o.apiVersion >= contract.settings.english.apiVersion ? o.settings || [] : withoutEnglish(o.settings || []);
-  const out = { ...o, hosts: [...new Set(hosts)], capabilities: caps, permissions: o.permissions || [], settings: settingsOut, insecureHosts, liveStreamHostsAny, streamHostsAny, fetchHostsAny, discoverable, categories, debug, telemetry, browser, browserPages, visualBrowser, section, panel, screen, slot, theme, appThemes, secrets, secretKeyEncodings, catalogOnly };
+  const out = { ...o, hosts: [...new Set(hosts)], capabilities: caps, permissions: o.permissions || [], settings: settingsOut, insecureHosts, liveStreamHostsAny, streamHostsAny, fetchHostsAny, discoverable, categories, debug, telemetry, browser, browserPages, visualBrowser, section, panel, screen, slot, theme, appThemes, secrets, secretKeyEncodings, catalogOnly, openFromRoutes };
   // The parsed `recommends` (deduplicated, as written); none when it declares none.
   if (recommends.length) out.recommends = recommends; else delete out.recommends;
   // Task 8q: the parsed jobs (labels scrubbed, options sorted); none below apiVersion 14 or without `schedule`.
@@ -1946,19 +2013,57 @@ function headersOf(h) {
 }
 
 /**
- * The optional `drm` block, read ONLY for a plugin that declares the capability (`allowDrm`) and
- * when it is the only DRM-shaped key present; any other of `drmKeys` refuses the stream as it
- * always did. Mirrors the app's PluginOutput.drmOf, message for message.
+ * The optional `drm` of a stream: one block, or (apiVersion 24, `allowList`) a list of them, best first. Read ONLY for a
+ * plugin that declares the capability (`allowDrm`) and when it is the only DRM-shaped key present; any other of `drmKeys`
+ * refuses the stream as it always did. A single block that is wrong refuses the stream; inside a list a wrong entry is
+ * dropped (and reported through `drop`), at most `maxOptions` are kept, and a list with none left refuses.
+ * Returns the usable options in order ([] = a clear stream). Mirrors the app's PluginOutput.drmOf, message for message.
  */
-function drmOf(value, check, allowDrm) {
+function drmOf(value, check, allowDrm, allowList, drop) {
   const present = o().drmKeys.filter((k) => k in value);
-  if (present.length === 0) return null;
+  if (present.length === 0) return [];
   if (!allowDrm || present.length !== 1 || present[0] !== o().drm.field) throw new Error("the video has DRM and plugins don't support it");
   const d = value[o().drm.field];
+  if (allowList && Array.isArray(d)) {
+    const options = [];
+    d.forEach((entry, i) => {
+      if (options.length >= o().drm.maxOptions) return;
+      try { options.push(drmOptionOf(entry, check, allowList)); } catch (e) { drop(`drm option ${i} dropped: ${e.message}`); }
+    });
+    if (options.length === 0) throw new Error("the video's DRM is not valid");
+    return options;
+  }
+  return [drmOptionOf(d, check, allowList)];
+}
+
+/** One DRM block (the app's drmOptionOf); throws when it is not usable. */
+function drmOptionOf(d, check, allowClearKey) {
   if (d === null || typeof d !== "object" || Array.isArray(d)) throw new Error("the video's DRM is not valid");
-  if (!o().drm.types.includes(d.type)) throw new Error("the video uses a DRM Kino doesn't support");
-  check(d.licenseUrl, "the video's license");
-  return { type: d.type, licenseUrl: d.licenseUrl, licenseHeaders: headersOf(d.licenseHeaders) };
+  if (d.type === "widevine") {
+    check(d.licenseUrl, "the video's license");
+    return { type: d.type, licenseUrl: d.licenseUrl, licenseHeaders: headersOf(d.licenseHeaders) };
+  }
+  if (d.type === "clearkey" && allowClearKey) {
+    const keys = clearKeysOf(d.keys);
+    if (Object.keys(keys).length === 0) throw new Error("the video's DRM is not valid");
+    return { type: d.type, keys };
+  }
+  throw new Error("the video uses a DRM Kino doesn't support");
+}
+
+/** A ClearKey block's `keys`, id -> key: exactly `hexDigits` hex digits each (an id may be a dashed UUID), lowercased; a bad pair is dropped, at most `maxPairs` kept. */
+function clearKeysOf(keys) {
+  const out = {};
+  if (keys === null || typeof keys !== "object" || Array.isArray(keys)) return out;
+  const ck = o().drm.clearKey;
+  const hex = new RegExp(`^[0-9a-f]{${ck.hexDigits}}$`);
+  for (const name of Object.keys(keys)) {
+    if (Object.keys(out).length >= ck.maxPairs) break;
+    const id = name.replaceAll("-", "").toLowerCase();
+    const key = typeof keys[name] === "string" ? keys[name].toLowerCase() : "";
+    if (hex.test(id) && hex.test(key)) out[id] = key;
+  }
+  return out;
 }
 
 /** PluginOutput.SIGNED_CHANNEL: an inline channel stream that asks for signing. */
@@ -2165,6 +2270,23 @@ export function segmentSkip(segments) {
   return { openingStartMs: opening ? opening.startMs : null, openingEndMs: opening ? opening.endMs : null, endingStartMs: ending ? ending.startMs : null };
 }
 
+/**
+ * A Stream's `subtitles` as the app's PluginOutput.subtitlesOf keeps them. An entry with non-blank `text` (apiVersion 25) is an inline
+ * track and wins over a `url` on the same entry: it needs `format` vtt or srt and at most maxSubtitleTextBytes UTF-8 bytes or it is
+ * dropped, and its url is "" (no host check). Any other entry stays or goes by [sideOk] on its url, as before.
+ */
+function streamSubtitles(value, sideOk) {
+  const out = [];
+  for (const s of (Array.isArray(value) ? value : []).slice(0, o().maxSubtitles)) {
+    if (s && typeof s.text === "string" && s.text.trim()) {
+      if ((s.format !== "vtt" && s.format !== "srt") || Buffer.byteLength(s.text, "utf8") > o().maxSubtitleTextBytes) continue;
+      const lang = typeof s.lang === "string" || typeof s.lang === "number" ? String(s.lang).trim().slice(0, 20) : "";
+      out.push({ lang: lang || "und", url: "", format: s.format, text: s.text });
+    } else if (sideOk(s && s.url, "the subtitle")) out.push(s);
+  }
+  return out;
+}
+
 function subtitleTracks(value, { manifest, servers }, drop) {
   if (!Array.isArray(value)) { drop("subtitles: the answer is not a list"); return []; }
   const check = urlChecker(manifest, servers);
@@ -2256,7 +2378,8 @@ function stream(value, { manifest, servers, allowDrm, liveChannel = false, inlin
   const external = !liveChannel && !inline ? externalOf(value.external, manifest) : null;
   if (external) return { external, headers: {}, subtitles: [], audioTracks: [], expiresInSeconds: 0, drm: null };
   const check = urlChecker(manifest, servers);
-  const drm = drmOf(value, check, allowDrm);
+  const drmOptions = drmOf(value, check, allowDrm, (manifest.apiVersion || 1) >= o().drm.listApiVersion, drop);
+  const drm = drmOptions[0] || null;
   // `liveStreamHosts: "any"` relaxes a live channel's own stream URL only; its subtitles, audio and
   // license stay on the strict rule below. `streamHosts: "any"` on a movie or an episode is the app's
   // broad-video rule (EffectiveHosts.anyPublicVideoHost, the player's own resolve): the URL AND its
@@ -2277,7 +2400,7 @@ function stream(value, { manifest, servers, allowDrm, liveChannel = false, inlin
     try { check(url, what); return true; } catch { return false; }
   };
   const expires = Number.isInteger(value.expiresInSeconds) && value.expiresInSeconds >= o().minExpiresInSeconds && value.expiresInSeconds <= o().maxExpiresInSeconds ? value.expiresInSeconds : 0;
-  const subtitles = (Array.isArray(value.subtitles) ? value.subtitles : []).slice(0, o().maxSubtitles).filter((s) => sideOk(s && s.url, "the subtitle"));
+  const subtitles = streamSubtitles(value.subtitles, sideOk);
   // One URL is one merged child in the app: a repeated URL is kept once, the first wins.
   const audioUrls = new Set();
   const audioTracks = (Array.isArray(value.audioTracks) ? value.audioTracks : []).slice(0, o().maxAudioTracks).filter((a) => {
@@ -2316,7 +2439,7 @@ function stream(value, { manifest, servers, allowDrm, liveChannel = false, inlin
     if (label) rest.label = label;
   }
   const durationMs = Number.isFinite(value.durationMs) && value.durationMs > 0 ? Math.floor(value.durationMs) : 0;
-  const out = { ...rest, headers: headersOf(value.headers), subtitles, audioTracks, expiresInSeconds: expires, drm, ...(alternatives.length ? { alternatives } : {}) };
+  const out = { ...rest, headers: headersOf(value.headers), subtitles, audioTracks, expiresInSeconds: expires, drm, ...(drmOptions.length > 1 ? { drmOptions } : {}), ...(alternatives.length ? { alternatives } : {}) };
   const raw = value[o().skip.field];
   const skip = liveChannel ? null : skipOf(raw, durationMs);
   if (raw !== undefined) {
@@ -2347,7 +2470,7 @@ function byteStream(value, manifest, servers, drop) {
     if (manifest.streamHostsAny) return anyPublic(url);
     try { check(url, what); return true; } catch { return false; }
   };
-  const subtitles = (Array.isArray(value.subtitles) ? value.subtitles : []).slice(0, o().maxSubtitles).filter((s) => sideOk(s && s.url, "the subtitle"));
+  const subtitles = streamSubtitles(value.subtitles, sideOk);
   const audioUrls = new Set();
   const audioTracks = (Array.isArray(value.audioTracks) ? value.audioTracks : []).slice(0, o().maxAudioTracks).filter((a) => {
     if (!sideOk(a && a.url, "the audio")) return false;

@@ -3,7 +3,7 @@
 // enforces (a test in the app pins contract.json to its code).
 //   node sdk/guide-tables.mjs <guide.md>           rewrite every <!-- contract:NAME:start/end --> block
 //   node sdk/guide-tables.mjs <guide.md> --check   exit 1 if a block is out of date
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { contract, kb } from "./contract.mjs";
@@ -78,6 +78,7 @@ const GO_TEXT = {
   syncProvider: "Kino's sync-provider settings (Ajustes ▸ Conectar ▸ Proveedor), where the person picks this plugin; only for a plugin that declares `syncProvider`",
   setExperience: "asks for the light (`\"light\"`: no shadows, no effects, square corners) or the full (`\"full\"`) experience of the whole app; Kino asks the person first and changes nothing without their yes",
   installPlugin: "Kino's own install sheet for `repo` (a plain `owner/name`); nothing installs without the person's own Instalar",
+  plugin: `another plugin's screen at \`route\` with \`args\`, or its search for \`query\`, found by \`repo\` (a GitHub \`owner/name[/path]\`; a URL or an \`@ref\` is dropped); Kino installs it first, after the person's own yes, when it is missing`,
   useTheme: "turns on one of this plugin's own `appThemes` as Apariencia does, or with `theme: null` goes back to Kino's theme while one of its own is active; opens nothing, Kino shows its own toast and calls `screen` again",
 };
 const CONSENTS = () => [
@@ -192,7 +193,7 @@ export const TABLES = {
   })),
   screenGo: () => table(["`go`", "What opens", "Sent from"], S.goShapes.map((g) => {
     if (!GO_TEXT[g]) throw new Error(`guide-tables: no description for the go shape ${g}`);
-    const from = g === "installPlugin" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen (a tap, a submit, the answer to one, a pop-up's button), never a panel; from apiVersion ${S.goInstallPlugin.apiVersion}`
+    const from = g === "installPlugin" || g === "plugin" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen (a tap, a submit, the answer to one, a pop-up's button), never a panel; from apiVersion ${S[g === "plugin" ? "goPlugin" : "goInstallPlugin"].apiVersion}`
       : g === "setExperience" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen (a tap, a submit, the answer to one, a pop-up's button), never a panel; from apiVersion ${S.goSetExperience.apiVersion}`
       : g === "useTheme" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen (a tap, a submit, the answer to one, a pop-up's button), never a panel; from apiVersion ${S.goUseTheme.apiVersion}`
       : g === "titleByIds" || g === "url" || g === "copy" || g === "liveChannel" || g === "syncProvider"
@@ -247,7 +248,7 @@ export function render(text) {
   });
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {
   const [file, flag] = process.argv.slice(2);
   if (!file) {
     console.error("usage: node sdk/guide-tables.mjs <guide.md> [--check]");

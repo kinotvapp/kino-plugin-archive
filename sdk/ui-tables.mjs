@@ -8,7 +8,7 @@
 // (`<a id="..."></a>`) and its props block. A widget the contract adds without a description here fails the generator on
 // purpose, and so does a contract property (layoutProps, fieldProps, styleProps, uiOps, answerFields, goShapes, limits)
 // this file does not describe: the page can never silently fall behind the contract.
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { contract, kb } from "./contract.mjs";
@@ -204,17 +204,20 @@ export const PROPS = {
   titleCard: [
     ["item", "`KinoItem`", "required", "the shape a `home` row returns (`id`, `ref`, `title`, `kind`, `poster`...); a series needs your `episodes` capability"],
     SIZE,
+    ["headers", "`{ Referer?, User-Agent? }`", "none", "additive, no new apiVersion (Kino 0.9.83): the request headers every picture of the node is asked with (each item's poster and backdrop, the hero's image and logo), the same rules as an `Image`'s [headers](#image-headers)"],
   ],
   titleRail: [
     ["title", "string", "required", "the row's heading (`titleEn`)"],
     ["items", "`KinoItem[]`", "required", `1 to ${L.maxListItems} (${L.maxFlatTitles} when drawn all at once)`],
     ["ref", "string", "none", `with it, the row's «Ver más» opens your \`browse\` (at most ${n(L.maxRefChars)} characters)`],
     SIZE,
+    ["headers", "`{ Referer?, User-Agent? }`", "none", "additive, no new apiVersion (Kino 0.9.83): the request headers every picture of the node is asked with (each item's poster and backdrop, the hero's image and logo), the same rules as an `Image`'s [headers](#image-headers)"],
     ...paging(),
   ],
   titleGrid: [
     ["items", "`KinoItem[]`", "required", `1 to ${L.maxListItems} (${L.maxFlatTitles} when drawn all at once)`],
     ["columns", `1 to ${L.maxGridColumns}`, "`3`", ""],
+    ["headers", "`{ Referer?, User-Agent? }`", "none", "additive, no new apiVersion (Kino 0.9.83): the request headers every picture of the node is asked with (each item's poster and backdrop, the hero's image and logo), the same rules as an `Image`'s [headers](#image-headers)"],
     ...paging(),
   ],
   heroCard: [
@@ -222,6 +225,7 @@ export const PROPS = {
     ["text", "string", "none", "`textEn`"],
     ["image", "https URL", "none", "a public https picture"],
     ["logo", "https URL", "none", "additive, no new apiVersion: a title's logo (a public https picture) drawn where the title's text is, when it loads; the text still names it for a screen reader and shows when the logo cannot"],
+    ["headers", "`{ Referer?, User-Agent? }`", "none", "additive, no new apiVersion (Kino 0.9.83): the request headers every picture of the node is asked with (each item's poster and backdrop, the hero's image and logo), the same rules as an `Image`'s [headers](#image-headers)"],
     ["buttons", "button nodes", "none", `at most ${L.maxHeroButtons}`],
     ["h", "a size of the scale", "Kino's (240 dp, 320 on a TV)", "additive, no new apiVersion: the banner's height; a per-size map works (`{ compact: 200, expanded: 240 }`)"],
   ],
@@ -471,6 +475,7 @@ const UI_OP_TEXT = {
   clear: ["`{ clear: key }`", "empties an input"],
   open: ["`{ open: key }`", "opens a declared pop-up (replacing an open one)"],
   close: ["`{ close: key }`", "closes it when it is the one open"],
+  fullscreen: ["`{ fullscreen: true \\| false }`", "immersive mode, not a node: `true` hides Kino's title bar (its close, your screen's name, the bell) and the phone's status and navigation bars for a full-bleed canvas; `false` brings them back. Only your screen toggles it (draw your own way out, e.g. a button with `{ ui: [{ fullscreen: false }] }`); the phone's Back always closes the screen, so the person is never trapped. A restart to a new route resets it. On an older Kino that predates it the operation is an unknown one, ignored, so the screen just stays as it was"],
 };
 
 const ANSWER_TEXT = {
@@ -506,6 +511,7 @@ const GO_FIELDS = {
   syncProvider: "`{ syncProvider: true }`",
   useTheme: `\`{ useTheme: { ${S.goUseTheme.fields.join(", ")} } }\``,
   installPlugin: `\`{ installPlugin: { ${S.goInstallPlugin.fields.join(", ")} } }\``,
+  plugin: `\`{ plugin: { ${S.goPlugin.fields.join(", ")} } }\``,
   setExperience: `\`{ setExperience: ${S.goSetExperience.words.map((w) => `"${w}"`).join(" | ")} }\``,
 };
 const GO_OPENS = {
@@ -525,8 +531,10 @@ const GO_OPENS = {
   useTheme: "turns on one of this plugin's own `appThemes` as Apariencia does, or back to Kino's theme with `theme: null`; Kino shows its own toast",
   setExperience: "asks for the light or the full experience of the whole app; Kino asks the person first and changes nothing without their yes",
   installPlugin: "Kino's own install sheet for `repo` (a plain `owner/name`); nothing installs without the person's own Instalar",
+  plugin: "another plugin's screen at `route` with `args`, or its search for `query`, found by `repo` (a GitHub `owner/name[/path]`)",
 };
-const goFrom = (g) => g === "installPlugin" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen, from apiVersion ${S.goInstallPlugin.apiVersion}`
+const goFrom = (g) => g === "plugin" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen, from apiVersion ${S.goPlugin.apiVersion}`
+  : g === "installPlugin" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen, from apiVersion ${S.goInstallPlugin.apiVersion}`
   : g === "setExperience" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen, from apiVersion ${S.goSetExperience.apiVersion}`
   : g === "useTheme" ? `only the person's own ${S.goUrl.fromTriggers.join(" or ")} on your screen, from apiVersion ${S.goUseTheme.apiVersion}`
   : g === "titleByIds" || g === "url" || g === "copy" || g === "liveChannel" || g === "syncProvider"
@@ -662,7 +670,7 @@ export function coverage(text, screen = S) {
   return out;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {
   const [file, flag] = process.argv.slice(2);
   if (!file) {
     console.error("usage: node sdk/ui-tables.mjs <ui.md> [--check]");

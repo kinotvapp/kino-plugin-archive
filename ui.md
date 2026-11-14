@@ -1068,6 +1068,17 @@ is declared too: a plugin cannot make Kino present a forged page to a site it ne
 `Kino/<version>`. The picture still downloads in Kino (cached, four at a time), not through your code, so there is no size
 limit besides the image cache's. A header that is not valid is dropped and logged.
 
+The cards and the banner take the same `headers` (additive, Kino 0.9.83): on `titleCard`, `titleRail`, `titleGrid` and
+`heroCard` it applies to **every picture of the node** (each item's `poster` and `backdrop`; the hero's `image` and `logo`),
+under the same rules: only for hosts in your manifest's `hosts`, a `Referer` only on a declared host, 1 to 512 characters.
+The headers belong to the node, not to one item. The classic rows (the posters of a `home` row or a search) do not take them yet.
+
+```json
+{ "type": "titleRail", "title": "Nuevos",
+  "items": [{ "id": "m1", "ref": "title/m1", "title": "Un manga", "kind": "movie", "poster": "https://img.mangasite.example/m1.jpg" }],
+  "headers": { "Referer": "https://mangasite.example/" } }
+```
+
 - **TV:** an image is not focused unless it (or what holds it) has an action.
 - **Phone and TV:** the same.
 - **Limits and mistakes:** `http://` and private addresses are refused (without a fallback the node is dropped; with one
@@ -1575,6 +1586,7 @@ event, a `go` or `ui` operations; an item's `open: { screen }` starts your scree
 | --- | --- | --- | --- | --- |
 | `item` | `KinoItem` | required | no | the shape a `home` row returns (`id`, `ref`, `title`, `kind`, `poster`...); a series needs your `episodes` capability |
 | `size` | `small` \| `medium` \| `large` | `medium` | yes | one of Kino's three sizes |
+| `headers` | `{ Referer?, User-Agent? }` | none | no | additive, no new apiVersion (Kino 0.9.83): the request headers every picture of the node is asked with (each item's poster and backdrop, the hero's image and logo), the same rules as an `Image`'s [headers](#image-headers) |
 <!-- ui:props:titleCard:end -->
 
 ```json
@@ -1608,6 +1620,7 @@ screen the look of Kino's own Home.
 | `items` | `KinoItem[]` | required | no | 1 to 500 (60 when drawn all at once) |
 | `ref` | string | none | no | with it, the row's «Ver más» opens your `browse` (at most 4,096 characters) |
 | `size` | `small` \| `medium` \| `large` | `medium` | yes | one of Kino's three sizes |
+| `headers` | `{ Referer?, User-Agent? }` | none | no | additive, no new apiVersion (Kino 0.9.83): the request headers every picture of the node is asked with (each item's poster and backdrop, the hero's image and logo), the same rules as an `Image`'s [headers](#image-headers) |
 | `onEndReached` | `{ event, arg? }` | none | no | sent once when the last item comes into view, again only after your answer drew a longer list (or `loadingMore` went from true to false); never more than once a second |
 | `loadingMore` | boolean | `false` | no | `true` draws Kino's spinner after the items |
 | `done` | boolean | `false` | no | `true` stops asking for more |
@@ -1643,6 +1656,7 @@ Home cards in a grid of `columns` (default 3): a catalogue page, search results.
 | --- | --- | --- | --- | --- |
 | `items` | `KinoItem[]` | required | no | 1 to 500 (60 when drawn all at once) |
 | `columns` | 1 to 8 | `3` | yes |  |
+| `headers` | `{ Referer?, User-Agent? }` | none | no | additive, no new apiVersion (Kino 0.9.83): the request headers every picture of the node is asked with (each item's poster and backdrop, the hero's image and logo), the same rules as an `Image`'s [headers](#image-headers) |
 | `onEndReached` | `{ event, arg? }` | none | no | sent once when the last item comes into view, again only after your answer drew a longer list (or `loadingMore` went from true to false); never more than once a second |
 | `loadingMore` | boolean | `false` | no | `true` draws Kino's spinner after the items |
 | `done` | boolean | `false` | no | `true` stops asking for more |
@@ -1680,6 +1694,7 @@ A section's banner: a big picture, a title, a line and at most two buttons. The 
 | `text` | string | none | no | `textEn` |
 | `image` | https URL | none | no | a public https picture |
 | `logo` | https URL | none | no | additive, no new apiVersion: a title's logo (a public https picture) drawn where the title's text is, when it loads; the text still names it for a screen reader and shows when the logo cannot |
+| `headers` | `{ Referer?, User-Agent? }` | none | no | additive, no new apiVersion (Kino 0.9.83): the request headers every picture of the node is asked with (each item's poster and backdrop, the hero's image and logo), the same rules as an `Image`'s [headers](#image-headers) |
 | `buttons` | button nodes | none | no | at most 2 |
 | `h` | a size of the scale | Kino's (240 dp, 320 on a TV) | yes | additive, no new apiVersion: the banner's height; a per-size map works (`{ compact: 200, expanded: 240 }`) |
 <!-- ui:props:heroCard:end -->
@@ -1924,6 +1939,7 @@ it and a re-render keeps it.
 | `clear` | `{ clear: key }` | empties an input |
 | `open` | `{ open: key }` | opens a declared pop-up (replacing an open one); in an answer it waits for the new tree; dropped in an `onClose` |
 | `close` | `{ close: key }` | closes it when it is the one open |
+| `fullscreen` | `{ fullscreen: true \| false }` | immersive mode, not a node: `true` hides Kino's title bar (its close, your screen's name, the bell) and the phone's status and navigation bars for a full-bleed canvas; `false` brings them back. Only your screen toggles it (draw your own way out, e.g. a button with `{ ui: [{ fullscreen: false }] }`); the phone's Back always closes the screen, so the person is never trapped. A restart to a new route resets it. On an older Kino that predates it the operation is an unknown one, ignored, so the screen just stays as it was |
 <!-- ui:uiOps:end -->
 
 ```json
@@ -2774,6 +2790,7 @@ channel Kino tunes to for a plugin whose player tab joins live channels).
 | [`useTheme`](#go-use-theme) | `{ useTheme: { theme } }` | turns on one of this plugin's own `appThemes` as Apariencia does, or back to Kino's theme with `theme: null`; Kino shows its own toast | only the person's own press or submit on your screen, from apiVersion 18 |
 | [`setExperience`](#go-set-experience) | `{ setExperience: "light" | "full" }` | asks for the light or the full experience of the whole app; Kino asks the person first and changes nothing without their yes | only the person's own press or submit on your screen, from apiVersion 18 |
 | [`installPlugin`](#go-install-plugin) | `{ installPlugin: { repo } }` | Kino's own install sheet for `repo` (a plain `owner/name`); nothing installs without the person's own Instalar | only the person's own press or submit on your screen, from apiVersion 19 |
+| [`plugin`](#go-plugin) | `{ plugin: { repo, route, args, query } }` | another plugin's screen at `route` with `args`, or its search for `query`, found by `repo` (a GitHub `owner/name[/path]`) | only the person's own press or submit on your screen, from apiVersion 20 |
 <!-- ui:go:end -->
 
 > Screenshot slots: `ui-img/navigation-phone.png`, `ui-img/navigation-tv.png` (phone captured, TV pending, see [Screenshots](#screenshots)).
@@ -3033,6 +3050,29 @@ export async function screen() {
   shape), never a single button that tries to install them all: the person decides each one.
 - Only from the person's own press or submit on your screen (a tap, a submit, the answer to one, a pop-up's button): dropped,
   logged, from `open`, a timer, a change, a load-more, a pop-up's `onClose`, a panel or a notice. Below `apiVersion` 19 it is dropped.
+
+<a id="go-plugin"></a>
+### `go.plugin`
+
+From `apiVersion` 20: a button on your own screen that opens another plugin's screen, or its search, from a GitHub repository.
+
+```js
+{ type: "ElevatedButton", labelText: "Ver en MegaPlay", onPressed: { go: { plugin: {
+  repo: "kinotvapp/kino-plugin-megaplay", route: "detail", args: { id: "frieren" }, query: "Frieren" } } } }
+```
+
+- `repo` is a GitHub `owner/name`, with an optional sub-path (`owner/name/plugins/x`), of at most 200 characters. A URL (anything with
+  `://`) or an `@ref` drops the `go`, logged. `route` is a `go.screen` route, `args` a JSON object of at most the `go.screen` cap, and
+  `query` a text of at most 200 characters. Any other field drops the `go`, logged. In the Node kit `args` is an object, as
+  above; the app receives it as a JSON string.
+- What happens, in order: the plugin is not installed, so Kino shows its install sheet and continues once the person installs it;
+  it is 18+ and locked, so nothing opens and Kino shows its own locked toast; it is off, so Kino asks «¿Activar?» and continues if the person accepts; `route` is in that
+  plugin's manifest `openFrom.routes`, so its screen opens with `args`; you sent a `query` and the plugin has a search, so Kino's search
+  opens scoped to it with that `query` (with no `query`, the next step); otherwise its section or screen's default page; with nothing to open, a
+  toast. A route the target did not list is never opened. Which route reaches which content is the target's own business (see
+  [share cards](README.md#share-cards-opening-another-plugins-content-goplugin-and-openfrom-kino-0984)).
+- Only from the person's own press or submit on your screen (a tap, a submit, the answer to one, a pop-up's button): dropped,
+  logged, from `open`, a timer, a change, a load-more, a pop-up's `onClose`, a panel or a notice. Below `apiVersion` 20 it is dropped.
 
 <a id="recommends-installed"></a>
 #### Recommended plugins and `installed` (Kino 0.9.81)
@@ -3386,8 +3426,9 @@ way: an older Kino ignores both properties, and a screen reader uses the buttons
 ```js
 export async function screen({ state }) {
   const page = state.page ?? 0;
+  const pages = state.pages ?? ["Primera página"];
   return { type: "Column", key: "reader", flex: 1, onSwipeLeft: "next", onSwipeRight: "prev",
-    children: [{ type: "Text", text: state.pages[page] }, { type: "Row", children: [
+    children: [{ type: "Text", text: pages[page] ?? "" }, { type: "Row", children: [
       { type: "IconButton", icon: "arrow_back", labelText: "Anterior", onPressed: "prev" },
       { type: "IconButton", icon: "arrow_forward", labelText: "Siguiente", onPressed: "next" } ] }] };
 }

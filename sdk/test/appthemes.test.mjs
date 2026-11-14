@@ -104,7 +104,8 @@ test("appThemes: format refusals match the app's", () => {
     [[theme("aa", { tv: { adjustable: {} } })], /"tv" has an unknown field/],
   ];
   for (const [themes, pattern] of cases) {
-    const r = parseAppThemes(themes);
+    // At apiVersion 18 (below the one that brought the picture) a background image is refused with its own message.
+    const r = parseAppThemes(themes, 18);
     assert.equal(r.ok, false, JSON.stringify(themes));
     assert.match(r.message, pattern);
   }
