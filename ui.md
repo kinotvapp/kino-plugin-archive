@@ -1083,6 +1083,12 @@ The cards and the banner take the same `headers` (additive, Kino 0.9.83): on `ti
 under the same rules: only for hosts in your manifest's `hosts`, a `Referer` only on a declared host, 1 to 512 characters.
 The headers belong to the node, not to one item. The classic rows (the posters of a `home` row or a search) do not take them yet.
 
+```json
+{ "type": "titleRail", "title": "Nuevos",
+  "items": [{ "id": "m1", "ref": "title/m1", "title": "Un manga", "kind": "movie", "poster": "https://img.mangasite.example/m1.jpg" }],
+  "headers": { "Referer": "https://mangasite.example/" } }
+```
+
 <a id="http-pictures"></a>
 
 **http pictures** (additive, no new `apiVersion`, from Kino 0.9.88). Every picture
@@ -1101,16 +1107,11 @@ const logo = channel.logo.startsWith("https://") || kino.screen.httpImages === t
 return { type: "CircleAvatar", ...(logo ? { image: logo } : {}), text: channel.initials, labelText: channel.name };
 ```
 
-```json
-{ "type": "titleRail", "title": "Nuevos",
-  "items": [{ "id": "m1", "ref": "title/m1", "title": "Un manga", "kind": "movie", "poster": "https://img.mangasite.example/m1.jpg" }],
-  "headers": { "Referer": "https://mangasite.example/" } }
-```
-
 - **TV:** an image is not focused unless it (or what holds it) has an action.
 - **Phone and TV:** the same.
-- **Limits and mistakes:** `http://` and private addresses are refused (without a fallback the node is dropped; with one
-  the fallback draws, and a `url` that is present but empty or refused is logged: leave `url` out when there is none). The fallback takes only simple nodes (`Column`, `Row`, `Stack`, `Card`, `Spacer`, `SizedBox`,
+- **Limits and mistakes:** private and local addresses are refused, and so is `http://` on Kino 0.9.87 and older (from
+  Kino 0.9.88 an http picture on a public host draws: [http pictures](#http-pictures)). Without a fallback a refused node
+  is dropped; with one the fallback draws, and a `url` that is present but empty or refused is logged: leave `url` out when there is none. The fallback takes only simple nodes (`Column`, `Row`, `Stack`, `Card`, `Spacer`, `SizedBox`,
   `Divider`, `Text`, `Icon`, `Badge`, `Skeleton`, `Image`) and nothing in it is pressed. Without a fallback a failed
   picture shows Kino's mark.
 
