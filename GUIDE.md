@@ -3005,7 +3005,7 @@ the viewer's own IP.
 
 It is a field of a `live` stream (what `resolve` returns for a live item, or an inline
 `liveChannels[].stream`); on a non-live stream Kino ignores it, so an empty `url` there is refused. The
-stream carries no playable `url` (set it to `""`) and plays as its `mime`; `resolve` returns that Stream
+stream carries no playable `url` (set it to `""`) and always plays as HLS, whatever its `mime`; `resolve` returns that Stream
 itself:
 
 ```js
@@ -3015,7 +3015,7 @@ export async function resolve(ref, options) {
     url: "",                               // ignored; Kino synthesizes the playlist
     mime: "application/vnd.apple.mpegurl",
     clockLive: {
-      template: "http://cdn.example/live/{mc}/{mc}_{seg}.ts",
+      template: "https://cdn.example.com/live/{mc}/{mc}_{seg}.ts",
       mediaCode: "channel_1",              // fills every {mc}
       grid: [4004, 6006],                  // the repeating #EXTINF lattice, in ms
       anchor: { t: 1731800000000, s: 1180000, firstStep: 0 },
@@ -3045,10 +3045,12 @@ The fields (full types in `kino.d.ts`, `KinoClockLive`; ranges in `contract.json
   `[4004, 6006]` sum to 10010).
 - **`window`** — the sliding window Kino emits: `count` segments ending `behind` segments before the
   live edge (a cushion against a half-written newest segment). `count` default `6` (`2..20`), `behind`
-  default `3` (`0..20`).
+  default `3` (`0..20`). Kino may list more than `count` (at most 20) so the player can start safely, and
+  while a probe confirmed the edge in the last 25 minutes the window ends one segment before it (at it
+  with `behind: 0`).
 - **`reanchor`** — robustness: instead of trusting the clock blindly, Kino re-pins the edge by probing
-  real segment URLs around it every `everySec` seconds (`60..21600`, default `1200`), scanning
-  `probeSpan` segments each way (`0..12`, default `4`). Without it Kino uses the defaults: it re-pins every
+  real segment URLs around it every `everySec` seconds (`60..21600`, default `1200`), searching up
+  to 4 × `probeSpan` segments each way, never fewer than 16 (`probeSpan` `0..12`, default `4`). Without it Kino uses the defaults: it re-pins every
   20 minutes anyway, and before the channel starts it checks a few real segments (none answering: the
   channel is not available).
 - **`segWidth`** — zero-pad width for `{seg}` (`0..12`, default `0`), for a CDN that names segments with
@@ -3057,13 +3059,13 @@ The fields (full types in `kino.d.ts`, `KinoClockLive`; ranges in `contract.json
 **Structure vs tuning.** Anything that could mislocate the window or fetch an unintended URL — a bad
 `grid`, a `template` without `{seg}` or with an unknown placeholder, a bad `anchor`, a host-rule failure
 — **refuses** the stream. Every tuning knob (`rate`, `window`, `reanchor`, `segWidth`, `firstStep`) is
-clamped into range and logged, never refusing.
+clamped into range or to its default, silently, never refusing.
 
 **Host rule.** Each concrete segment URL (after substitution) is checked exactly like a live channel's
 `url`: it must be on a declared host, or under
 [`liveStreamHosts: "any"`](#channels-from-any-server-livestreamhosts-apiversion-3) (needs `channels`) or
-[`streamHosts: "any"`](#playing-from-any-server-streamhosts-apiversion-4). `http` is allowed for a live
-channel, never the home network.
+[`streamHosts: "any"`](#playing-from-any-server-streamhosts-apiversion-4). `http` only where a channel's own
+`url` may be http (an `insecureHttp` host, or under one of those `"any"`), never the home network.
 
 **What it ignores.** With `clockLive` present, `url` is ignored, and so are `alternatives`,
 `audioTracks`, `durationMs`, `skip` and `expiresInSeconds` — a clock window has no single URL, length

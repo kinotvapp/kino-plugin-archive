@@ -1079,7 +1079,7 @@ is declared too: a plugin cannot make Kino present a forged page to a site it ne
 limit besides the image cache's. A header that is not valid is dropped and logged.
 
 The cards and the banner take the same `headers` (additive, Kino 0.9.83): on `titleCard`, `titleRail`, `titleGrid` and
-`heroCard` it applies to **every picture of the node** (each item's `poster` and `backdrop`; the hero's `image` and `logo`),
+`heroCard` it applies to **every https picture of the node** (each item's `poster` and `backdrop`; the hero's `image` and `logo`),
 under the same rules: only for hosts in your manifest's `hosts`, a `Referer` only on a declared host, 1 to 512 characters.
 The headers belong to the node, not to one item. The classic rows (the posters of a `home` row or a search) do not take them yet.
 
