@@ -1,4 +1,4 @@
-// TypeScript declarations for Kino plugins (apiVersion 1 to 26; 26 adds to appThemes the painted surfaces, gloss, layout, assets, background image and font; 25 lets a stream's `subtitles` entry carry its own decrypted `text` (with `format`) instead of a `url` (Kino 0.9.86, provisional); 24 lets a stream's `drm` be a list of options and adds the `clearkey` type (Kino 0.9.85, provisional); 23 adds the playerSlot capability (up to three small elements in the top-right corner of the TV player: the playerSlot and playerSlotAction exports and the manifest's slot block); 22 adds the progress capability (kino.progress: how far along the person is in something that is not a video, kept by Kino and read back with `kino.progress.list`; Kino draws nothing from it, the plugin builds its own shelf); 21 adds the files capability (kino.files: files on the person's device, picked by the person, read by ranges and played through a kino-file: address); 20 adds the visualBrowser manifest key (kino.visualBrowser.open: a web window the person sees and drives, on the plugin's own hosts, to sign in or finish a step) and the plugin protocol (the manifest's provides and consumes blocks and kino.plugins.call: one plugin uses the doors another opens, through Kino); 19 adds the lyrics capability (the lyrics(query) export: a song's time-synced or plain lyrics for the music player's overlay); 18 adds the app themes (go.useTheme, go.setExperience, appThemes with price, experience and logo); 17 adds the stats operation of the library capability (kino.library.stats, a month's totals and top titles); 16 adds the coins capability (kino.coins: the person's Kino coins balance, and giving one coin for a post); 15 adds the identity capability (kino.identity.telegram: a per-plugin pseudonym of the person and the signed token that proves it), the notifications capability (kino.notifications: notices in the Home bell), library episodes (the latest season and episode of a watched series) and the pluginStore capability (the plugin is a source of plugins for Kino's store: storeSync, and storeList and storeSearch for a live store); 14 adds the screen capability (screen, screenEvent and the manifest's screen block: a full-screen canvas the plugin builds), library, playerPanelTab, playerControl, room (kino.room, a mailbox hosted on the person's device over the Internet), schedule (background jobs: the manifest's jobs and the job export) and the manifest's enhancements; 13 adds the socket capability (kino.ws, outbound WebSockets) and the byteSource capability (a stream whose bytes the plugin serves through its read export) and the storageLarge capability (a 16 MiB kino.storage for a plugin that keeps a catalog) and the catalog capability (kino.catalog, a searchable SQLite catalog of up to 100,000 items per plugin in a 64 MiB file) and the qrScan capability (kino.qr.scan, the phone's camera scanner for a QR code) and the settings form's qr setting (a QR whose text settingsStatus gives, refreshed every refreshMs) and the kino.crypto operations aesIge, modPow, gunzip, convert and aesIgeVerify and the imageSource capability (a poster, backdrop, still or hero image the plugin serves through its image export, KinoImageRef); 12 adds the syncProvider capability (syncPull, syncPush, syncStatus and the manifest's sync block); 11 adds the externalResolve capability (a stream's `external` hand-off to a resolver app, the manifest's externalResolver) and, from Kino 0.9.66, a stream's advisory `media` and its `portable` universal copy; 10 adds the playlists capability; 9 adds the player panel (panel, panelAction, playerEvent, the manifest's panel and settingsLayout), fetchHosts "any" for hand-written plugins, English setting texts and kino.meta by title; 8 adds the audio item kinds music and podcast; 7 adds tracking and segments; apiVersion 5 only adds the manifest's signature, 6 the plain-plugin SDK: typed and larger secrets, migrate, signed streams, the settings form, debug, telemetry, section, categories, theme and scopedSearch). Reference them from plugin.js
+// TypeScript declarations for Kino plugins (apiVersion 1 to 27; 27 adds the clockLive stream field (KinoStream.clockLive: a clock-enumerated sliding-window live HLS feed Kino synthesizes itself on its local proxy, for live from an open CDN whose segment URLs are enumerable by a media clock; capability-free, live only); 26 adds to appThemes the painted surfaces, gloss, layout, assets, background image and font; 25 lets a stream's `subtitles` entry carry its own decrypted `text` (with `format`) instead of a `url` (Kino 0.9.86, provisional); 24 lets a stream's `drm` be a list of options and adds the `clearkey` type (Kino 0.9.85, provisional); 23 adds the playerSlot capability (up to three small elements in the top-right corner of the TV player: the playerSlot and playerSlotAction exports and the manifest's slot block); 22 adds the progress capability (kino.progress: how far along the person is in something that is not a video, kept by Kino and read back with `kino.progress.list`; Kino draws nothing from it, the plugin builds its own shelf); 21 adds the files capability (kino.files: files on the person's device, picked by the person, read by ranges and played through a kino-file: address); 20 adds the visualBrowser manifest key (kino.visualBrowser.open: a web window the person sees and drives, on the plugin's own hosts, to sign in or finish a step) and the plugin protocol (the manifest's provides and consumes blocks and kino.plugins.call: one plugin uses the doors another opens, through Kino); 19 adds the lyrics capability (the lyrics(query) export: a song's time-synced or plain lyrics for the music player's overlay); 18 adds the app themes (go.useTheme, go.setExperience, appThemes with price, experience and logo); 17 adds the stats operation of the library capability (kino.library.stats, a month's totals and top titles); 16 adds the coins capability (kino.coins: the person's Kino coins balance, and giving one coin for a post); 15 adds the identity capability (kino.identity.telegram: a per-plugin pseudonym of the person and the signed token that proves it), the notifications capability (kino.notifications: notices in the Home bell), library episodes (the latest season and episode of a watched series) and the pluginStore capability (the plugin is a source of plugins for Kino's store: storeSync, and storeList and storeSearch for a live store); 14 adds the screen capability (screen, screenEvent and the manifest's screen block: a full-screen canvas the plugin builds), library, playerPanelTab, playerControl, room (kino.room, a mailbox hosted on the person's device over the Internet), schedule (background jobs: the manifest's jobs and the job export) and the manifest's enhancements; 13 adds the socket capability (kino.ws, outbound WebSockets) and the byteSource capability (a stream whose bytes the plugin serves through its read export) and the storageLarge capability (a 16 MiB kino.storage for a plugin that keeps a catalog) and the catalog capability (kino.catalog, a searchable SQLite catalog of up to 100,000 items per plugin in a 64 MiB file) and the qrScan capability (kino.qr.scan, the phone's camera scanner for a QR code) and the settings form's qr setting (a QR whose text settingsStatus gives, refreshed every refreshMs) and the kino.crypto operations aesIge, modPow, gunzip, convert and aesIgeVerify and the imageSource capability (a poster, backdrop, still or hero image the plugin serves through its image export, KinoImageRef); 12 adds the syncProvider capability (syncPull, syncPush, syncStatus and the manifest's sync block); 11 adds the externalResolve capability (a stream's `external` hand-off to a resolver app, the manifest's externalResolver) and, from Kino 0.9.66, a stream's advisory `media` and its `portable` universal copy; 10 adds the playlists capability; 9 adds the player panel (panel, panelAction, playerEvent, the manifest's panel and settingsLayout), fetchHosts "any" for hand-written plugins, English setting texts and kino.meta by title; 8 adds the audio item kinds music and podcast; 7 adds tracking and segments; apiVersion 5 only adds the manifest's signature, 6 the plain-plugin SDK: typed and larger secrets, migrate, signed streams, the settings form, debug, telemetry, section, categories, theme and scopedSearch). Reference them from plugin.js
 // with `/// <reference path="./kino.d.ts" />` for editor help; Kino itself runs plain JavaScript.
 // The numbers in the comments come from contract.json, which is authoritative. The app checks that
 // every `kino` member declared here exists in its runtime and nothing else does (KinoDtsTest).
@@ -324,6 +324,88 @@ interface KinoStream {
    * stream is likely not playable as it is. See the External Source Resolver guide.
    */
   portable?: { url: string; mime?: "application/x-mpegURL" | "application/vnd.apple.mpegurl" };
+  /**
+   * apiVersion 27, `live` streams only, capability-free: a sliding-window live HLS feed whose MPEG-TS/fMP4 segment URLs
+   * are enumerable from a media clock, so Kino SYNTHESIZES the `.m3u8` itself on its own local proxy and recomputes the
+   * window on every player playlist-refresh -- WITHOUT any plugin call while it plays and without ever fetching a
+   * playlist from the CDN. Every specific (CDN template, channel code, duration lattice, clock, anchor, window) is
+   * plugin-supplied data, so ANY plugin uses it with ITS own CDN; nothing is hardcoded. The player then downloads the
+   * segments the synthesized playlist lists straight from the CDN (each viewer from its own IP).
+   *
+   * When `clockLive` is present `url` is IGNORED (as with `external`), and `drm`, `signing`/`signContext`/
+   * `alternateHosts`, `external`, `alternatives`, `audioTracks`, `durationMs`, `skip` and `expiresInSeconds` are ignored
+   * next to it (a clock window has no single URL, fixed length or expiry). Valid ONLY on a `live` stream (resolve() of a
+   * `live` item, or an inline liveChannels[].stream); on a non-live stream it refuses. `headers` and `subtitles` still
+   * apply to every synthesized request. Each concrete segment URL (after substitution) is checked exactly like `url`
+   * against the plugin's live host grant (`liveStreamHosts: "any"` -- which needs `channels` -- or `streamHosts: "any"`,
+   * or a declared host; http is allowed for a live channel, never the LAN). An older Kino ignores `clockLive` and, finding
+   * `url` empty, refuses the stream: a plugin targeting older apps must also give a real `url` or gate on `kino.apiVersion`.
+   */
+  clockLive?: KinoClockLive;
+}
+
+/**
+ * apiVersion 27: the parameters Kino needs to synthesize a clock-enumerated live HLS playlist (see `KinoStream.clockLive`).
+ * Kino computes, for wall-clock `now`: `D(k) = Σ grid[(firstStep+i) mod grid.length]` (media-ms from segment `s` to `s+k`,
+ * `k<0` walks the lattice backward); segment `s+k` begins at wall time `anchor.t + D(k)·(1000/rate)`; the live index is
+ * `anchor.s + max{k : that time ≤ now}`; the emitted window is the indices `[live−behind−count+1 … live−behind]`, each line
+ * `#EXTINF:grid[phase]/1000`, `#EXT-X-MEDIA-SEQUENCE` a monotonic per-segment ordinal, `#EXT-X-TARGETDURATION =
+ * ceil(max(grid)/1000)`, no `#EXT-X-ENDLIST`. With `reanchor`, Kino replaces the predicted edge with the one it probes.
+ * Parts that could mislocate the window or fetch an unintended URL REFUSE the stream (bad `grid`, `template` without `{seg}`,
+ * an unknown placeholder, a bad `anchor`, a host-rule failure); tuning knobs (`rate`, `reanchor`, `window`, `segWidth`,
+ * `firstStep`) are clamped/defaulted and logged, never refusing.
+ */
+interface KinoClockLive {
+  /**
+   * The segment-URL template. `{seg}` (the integer segment number) is REQUIRED and may repeat; `{mc}` (the `mediaCode`)
+   * is optional and may repeat. e.g. `"http://cdn.example.com/live/{mc}/{mc}_{seg}.ts"`. At most 2048 characters. No `{seg}`,
+   * or any other `{…}` placeholder, REFUSES the stream (a typo must never be fetched literally).
+   */
+  template: string;
+  /**
+   * Substituted for every `{mc}`. Required when the template uses `{mc}`, ignored otherwise. Pattern
+   * `^[A-Za-z0-9._~-]{1,128}$` (the live-channel code shape: a safe token, never a slash, path segment or host, so it
+   * cannot inject a new host or traverse the path).
+   */
+  mediaCode?: string;
+  /**
+   * The repeating lattice of per-segment durations in ms, e.g. `[4004, 6006]`: a segment at lattice-phase `p` lasts
+   * `grid[p]` ms and the phase advances `p → (p+1) mod grid.length` each segment. 1 to 16 entries, each a finite integer
+   * in 200..60000, with a positive sum. A missing, empty or bad grid REFUSES the stream (the `#EXTINF` durations and the
+   * valid segment numbers would be unknowable).
+   */
+  grid: number[];
+  /**
+   * Media-clock speed: ms of media advanced per 1000 ms of wall clock. Default 1000 (realtime); clamped to 500..2000.
+   * Lets the window track real time when `Σ grid` is not an exact multiple of a second (e.g. the NTSC 1001/1000 drift that
+   * makes `[4004, 6006]` sum to 10010). A non-number is dropped to the default and logged.
+   */
+  rate?: number;
+  /**
+   * Pins the clock to the segment lattice: at wall-clock epoch `t` (ms, UTC) the segment numbered `s` begins, sitting at
+   * lattice-phase `firstStep` (0-based index into `grid`, default 0). `t` and `s` are REQUIRED; a missing or bad anchor
+   * REFUSES the stream (the live edge cannot be located). `firstStep` out of range is dropped to 0 and logged.
+   */
+  anchor: { t: number; s: number; firstStep?: number };
+  /**
+   * Robustness: instead of trusting the clock blindly, Kino re-pins the live edge by probing real segment URLs around its
+   * predicted edge every `everySec` seconds, scanning up to `probeSpan` segments each way, to absorb device↔CDN clock skew
+   * and keep latency honest. Omit the whole object to trust the clock exactly. Both are clamped, never refusing:
+   * `everySec` 60..21600 (default 1200, a re-pin about every 20 min), `probeSpan` 0..12 (default 4; 0
+   * keeps the periodic re-pin but probes only the estimated edge).
+   */
+  reanchor?: { everySec?: number; probeSpan?: number };
+  /**
+   * The sliding window Kino emits: `count` segments ending `behind` segments before the computed live edge (a latency
+   * cushion against half-written newest segments). `count` default 6 (clamped 2..20), `behind` default 3 (clamped 0..20).
+   * Clamped and logged, never refusing.
+   */
+  window?: { count?: number; behind?: number };
+  /**
+   * Optional zero-pad width for `{seg}` (0..12, default 0 = no padding) so `{seg}` renders e.g. `"000042"` when the CDN
+   * names segments with fixed-width indices. A bad value is dropped to 0 and logged.
+   */
+  segWidth?: number;
 }
 
 /**
@@ -1551,7 +1633,8 @@ interface KinoScreenTextRules extends KinoScreenFieldRules { minLength?: number;
 /**
  * Kino 0.9.83, additive (no new apiVersion; an older Kino asks for the picture without them): the request headers of an `Image`'s
  * `url`, for a site that serves its pictures only to requests that carry its own page as `Referer` (and a browser `User-Agent`).
- * Only these two names, each a text of 1 to 512 characters. They need an https `url`, and are sent only when the picture's host
+ * Only these two names, each a text of 1 to 512 characters. They need an https `url` (an http picture, which a Kino with
+ * `kino.screen.httpImages` draws, never takes them), and are sent only when the picture's host
  * is one of your manifest's `hosts` (a `*.` pattern counts); a `Referer` on a host you did not declare is left out. Without a
  * `User-Agent` Kino sends `Kino/<version>`. A header that is not valid is dropped and logged (Registro).
  *
@@ -1599,9 +1682,12 @@ type KinoScreenNode =
   | (KinoScreenBase & { type: "Text"; text?: string; textEn?: string; style?: KinoScreenResponsive<"hero" | "h1" | "h2" | "h3" | "h4" | "h5" | "p" | "caption" | "label">; maxLines?: KinoScreenResponsive<number>; bold?: KinoScreenResponsive<boolean>; time: number; timeFormat?: "relative" | "clock" | "countdown" })
   /**
    * `fallback` (apiVersion 14): one node drawn in the image's box, at its size, when the picture fails to load or there is
-   * no `url` (with a fallback, an image whose `url` is missing or not https on a public host is kept and draws it). It may
+   * no `url` (with a fallback, an image whose `url` is missing or not an address Kino may load is kept and draws it). It may
    * hold only Column, Row, Stack, Card, Spacer, SizedBox, Divider, Text, Icon, Badge, Skeleton and Image, at any depth, and
    * nothing in it is pressed (`onTap`/`onLongPress` there are ignored). Without one a failed picture shows Kino's mark.
+   * `url`: https on a public host, a `data:image/...;base64,` picture, or (Kino 0.9.88, additive: check
+   * `kino.screen.httpImages === true`) http on a public host by a poster's rule, never the home network; an older Kino drops
+   * an http one (the fallback draws).
    */
   | (KinoScreenBase & { type: "Image"; url?: string; aspect?: KinoScreenResponsive<"16:9" | "2:3" | "1:1" | "banner" | `${number}:${number}`>; alt?: string; altEn?: string; fallback?: KinoScreenNode; fit?: KinoScreenResponsive<"cover" | "contain" | "width">; focus?: KinoScreenResponsive<"top" | "center" | "bottom">; headers?: KinoScreenImageHeaders })
   | (KinoScreenBase & { type: "Icon"; name: KinoIconName })
@@ -1652,8 +1738,8 @@ type KinoScreenNode =
   | (KinoScreenBase & { type: "TabBar"; tabs: KinoScreenOption[]; value?: string; onChanged?: KinoScreenAction; /** additive, no new apiVersion: `false` takes away the line under the tabs (default `true`) */ divider?: boolean })
   | (KinoScreenBase & { type: "emptyState" | "errorState"; title: string; titleEn?: string; text?: string; textEn?: string; icon?: KinoIconName })
   // Kino's own components: data only, drawn with Home's cards and rows. Items are what `home` rows return (KinoItem),
-  // read by the same rules (a series needs the episodes capability; posters and backdrops https only, else Kino's
-  // placeholder); 18+ items show only while the 18+ code is unlocked. At most 1000 titles per tree, and at most 60 in a
+  // read by the same rules (a series needs the episodes capability; posters and backdrops https, or http on a public host
+  // where `kino.screen.httpImages` is true, else Kino's placeholder); 18+ items show only while the 18+ code is unlocked. At most 1000 titles per tree, and at most 60 in a
   // grid inside a scroll, list or pop-up, or a rail inside a horizontal scroll (drawn all at once there).
   /** One Home poster card; without `onTap` it opens the title's page (`go: { title: { ref, kind } }`). */
   | (KinoScreenBase & { type: "titleCard"; item: KinoItem; size?: KinoScreenResponsive<KinoScreenCardSize>; headers?: KinoScreenImageHeaders })
@@ -1661,7 +1747,10 @@ type KinoScreenNode =
   | (KinoScreenBase & KinoScreenPaging & { type: "titleRail"; title: string; titleEn?: string; items: KinoItem[]; ref?: string; size?: KinoScreenResponsive<KinoScreenCardSize>; headers?: KinoScreenImageHeaders })
   /** Home cards in a grid (default 3 columns), 1..500 items. */
   | (KinoScreenBase & KinoScreenPaging & { type: "titleGrid"; items: KinoItem[]; columns?: KinoScreenResponsive<number>; headers?: KinoScreenImageHeaders })
-  /** A section's banner: title, text, an https image and at most 2 buttons. */
+  /**
+   * A section's banner: title, text, an image and a title `logo` (each https on a public host, or http on one where
+   * `kino.screen.httpImages` is true: an older Kino drops an http one) and at most 2 buttons.
+   */
   | (KinoScreenBase & { type: "heroCard"; title: string; titleEn?: string; text?: string; textEn?: string; image?: string; logo?: string; headers?: KinoScreenImageHeaders; buttons?: ((KinoScreenButton & { type: "ElevatedButton" | "TextButton" | "IconButton" }) | (KinoScreenButton & { type: "Button"; variant?: KinoScreenResponsive<"primary" | "secondary" | "text" | "icon"> }))[] })
   /**
    * A pop-up declared in the tree (`key` required), drawn only once a `{ open: key }` ui operation opens it. One pop-up at
@@ -1781,7 +1870,10 @@ type KinoScreenNode =
    * is one press and one TV stop; `selected` (with an `onTap`) fills it with primaryContainer.
    */
   | (KinoScreenBase & { type: "ListTile"; title: string; titleEn?: string; subtitle?: string; subtitleEn?: string; leading?: KinoScreenNode; trailing?: KinoScreenNode; dense?: KinoScreenResponsive<boolean> })
-  /** Task 17: a circle with a picture, else initials (at most 3), else an icon; `radius` 12..64 dp (default 20). No `borderRadius`. */
+  /**
+   * Task 17: a circle with a picture (`image`: https on a public host, or http on one where `kino.screen.httpImages` is true),
+   * else initials (at most 3), else an icon; `radius` 12..64 dp (default 20). No `borderRadius`.
+   */
   | (KinoScreenBase & { type: "CircleAvatar"; image?: string; text?: string; textEn?: string; icon?: KinoIconName; radius?: KinoScreenResponsive<number>; backgroundColor?: KinoScreenColorRole; labelText?: string; labelTextEn?: string })
   /**
    * Task 17: pages (at most 24) swiped across on a phone, Left and Right on a TV, Kino's dots under them; `onPageChanged`'s
@@ -2232,6 +2324,17 @@ interface KinoPlugin {
   /** `options.retry` (apiVersion 6) only when Kino resolves again after the origin refused your stream. `attempt` is 1 to 3; `status` is the origin's HTTP status when Kino heard one. */
   resolve(ref: string, options?: { retry?: { reason: "conflict" | "expired"; attempt: number; status?: 401 | 403 | 409 } }): Promise<KinoStream | KinoPluginByteStream>;
   /**
+   * Optional, any apiVersion (additive: Kino 0.9.88 is the first to call it; an older one never does).
+   * Called after the person stayed about 0.3 s on one of your title pages, with the very `ref` your `resolve` gets for
+   * what its play button would start (a movie, an episode or a lone track; never a series or a live channel), so you can
+   * warm what that `resolve` will need (a session, an authorization). The answer is ignored, and so is a failure: pressing
+   * play calls `resolve` as always. A background call of 15 s (never "No responde"; a `kino.fetch` that would need the
+   * person to approve a host fails instead of asking), at most once every 5 minutes per `ref` and 6 a minute per plugin. Never called beside
+   * `"resolveAhead": true` (Kino resolves ahead instead), `catalogOnly` or `browser`. Must not start or count a play, nor
+   * spend anything of the person's (a quota, a trial, a free play).
+   */
+  prepare?(ref: string): Promise<unknown>;
+  /**
    * apiVersion 13, required with "byteSource". Kino calls it to play a `{ source: "plugin" }` stream: `handle` is the one
    * you returned, `offset` is a multiple of 4096, `length` is at most 1048576 (1 MiB). Answer with the bytes of that range,
    * base64-encoded; fewer than `length` only at the end of the data.
@@ -2458,7 +2561,7 @@ interface KinoSegmentSource { segments: KinoSegmentsFn; subtitles?: KinoSubtitle
  * on Kino 0.9.53 and older too, keep declaring and exporting `resolve` (throw `kino.error("not_found", …, { userMessage })`)
  * and declare `search` or `home`: those apps ignore the field and require both.
  */
-interface KinoCatalogOnlyPlugin extends Omit<KinoPlugin, "resolve" | "sign" | "liveCategories" | "liveChannels" | "liveSearch" | "guide"> {
+interface KinoCatalogOnlyPlugin extends Omit<KinoPlugin, "resolve" | "sign" | "prepare" | "liveCategories" | "liveChannels" | "liveSearch" | "guide"> {
   /** Only for Kino 0.9.53 and older (which require it): never called from Kino 0.9.54 on. */
   resolve?: KinoPlugin["resolve"];
   subtitles?: KinoSubtitlesFn;
@@ -3146,9 +3249,11 @@ interface KinoIdentity {
   /**
    * The gate token Kino's bot signed for this device (`base64url(payload).base64url(Ed25519 signature)`). It still carries the
    * Telegram account, so your server can verify it with the bot's public key; a per-audience token from the bot is the
-   * planned fix. A credential: never log or show it.
+   * planned fix. A credential: never log or show it. Present only for a plugin signed with one of contract.json
+   * `kinoIdentity.tokenAuthors` (`07DA-B67F-2ACF-B4D3`, Kino's own; `E04E-EA25-1A34-290E`, a second author key Kino trusts like its own, from
+   * Kino 0.9.88); any other author gets the `id` and, with a challenge, the attestation, but never the token.
    */
-  token: string;
+  token?: string;
   /** With a challenge: the public key (X.509 SubjectPublicKeyInfo DER, base64url without padding) of Kino's key for your plugin on this install. */
   deviceKey?: string;
   /**
@@ -3446,6 +3551,13 @@ declare namespace kino {
    * person approved its red consent line. `false` otherwise; `undefined` on an older Kino (keep your own fallback).
    */
   const fetchAnyHost: boolean | undefined;
+  /**
+   * Your plugin's FEATURE apiVersion on this Kino: your manifest's `apiVersion`, or the highest key of your
+   * `enhancements` this Kino applied, whichever is higher. A feature gated on it (such as `clockLive`, apiVersion 27)
+   * is on exactly when this is high enough, so you can keep a lower base for older Kino and still use it here.
+   * `undefined` on a Kino before this field: such a Kino reads those features from your base apiVersion only.
+   */
+  const pluginApiVersion: number | undefined;
   /**
    * apiVersion 17: whether Kino's own row of one of the plugin's jobs is on, so a screen knows whether to ask (`enableJob`). Only
    * inside `screen` and `screenEvent`; anywhere else, a job included, it throws `not_allowed`. Undefined below apiVersion 17.
@@ -3848,6 +3960,14 @@ declare namespace kino {
     const names: readonly string[];
     const widgets: readonly string[];
     const version: number;
+    /**
+     * Kino 0.9.88, additive, no new apiVersion: `true` when this Kino draws a screen's
+     * pictures over http too (an `Image`'s `url`, a `heroCard`'s `image` and `logo`, a `CircleAvatar`'s `image`, a title's
+     * `poster` and `backdrop`), on a public host by a poster's rule (never the home network, a private IP address or a name
+     * without a dot), so an IPTV panel's http channel logos show. `undefined` on an older Kino, which keeps them https-only:
+     * there, send an https address or nothing. Their `headers` still go only with an https picture. The Node kit says `true`.
+     */
+    const httpImages: true | undefined;
   }
 
   /**

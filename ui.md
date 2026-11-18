@@ -528,7 +528,8 @@ export async function screenEvent({ name, value }) {
   Kino's title bar. Entering the bar, from above, below or beside, lands on the selected tab. The same for `Chips`.
 - **Phone and TV:** a body under the screen's first `TabBar` (anywhere: a header `Row` too) that is a `Scroll`, a
   `ListView` or a grid of titles with a `key` of yours keeps its scroll per tab: keyed per tab (`newsBody`,
-  `settingsBody`) or not, coming back to a tab finds it where the person left it.
+  `settingsBody`) or not, coming back to a tab finds it where the person left it. A `Scaffold`'s
+  [`NavigationBar`](#navigation-bar) does the same per destination.
 - **Phone and TV:** a row of tabs on both.
 - **Limits and mistakes:** reading `state.inputs.<key>` for a tab gives nothing; a `TabBar` with no valid tab is dropped.
 
@@ -777,6 +778,13 @@ badge? }`; more are dropped, fewer than two drop the bar, both logged). A phone 
 bottom row of focusable items with Kino's ring. A press on another item sends `onChanged` with the item's `key` as `value`;
 like a `TabBar`'s, the picked item is not in `state.inputs`: keep it in your state and draw the matching body.
 
+**Phone and TV:** each destination keeps its place, as each tab of a `TabBar` does. A `Scroll`, a `ListView` (with `columns`
+too), a `titleGrid` or a `titleRail` with a `key` of yours in the `Scaffold`'s `body` (the body itself, or stacked in a
+`Column` of it, under a `TabBar` of that destination too) keeps its scroll per destination (`value`) and key for the screen's
+session: going to another destination and coming back finds it where the person left it, and a destination never opens at
+another one's offset. A key you change on purpose (the category and the page in it) opens at the top; the same key finds its
+place again. A node with no key of yours (Kino makes one) keeps nothing. Nothing to declare, no new `apiVersion`.
+
 <!-- ui:props:navigationBar:start -->
 | Property | Type | Default | Per size | Notes |
 | --- | --- | --- | --- | --- |
@@ -1013,7 +1021,8 @@ its tail corner small:
 <a id="image"></a>
 ### Image
 
-A picture from a public https address (no host declaration needed, as for every image in Kino). `aspect` fixes the box's
+A picture from a public https address (no host declaration needed, as for every image in Kino), or a public http one on a
+Kino that says `kino.screen.httpImages` ([http pictures](#http-pictures)). `aspect` fixes the box's
 shape; `fallback` is one node drawn in that box when the picture fails or there is no `url`, so a broken feed never shows
 a hole.
 
@@ -1022,12 +1031,12 @@ a hole.
 <!-- ui:props:image:start -->
 | Property | Type | Default | Per size | Notes |
 | --- | --- | --- | --- | --- |
-| `url` | https URL | required without `fallback` | no | a public https host (no declaration needed), or `data:image/png|jpeg|webp|gif;base64,…` of at most ${n(S.dataImage.maxChars)} characters (a picture you hold yourself, such as a book's cover; an older Kino draws the fallback); with a `fallback`, no `url` draws the fallback (an empty or refused one too, logged) |
+| `url` | URL | required without `fallback` | no | a public https host (no declaration needed), http on a public host where `kino.screen.httpImages` ([http pictures](#http-pictures)), or `data:image/png|jpeg|webp|gif;base64,…` of at most 200,000 characters (a picture you hold yourself, such as a book's cover; an older Kino draws the fallback); with a `fallback`, no `url` draws the fallback (an empty or refused one too, logged) |
 | `alt` | string | none | no | what a screen reader says (`altEn` the English one) |
 | `aspect` | `16:9` \| `2:3` \| `1:1` \| `banner` \| `w:h` | the picture's own | yes | the box's shape; `w:h` is any width over height from 0.2 to 5, like `1.4:1` or `900:1300` |
 | `fit` | `cover` \| `contain` \| `width` | `cover` | yes | how the picture sits in its box: `cover` fills and crops, `contain` shows all of it, `width` takes the width and the picture's own height (the `aspect`, or 2:3, holds its place until it loads) |
 | `focus` | `top` \| `center` \| `bottom` | `center` | yes | the part of the picture that stays when `cover` crops it |
-| `headers` | `{ Referer?, User-Agent? }` | none | no | the request headers the picture is asked with, for a site that answers only to its own page: only `Referer` (an https address) and `User-Agent`, each a text of up to 512 characters; sent only when the picture's host is in your manifest's `hosts` (and so is the Referer's); an older Kino asks without them ([Pictures that need a Referer](#image-headers)) |
+| `headers` | `{ Referer?, User-Agent? }` | none | no | the request headers the picture is asked with, for a site that answers only to its own page: only `Referer` (an https address) and `User-Agent`, each a text of up to 512 characters; sent only with an https picture whose host is in your manifest's `hosts` (and so is the Referer's), never with an http one; an older Kino asks without them ([Pictures that need a Referer](#image-headers)) |
 | `fallback` | node | none | no | drawn in the image's box when the picture fails or there is no `url`: only `Column`, `Row`, `Stack`, `Card`, `Spacer`, `Divider`, `Text`, `Icon`, `Badge`, `Skeleton`, `Image`, at any depth, never pressed |
 <!-- ui:props:image:end -->
 
@@ -1062,8 +1071,9 @@ site wants:
   "headers": { "Referer": "https://mangasite.example/", "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126 Mobile Safari/537.36" } }
 ```
 
-Only `Referer` (an https address) and `User-Agent` are taken, each a text of 1 to 512 characters. They are sent **only when the
-picture's host is one of your manifest's `hosts`** (a `*.example.com` pattern counts), and the `Referer` only when its own host
+Only `Referer` (an https address) and `User-Agent` are taken, each a text of 1 to 512 characters. They need an https `url` (an
+http picture is always asked without them) and are sent **only when the picture's host is one of your manifest's `hosts`**
+(a `*.example.com` pattern counts), and the `Referer` only when its own host
 is declared too: a plugin cannot make Kino present a forged page to a site it never named. Without a `User-Agent` Kino sends
 `Kino/<version>`. The picture still downloads in Kino (cached, four at a time), not through your code, so there is no size
 limit besides the image cache's. A header that is not valid is dropped and logged.
@@ -1072,6 +1082,24 @@ The cards and the banner take the same `headers` (additive, Kino 0.9.83): on `ti
 `heroCard` it applies to **every picture of the node** (each item's `poster` and `backdrop`; the hero's `image` and `logo`),
 under the same rules: only for hosts in your manifest's `hosts`, a `Referer` only on a declared host, 1 to 512 characters.
 The headers belong to the node, not to one item. The classic rows (the posters of a `home` row or a search) do not take them yet.
+
+<a id="http-pictures"></a>
+
+**http pictures** (additive, no new `apiVersion`, from Kino 0.9.88). Every picture
+of a screen may also be **http on a public host**, by exactly a poster's rule in Home: an `Image`'s `url`, a `heroCard`'s
+`image` and `logo`, a `CircleAvatar`'s `image`, and each item's `poster` and `backdrop` on `titleCard`, `titleRail` and
+`titleGrid`. IPTV panels hand out their channel logos over http, so a channel grid shows them instead of initials. Never the
+home network, a private, local or reserved IP address, `localhost`, a local name, nor (over http) a name without a dot:
+those are still dropped, logged. Nothing else loosens: `headers` go only with an https picture, a link (`go.url`) stays
+https-only, a `data:` picture keeps its own rule. Kino 0.9.87 and older keep a screen https-only and drop an http picture
+(an `Image` draws its `fallback`, a `CircleAvatar` its initials, a banner has no picture, a card Kino's placeholder), so
+check the flag first:
+
+```js
+// An older Kino drops an http logo: leave it out there and the initials show.
+const logo = channel.logo.startsWith("https://") || kino.screen.httpImages === true ? channel.logo : undefined;
+return { type: "CircleAvatar", ...(logo ? { image: logo } : {}), text: channel.initials, labelText: channel.name };
+```
 
 ```json
 { "type": "titleRail", "title": "Nuevos",
@@ -1221,15 +1249,15 @@ export async function screen({ state }) {
 <a id="circle-avatar"></a>
 ### CircleAvatar
 
-Flutter's `CircleAvatar` (Task 17): a circle of `radius` dp in a colour role holding a picture (https, through Kino's own
-image pipeline and host rules), else initials (at most three characters), else an icon (Kino's person by default). A picture
+Flutter's `CircleAvatar` (Task 17): a circle of `radius` dp in a colour role holding a picture (https, or http where
+`kino.screen.httpImages` says so: [http pictures](#http-pictures); through Kino's own image pipeline and host rules), else initials (at most three characters), else an icon (Kino's person by default). A picture
 that fails shows the initials. It is always a circle: it takes no `borderRadius` (its `radius` is a number). A screen reader
 says its `labelText`, else its initials.
 
 <!-- ui:props:avatar:start -->
 | Property | Type | Default | Per size | Notes |
 | --- | --- | --- | --- | --- |
-| `image` | https URL | none | no | a public https picture, through Kino's image pipeline; when it fails, the initials |
+| `image` | URL | none | no | a public https picture, or http on a public host where `kino.screen.httpImages` ([http pictures](#http-pictures)), through Kino's image pipeline; when it fails, the initials |
 | `text` | string | none | no | initials, at most 3 characters (`textEn`) |
 | `icon` | a Kino icon name | `person` | no | without a picture or initials |
 | `radius` | 12 to 64 (dp) | `20` | yes | always a circle: a `CircleAvatar` takes no `borderRadius` |
@@ -1584,9 +1612,9 @@ event, a `go` or `ui` operations; an item's `open: { screen }` starts your scree
 <!-- ui:props:titleCard:start -->
 | Property | Type | Default | Per size | Notes |
 | --- | --- | --- | --- | --- |
-| `item` | `KinoItem` | required | no | the shape a `home` row returns (`id`, `ref`, `title`, `kind`, `poster`...); a series needs your `episodes` capability |
+| `item` | `KinoItem` | required | no | the shape a `home` row returns (`id`, `ref`, `title`, `kind`, `poster`...); a series needs your `episodes` capability; `poster` and `backdrop` https, or http on a public host where `kino.screen.httpImages` ([http pictures](#http-pictures)) |
 | `size` | `small` \| `medium` \| `large` | `medium` | yes | one of Kino's three sizes |
-| `headers` | `{ Referer?, User-Agent? }` | none | no | additive, no new apiVersion (Kino 0.9.83): the request headers every picture of the node is asked with (each item's poster and backdrop, the hero's image and logo), the same rules as an `Image`'s [headers](#image-headers) |
+| `headers` | `{ Referer?, User-Agent? }` | none | no | additive, no new apiVersion (Kino 0.9.83): the request headers every https picture of the node is asked with (each item's poster and backdrop, the hero's image and logo; never an http one), the same rules as an `Image`'s [headers](#image-headers) |
 <!-- ui:props:titleCard:end -->
 
 ```json
@@ -1602,8 +1630,8 @@ export async function screen() {
 
 - **TV:** focused like Home's cards.
 - **Phone and TV:** Home's own card on each.
-- **Limits and mistakes:** read by Home's rules: a `series` needs your `episodes` capability, posters are https only (else
-  Kino's placeholder), an 18+ item shows only while the person's 18+ code is unlocked. At most 1,000 titles per tree.
+- **Limits and mistakes:** read by Home's rules: a `series` needs your `episodes` capability, posters are https, or http on a
+  public host where `kino.screen.httpImages` ([http pictures](#http-pictures)) (else Kino's placeholder), an 18+ item shows only while the person's 18+ code is unlocked. At most 1,000 titles per tree.
 
 <a id="title-rail"></a>
 ### titleRail
@@ -1620,7 +1648,7 @@ screen the look of Kino's own Home.
 | `items` | `KinoItem[]` | required | no | 1 to 500 (60 when drawn all at once) |
 | `ref` | string | none | no | with it, the row's «Ver más» opens your `browse` (at most 4,096 characters) |
 | `size` | `small` \| `medium` \| `large` | `medium` | yes | one of Kino's three sizes |
-| `headers` | `{ Referer?, User-Agent? }` | none | no | additive, no new apiVersion (Kino 0.9.83): the request headers every picture of the node is asked with (each item's poster and backdrop, the hero's image and logo), the same rules as an `Image`'s [headers](#image-headers) |
+| `headers` | `{ Referer?, User-Agent? }` | none | no | additive, no new apiVersion (Kino 0.9.83): the request headers every https picture of the node is asked with (each item's poster and backdrop, the hero's image and logo; never an http one), the same rules as an `Image`'s [headers](#image-headers) |
 | `onEndReached` | `{ event, arg? }` | none | no | sent once when the last item comes into view, again only after your answer drew a longer list (or `loadingMore` went from true to false); never more than once a second |
 | `loadingMore` | boolean | `false` | no | `true` draws Kino's spinner after the items |
 | `done` | boolean | `false` | no | `true` stops asking for more |
@@ -1656,7 +1684,7 @@ Home cards in a grid of `columns` (default 3): a catalogue page, search results.
 | --- | --- | --- | --- | --- |
 | `items` | `KinoItem[]` | required | no | 1 to 500 (60 when drawn all at once) |
 | `columns` | 1 to 8 | `3` | yes |  |
-| `headers` | `{ Referer?, User-Agent? }` | none | no | additive, no new apiVersion (Kino 0.9.83): the request headers every picture of the node is asked with (each item's poster and backdrop, the hero's image and logo), the same rules as an `Image`'s [headers](#image-headers) |
+| `headers` | `{ Referer?, User-Agent? }` | none | no | additive, no new apiVersion (Kino 0.9.83): the request headers every https picture of the node is asked with (each item's poster and backdrop, the hero's image and logo; never an http one), the same rules as an `Image`'s [headers](#image-headers) |
 | `onEndReached` | `{ event, arg? }` | none | no | sent once when the last item comes into view, again only after your answer drew a longer list (or `loadingMore` went from true to false); never more than once a second |
 | `loadingMore` | boolean | `false` | no | `true` draws Kino's spinner after the items |
 | `done` | boolean | `false` | no | `true` stops asking for more |
@@ -1692,9 +1720,9 @@ A section's banner: a big picture, a title, a line and at most two buttons. The 
 | --- | --- | --- | --- | --- |
 | `title` | string | required | no | `titleEn` the English one |
 | `text` | string | none | no | `textEn` |
-| `image` | https URL | none | no | a public https picture |
-| `logo` | https URL | none | no | additive, no new apiVersion: a title's logo (a public https picture) drawn where the title's text is, when it loads; the text still names it for a screen reader and shows when the logo cannot |
-| `headers` | `{ Referer?, User-Agent? }` | none | no | additive, no new apiVersion (Kino 0.9.83): the request headers every picture of the node is asked with (each item's poster and backdrop, the hero's image and logo), the same rules as an `Image`'s [headers](#image-headers) |
+| `image` | URL | none | no | a public https picture, or http on a public host where `kino.screen.httpImages` ([http pictures](#http-pictures)) |
+| `logo` | URL | none | no | additive, no new apiVersion: a title's logo (a public picture, as `image`) drawn where the title's text is, when it loads; the text still names it for a screen reader and shows when the logo cannot |
+| `headers` | `{ Referer?, User-Agent? }` | none | no | additive, no new apiVersion (Kino 0.9.83): the request headers every https picture of the node is asked with (each item's poster and backdrop, the hero's image and logo; never an http one), the same rules as an `Image`'s [headers](#image-headers) |
 | `buttons` | button nodes | none | no | at most 2 |
 | `h` | a size of the scale | Kino's (240 dp, 320 on a TV) | yes | additive, no new apiVersion: the banner's height; a per-size map works (`{ compact: 200, expanded: 240 }`) |
 <!-- ui:props:heroCard:end -->
@@ -1741,6 +1769,11 @@ one and `IconButton` an icon (its `labelText` is what a screen reader says). `co
 runs; `submit: true` inside a `Form` checks and submits it; `enabled: false` draws it off.
 
 > Screenshot slots: `ui-img/button-phone.png`, `ui-img/button-tv.png` (pending, see [Screenshots](#screenshots)).
+
+**Size.** Kino keeps a button compact: on the TV it is 40 dp tall with 14 dp on each side (from Kino 0.9.88; before
+it, 52 dp with 22 dp), on the phone Material's own room. A button's own `padding` ([Style](#style)) replaces that room on
+both, and the button is then as tall as its content plus that padding; `height` and `minHeight` set its height. A plugin
+that wants a bigger button says so with those, Kino adds none.
 
 <!-- ui:props:button:start -->
 | Property | Type | Default | Per size | Notes |

@@ -1,0 +1,27 @@
+{
+  "$comment": "The manifest's \"resolveAhead\" (contract.json manifest.resolveAhead): the same manifests through the app's ManifestParser (PluginManifestResolveAheadTest) and the kit's validateManifest (resolve-ahead.test.mjs). `base` is merged under each case's `manifest`, and every case is a manifest Kino accepts: the field never refuses one. resolveAhead: what Kino honours. dropped: what the app logs and the kit's validate warns (after \"resolveAhead: \"), null when nothing was dropped. enhancementsDropped, when present: the enhancement blocks dropped, in order.",
+  "base": { "id": "ahead", "name": "Ahead", "version": "1.0.0", "apiVersion": 8, "entry": "plugin.js", "hosts": ["example.com"], "capabilities": ["search", "resolve"] },
+  "cases": [
+    { "name": "left out: false, nothing said", "manifest": {}, "resolveAhead": false, "dropped": null },
+    { "name": "true is read", "manifest": { "resolveAhead": true }, "resolveAhead": true, "dropped": null },
+    { "name": "false is read", "manifest": { "resolveAhead": false }, "resolveAhead": false, "dropped": null },
+    { "name": "null reads as left out", "manifest": { "resolveAhead": null }, "resolveAhead": false, "dropped": null },
+    { "name": "apiVersion 1 reads it: it has no apiVersion of its own", "manifest": { "apiVersion": 1, "resolveAhead": true }, "resolveAhead": true, "dropped": null },
+    { "name": "the newest apiVersion reads it too", "manifest": { "apiVersion": 27, "resolveAhead": true }, "resolveAhead": true, "dropped": null },
+    { "name": "the string \"true\" is no boolean: dropped, never refused", "manifest": { "resolveAhead": "true" }, "resolveAhead": false, "dropped": "The \"resolveAhead\" field must be true or false; Kino ignores any other value" },
+    { "name": "a number is no boolean", "manifest": { "resolveAhead": 1 }, "resolveAhead": false, "dropped": "The \"resolveAhead\" field must be true or false; Kino ignores any other value" },
+    { "name": "an object is no boolean", "manifest": { "resolveAhead": { "titlePage": true } }, "resolveAhead": false, "dropped": "The \"resolveAhead\" field must be true or false; Kino ignores any other value" },
+    { "name": "a list is no boolean", "manifest": { "resolveAhead": [true] }, "resolveAhead": false, "dropped": "The \"resolveAhead\" field must be true or false; Kino ignores any other value" },
+    { "name": "beside \"browser\": true it is ignored", "manifest": { "apiVersion": 6, "browser": true, "resolveAhead": true }, "resolveAhead": false, "dropped": "The \"resolveAhead\" field is ignored beside \"browser\": Kino never calls this plugin's resolve ahead" },
+    { "name": "beside \"browser\": \"pages\" it is ignored", "manifest": { "apiVersion": 6, "browser": "pages", "resolveAhead": true }, "resolveAhead": false, "dropped": "The \"resolveAhead\" field is ignored beside \"browser\": Kino never calls this plugin's resolve ahead" },
+    { "name": "\"browser\": false changes nothing", "manifest": { "apiVersion": 6, "browser": false, "resolveAhead": true }, "resolveAhead": true, "dropped": null },
+    { "name": "below apiVersion 6 \"browser\" is ignored, so the field stands", "manifest": { "apiVersion": 5, "browser": true, "resolveAhead": true }, "resolveAhead": true, "dropped": null },
+    { "name": "beside catalogOnly it is ignored", "manifest": { "capabilities": ["search"], "catalogOnly": true, "resolveAhead": true }, "resolveAhead": false, "dropped": "The \"resolveAhead\" field is ignored beside \"catalogOnly\": Kino never calls this plugin's resolve ahead" },
+    { "name": "catalogOnly is named first when both are there", "manifest": { "apiVersion": 6, "capabilities": ["search"], "catalogOnly": true, "browser": "pages", "resolveAhead": true }, "resolveAhead": false, "dropped": "The \"resolveAhead\" field is ignored beside \"catalogOnly\": Kino never calls this plugin's resolve ahead" },
+    { "name": "false beside \"browser\" says nothing", "manifest": { "apiVersion": 6, "browser": true, "resolveAhead": false }, "resolveAhead": false, "dropped": null },
+    { "name": "a value that is no boolean is named so even beside \"browser\"", "manifest": { "apiVersion": 6, "browser": true, "resolveAhead": "yes" }, "resolveAhead": false, "dropped": "The \"resolveAhead\" field must be true or false; Kino ignores any other value" },
+    { "name": "it survives an enhancement merge", "manifest": { "resolveAhead": true, "enhancements": { "14": { "capabilities": ["screen"], "screen": { "label": "Inicio" } } } }, "resolveAhead": true, "dropped": null, "enhancementsDropped": [] },
+    { "name": "an enhancement at an apiVersion that reads \"browser\" keeps the manifest's own reading", "manifest": { "apiVersion": 5, "browser": true, "resolveAhead": true, "enhancements": { "14": { "capabilities": ["screen"], "screen": { "label": "Inicio" } } } }, "resolveAhead": true, "dropped": null, "enhancementsDropped": [] },
+    { "name": "an enhancement block can't carry it: the block is dropped and the manifest's own value stays", "manifest": { "enhancements": { "14": { "resolveAhead": true } } }, "resolveAhead": false, "dropped": null, "enhancementsDropped": ["enhancements.14: \"resolveAhead\" can't be enhanced (only capabilities, screen, settings, panel, jobs, visualBrowser and slot)"] }
+  ]
+}

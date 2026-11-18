@@ -118,6 +118,7 @@
 //   KINO_AI_REVOKED=1               the person switched it off: every ask is refused
 // kino.identity.telegram (apiVersion 15, capability "identity", contract.kinoIdentity) answers a fake Telegram account with the
 //   app's gates (only inside screen / screenEvent / panelAction, never a tick or a job): { id (a per-plugin pseudonym), token },
+//   the token whatever the author, like a debug build of Kino (a release Kino gives it only to contract.kinoIdentity.tokenAuthors),
 //   and with { challenge } also deviceKey, author, codeHash (SHA-256 of the entry the kit runs) and signature (a per-plugin P-256 key):
 //   KINO_IDENTITY_TG=<id>|none      the account (default 1000001); none: not_available
 //   KINO_IDENTITY_TOKEN=<token>     the gate token handed over (default a fake one)
@@ -156,7 +157,7 @@ import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseSlotFrame, slotActionRequest, slotBareContext, slotContext, slotForeignContext, slotLiveContext } from "./slot.mjs";
-import { checkOutput, checkSettingsOutput, contract, featureApiVersion, liveChannelGoOf, liveChannelGoRefusal, syncProviderGoRefusal, markSearchHits, maskSetPasswords, readRangeProblem, segmentSkip, STORE_FUNCTIONS, validateManifest } from "./contract.mjs";
+import { checkOutput, checkSettingsOutput, contract, featureApiVersion, liveChannelGoOf, liveChannelGoRefusal, syncProviderGoRefusal, markSearchHits, maskSetPasswords, prepareNote, prepareWarnings, readRangeProblem, segmentSkip, STORE_FUNCTIONS, validateManifest } from "./contract.mjs";
 import { contrast, formatRatio, resolvePalette } from "./palette.mjs";
 import { askImage, askRead, createKino, errorReport, signingLane } from "./kino-shim.mjs";
 import { loadPlugin, missingGlobalLines, scanMissingGlobals } from "./sandbox.mjs";
@@ -169,7 +170,7 @@ import { channelLines, download, guideFor, keepStart, loadPlaylist, summarisePla
 import { jobBudget, jobCaps, jobContext, jobKino, runJob } from "./job.mjs";
 import { createSharedDevices } from "./shared.mjs";
 
-const FUNCTIONS = ["search", "home", "browse", "episodes", "resolve", "migrate", "section", "categories", "subtitles", "track", "segments", "lyrics", "meta"];
+const FUNCTIONS = ["search", "home", "browse", "episodes", "resolve", contract.prepare.export, "migrate", "section", "categories", "subtitles", "track", "segments", "lyrics", "meta"];
 // apiVersion 6's settings form: not capabilities, so no capability check; the app runs them even before a required setting is typed.
 const SETTINGS_FUNCTIONS = ["settingsStatus", "action", "validateSettings"];
 // apiVersion 9's player panel: not capabilities either (the manifest's "panel" decides), and Kino calls them with a context.
@@ -190,7 +191,7 @@ export function screenEventIsPress(name, trigger = "tap") {
 }
 // `live <sub>` names one of the channels capability's exports.
 const LIVE = { categories: "liveCategories", channels: "liveChannels", guide: "guide", search: "liveSearch" };
-const USAGE = "usage: node sdk/run.mjs [--config k=v] [--record f | --replay f] [--raw] [--device tv|phone] <plugin.js | plugin folder> <search|home|browse|episodes|resolve|migrate|sign> [argument] [cursor]\n"
+const USAGE = "usage: node sdk/run.mjs [--config k=v] [--record f | --replay f] [--raw] [--device tv|phone] <plugin.js | plugin folder> <search|home|browse|episodes|resolve|prepare|migrate|sign> [argument] [cursor]\n"
   + "       node sdk/run.mjs [--config k=v] [--raw] <plugin folder> <section [tab] | categories | theme>\n"
   + "       node sdk/run.mjs [--config k=v] [--raw] <plugin folder> <settingsStatus | action <key> | validateSettings '<json>'>\n"
   + "       node sdk/run.mjs [--config k=v] <plugin folder> live <categories | channels <categoryId> [cursor] | guide <id,id> | search <query>>\n"
@@ -430,7 +431,7 @@ async function main() {
   if (SLOT_FUNCTIONS.includes(fn) && !(featureApiVersion(manifest) >= contract.playerSlot.apiVersion && manifest.slot)) return fail(`the manifest does not declare "slot" (apiVersion ${contract.playerSlot.apiVersion}, or an "enhancements" block for it, and the "${contract.playerSlot.capability}" capability with its "slot" block): Kino draws nothing for this plugin`);
   if (fn === "categories" && !(manifest.apiVersion >= contract.output.categories.apiVersion && manifest.capabilities.includes("browse"))) return fail("categories needs apiVersion 6 and the browse capability");
   if ((fn === "storeList" || fn === "storeSearch") && manifest.pluginStore?.mode !== "live") return fail(`${fn} is for a live store: declare "pluginStore": { "mode": "live" } in kino-plugin.json`);
-  const capability = Object.values(LIVE).includes(fn) ? "channels" : STORE_FUNCTIONS.includes(fn) ? contract.kinoStore.capability : fn === "sign" ? "resolve" : fn === contract.tracking.export ? contract.tracking.capability : fn;
+  const capability = Object.values(LIVE).includes(fn) ? "channels" : STORE_FUNCTIONS.includes(fn) ? contract.kinoStore.capability : fn === "sign" ? "resolve" : fn === contract.prepare.export ? contract.prepare.capability : fn === contract.tracking.export ? contract.tracking.capability : fn;
   // `subtitles` may be exported by any plugin without the capability (Kino asks whoever exports it).
   const anyPlugin = contract.capabilities.anyPluginExports.includes(fn);
   if (fn === "meta" && !manifest.capabilities.includes("meta")) return fail(NO_META_CAPABILITY);
@@ -554,8 +555,19 @@ async function main() {
       if (opts.raw) { process.stdout.write(JSON.stringify(answer === undefined ? null : answer, null, 2) + "\n"); return 0; }
       return printSlotAnswer(fn, answer, request, manifest);
     }
+    // contract.prepare: what Kino does with it, or why it never calls it; past its time limit the app stops waiting.
+    const preparing = fn === contract.prepare.export;
+    if (preparing) {
+      const warned = prepareWarnings(true, manifest);
+      warned.forEach((w) => stderr(`! ${w}`));
+      if (!warned.length) stderr(`· ${prepareNote()}`);
+    }
+    const prepareStarted = Date.now();
     const out = await call(plugin, fn, rest, opts);
     saveTape();
+    if (preparing && Date.now() - prepareStarted > contract.timeoutsMs.prepare) {
+      stderr(`! ${fn} took ${Date.now() - prepareStarted} ms: past ${contract.timeoutsMs.prepare / 1000} s Kino stops waiting and discards your sandbox (the answer is ignored anyway)`);
+    }
     if (SETTINGS_FUNCTIONS.includes(fn) && !opts.raw) {
       // What the app keeps of the answer (status lines, the action's line, the save's verdict).
       // A password the action fills is printed masked: Kino never shows nor logs it.

@@ -48,6 +48,13 @@ test("the manifest: identity is apiVersion 15, declarative, needs approval, neve
   assert.equal(I.consentLine.en, "Can know your Telegram user and send it to its services");
 });
 
+test("the token authors: Kino's own key and a second trusted author key, each a fingerprint in authorPattern's format", () => {
+  // A release Kino hands the raw gate token only to these (PluginIdentity.TOKEN_AUTHORS); the kit hands it to any author.
+  assert.deepEqual(I.tokenAuthors, ["07DA-B67F-2ACF-B4D3", "E04E-EA25-1A34-290E"]);
+  for (const a of I.tokenAuthors) assert.match(a, /^[0-9A-F]{4}(-[0-9A-F]{4}){3}$/);
+  for (const a of I.tokenAuthors) assert.match(a, new RegExp(I.authorPattern));
+});
+
 test("a plugin that calls kino.identity without declaring it is refused by validate", () => {
   const src = "export async function screen() { const me = await kino.identity.telegram(); return me.id; }";
   assert.match(undeclaredIdentityProblem({ capabilities: ["screen"] }, src), /does not declare the "identity" capability/);

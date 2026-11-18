@@ -2418,6 +2418,8 @@ export function createKino(manifest, { appVersion = "sdk", filesDir = null, lang
     apiVersion: contract.apiVersion,
     appVersion,
     lang,
+    // contract.additiveFromApp["kino.pluginApiVersion"]: the plugin's feature apiVersion (base or highest applied enhancement).
+    pluginApiVersion: featureApiVersion(manifest),
     // Kino 0.9.55 (contract.additiveFromApp["kino.fetchAnyHost"]): true when this install's kino.fetch reaches any public host.
     fetchAnyHost: anyHost,
     // Kino 0.9.55 (contract.additiveFromApp["kino.device"]): the UI Kino shows, "phone" or "tv".
@@ -2428,8 +2430,9 @@ export function createKino(manifest, { appVersion = "sdk", filesDir = null, lang
     sync: kinoSync,
     // apiVersion 14 (contract.manifest.screen.widgets): the widgets this Kino draws (their older names) and the type names the
     // docs list (contract.manifest.screen.aliases.names), for feature detection; `version` is the screen contract's own, 1
-    // until a widget changes meaning.
-    screen: Object.freeze({ widgets: Object.freeze([...contract.manifest.screen.widgets]), names: Object.freeze([...contract.manifest.screen.aliases.names]), version: 1 }),
+    // until a widget changes meaning. httpImages (contract.additiveFromApp["kino.screen.httpImages"], Kino 0.9.88):
+    // a screen's pictures may be http on a public host, as a poster; the kit checks them that way (screen.mjs screenPicture).
+    screen: Object.freeze({ widgets: Object.freeze([...contract.manifest.screen.widgets]), names: Object.freeze([...contract.manifest.screen.aliases.names]), version: 1, [contract.manifest.screen.httpImages.flag]: true }),
     fetch: fetchGated,
     html: Object.freeze({
       select() {

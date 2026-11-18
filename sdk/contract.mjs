@@ -642,6 +642,47 @@ function enhance(json, key, block, current, opts, exports) {
   return { json: candidate, manifest: next };
 }
 
+/**
+ * ManifestParser.resolveAheadOf: what "resolveAhead" ([raw], as JSON.parse read it) declares in a manifest whose catalogOnly and
+ * browser (as the app honours them at its apiVersion) are [catalogOnly] and [browser]: { value, dropped }, value whether Kino may
+ * resolve the plugin ahead, dropped why the field was dropped (contract.manifest.resolveAhead's words: what the app logs and
+ * validate.mjs warns), null when it was not (left out, null, false, or a true that stands). Never a refusal.
+ */
+export function resolveAheadOf(raw, catalogOnly, browser) {
+  const R = contract.manifest.resolveAhead;
+  if (raw === undefined || raw === null || raw === false) return { value: false, dropped: null };
+  if (raw !== true) return { value: false, dropped: R.notBooleanMessage };
+  const declared = { catalogOnly, browser };
+  const beside = R.ignoredBeside.find((f) => declared[f] === true);
+  return beside === undefined ? { value: true, dropped: null } : { value: false, dropped: R.ignoredMessage.replace("{name}", beside) };
+}
+
+/**
+ * The optional export prepare (contract.prepare, additive; PlayAhead.modeOf and skipPlugin in the app): where Kino never calls
+ * it, one warning saying why. [exported] whether the entry exports prepare(), [m] the manifest as validateManifest read it
+ * (resolveAhead, catalogOnly and browser as the app honours them, looked at in contract.prepare.notCalledBeside's order).
+ * None when it is not exported, or when Kino calls it ([prepareNote] says what that means). validate.mjs warns, run.mjs too.
+ */
+export function prepareWarnings(exported, m) {
+  if (!exported) return [];
+  const P = contract.prepare;
+  const why = {
+    resolveAhead: '"resolveAhead": true, so Kino resolves ahead instead',
+    catalogOnly: '"catalogOnly": true, so Kino never calls its resolve',
+    browser: '"browser" (true or "pages"): its hidden pages need a play the person started',
+  };
+  const beside = P.notCalledBeside.find((f) => m[f] === true);
+  if (beside !== undefined) return [`${P.export}: Kino never calls it beside ${why[beside]}`];
+  if (!(m.capabilities || []).includes(P.capability)) return [`${P.export}: Kino never calls it in a plugin without the "${P.capability}" capability`];
+  return [];
+}
+
+/** What an exported prepare() Kino calls means for the author: when, with what, its limits, and what an older Kino does. */
+export function prepareNote() {
+  const P = contract.prepare;
+  return `${P.export}: Kino ${contract.additiveFromApp[`export.${P.export}`]} or later calls ${P.export}(ref) once the person has stayed about ${P.dwellMs / 1000} s on one of your title pages, with the ref resolve gets for what its play button would start, as a background call of ${contract.timeoutsMs.prepare / 1000} s (never "No responde"), at most once every ${P.perRefEveryMs / 60000} minutes per ref and ${P.perMinute} a minute; its answer is ignored and pressing play calls resolve as always. It may run for titles nobody plays: it must not start or count a play, nor spend a quota, a trial or a free play. An older Kino never calls it`;
+}
+
 function validateManifestObject(o, { knownPermissions = contract.permissions } = {}) {
   const m = contract.manifest;
   const bad = (field, message) => ({ ok: false, field, message });
@@ -1084,7 +1125,10 @@ function validateManifestObject(o, { knownPermissions = contract.permissions } =
   }
   // Below apiVersion 9 the English keys are unknown: dropped here, so nothing downstream (the form, englishCoverage) sees them.
   const settingsOut = o.apiVersion >= contract.settings.english.apiVersion ? o.settings || [] : withoutEnglish(o.settings || []);
-  const out = { ...o, hosts: [...new Set(hosts)], capabilities: caps, permissions: o.permissions || [], settings: settingsOut, insecureHosts, liveStreamHostsAny, streamHostsAny, fetchHostsAny, discoverable, categories, debug, telemetry, browser, browserPages, visualBrowser, section, panel, screen, slot, theme, appThemes, secrets, secretKeyEncodings, catalogOnly, openFromRoutes };
+  // "resolveAhead" (additive: valid at every apiVersion), read last as the app reads it: a hint, so what it drops never refuses
+  // the plugin (validate.mjs warns). Judged beside catalogOnly and browser as the app honours them.
+  const resolveAhead = resolveAheadOf(o.resolveAhead, catalogOnly, browser).value;
+  const out = { ...o, hosts: [...new Set(hosts)], capabilities: caps, permissions: o.permissions || [], settings: settingsOut, insecureHosts, liveStreamHostsAny, streamHostsAny, fetchHostsAny, discoverable, categories, debug, telemetry, browser, browserPages, visualBrowser, section, panel, screen, slot, theme, appThemes, secrets, secretKeyEncodings, catalogOnly, openFromRoutes, resolveAhead };
   // The parsed `recommends` (deduplicated, as written); none when it declares none.
   if (recommends.length) out.recommends = recommends; else delete out.recommends;
   // Task 8q: the parsed jobs (labels scrubbed, options sorted); none below apiVersion 14 or without `schedule`.
@@ -1826,10 +1870,10 @@ function items(list, max, ctx, drop) {
  * kind and `adult`), read by the same item parser as `home` rows, with its drop lines; at most [max].
  */
 export function screenItems(list, max, drop, allowSeries = true) {
-  // A screen's images are https only (spec Safety): a cleartext poster or backdrop is blanked, Kino's placeholder shows.
-  const https = (u) => (u.startsWith("https://") ? u : "");
-  return items(list, max, { allowSeries, allowLive: true, allowAudio: true, allowAdult: true, servers: [] }, drop)
-    .map((x) => ({ ...x, poster: https(x.poster), backdrop: https(x.backdrop) }));
+  // A poster or backdrop follows the Home rule (imageVerdict: http or https on a public host, never the home network), so an IPTV
+  // panel's http channel logo shows (additive, contract.manifest.screen.httpImages; https only before); a refused one is blank and
+  // Kino's placeholder shows. The node's headers never go with an http picture.
+  return items(list, max, { allowSeries, allowLive: true, allowAudio: true, allowAdult: true, servers: [] }, drop);
 }
 
 /**
@@ -3482,6 +3526,8 @@ export function checkOutput(fn, value, manifest, servers = [], { liveChannel = f
     case "storeSync": case "storeList": case "storeSearch": return { value: storeAnswer(fn, parsed, drop), drops };
     // Kino only needs track() to return (anything, `{ ok: true }` by convention) or throw: a kino.error code says whether to retry.
     case "track": return { value: parsed, drops };
+    // contract.prepare: Kino ignores whatever prepare() returns, a failure too; only the size cap above applies, as to any answer.
+    case contract.prepare.export: return { value: parsed, drops };
     // apiVersion 7's segments: what the app's Segments.parse keeps, judged against the query's durationMs.
     case "segments": return { value: segmentsAnswer(parsed, segmentsQuery?.durationMs, drop), drops };
     // apiVersion 19's lyrics: what the app's Lyrics.parse keeps, and what it would draw for the query's durationMs.

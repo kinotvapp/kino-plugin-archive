@@ -19,7 +19,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync,
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { checkOutput, checkSettingsOutput, contract, englishCoverage, fetchAnyHost, isScreenOnlyConsumer, isStandaloneSet, kb, maskSetPasswords, statusHide, requiredExports, validateManifest, validateManifestWithoutEnhancements } from "./contract.mjs";
+import { checkOutput, checkSettingsOutput, contract, englishCoverage, fetchAnyHost, isScreenOnlyConsumer, isStandaloneSet, kb, maskSetPasswords, prepareNote, prepareWarnings, resolveAheadOf, statusHide, requiredExports, validateManifest, validateManifestWithoutEnhancements } from "./contract.mjs";
 import { resolvePalette } from "./palette.mjs";
 import { protocolBlocks, protocolWarnings } from "./protocol.mjs";
 import { resolveAppTheme } from "./appthemes.mjs";
@@ -145,13 +145,29 @@ export function isPlaceholderHost(host) {
 export function placeholderHostWarnings(hosts, manifest = null) {
   if (!Array.isArray(hosts)) return [];
   const advice = isScreenOnlyConsumer(manifest)
-    ? `a screen-only consumer needs no host: declare none ("hosts": []); its pictures from public https addresses need no declaration (see ${PLACEHOLDER_HOST_DOCS})`
+    ? `a screen-only consumer needs no host: declare none ("hosts": []); its pictures from public addresses (https, and http where kino.screen.httpImages) need no declaration (see ${PLACEHOLDER_HOST_DOCS})`
     : "declare a host the plugin really loads from";
   return hosts
     .map((h) => (typeof h === "string" ? h : h && typeof h === "object" ? h.host : null))
     .filter(isPlaceholderHost)
     .map((h) => `hosts: "${h}" is a placeholder host; ${advice}` +
       (/(^|\.)invalid$/.test(h.trim().toLowerCase().replace(/\.$/, "")) ? " (Kino accepts a .invalid name and never lists it, but it reaches nothing: keep it only on purpose)" : ""));
+}
+
+/**
+ * "resolveAhead" (contract.manifest.resolveAhead, additive): the app never refuses a plugin over it, so what it drops (a value
+ * that is not a boolean, true beside catalogOnly or browser) is a warning here, in the words the app logs. [raw] is the
+ * manifest as written, [m] as validateManifest read it. A true that stands gets [resolveAheadNote] instead.
+ */
+export function resolveAheadWarnings(raw, m) {
+  const { dropped } = resolveAheadOf(raw?.resolveAhead, m.catalogOnly === true, m.browser === true);
+  return dropped ? [`resolveAhead: ${dropped}`] : [];
+}
+
+/** What `"resolveAhead": true` means for the author: when Kino calls resolve ahead, what it keeps, and what an older Kino does. */
+export function resolveAheadNote() {
+  const R = contract.manifest.resolveAhead;
+  return `resolveAhead: Kino ${contract.additiveFromApp["manifest.resolveAhead"]} or later may call resolve for a movie or an episode before the person presses play (after about 0.3 s on its title page), as a background call whose stream is checked as the player's own, and plays that answer if they press play within ${R.maxKeepMs / 60000} minutes, or until ${R.expiryMarginMs / 1000} s before its expiresInSeconds runs out when that comes first. resolve may thus run for titles nobody plays: it must not count a play, spend a quota or a trial, or open a page (if it does, leave the field out and export ${contract.prepare.export} to get ready instead). An older Kino ignores the field`;
 }
 
 /** The tracking consent line for [hosts], as the app's Tracking.consentLine builds it (`.invalid` placeholders left out). */
@@ -501,6 +517,9 @@ export async function validate(dirArg, { run = null, args = [], config = {}, rep
   // A placeholder host (example.com, *.test...) is accepted by Kino but is never where a plugin really loads from: said loudly.
   const rawManifest = JSON.parse(manifestText);
   warnings.push(...placeholderHostWarnings(rawManifest.hosts, rawManifest));
+  // "resolveAhead": a drop is said loudly (the app only logs it); a true that stands is explained.
+  warnings.push(...resolveAheadWarnings(rawManifest, m));
+  if (m.resolveAhead) notes.push(resolveAheadNote());
   if (m.browser) {
     notes.push(m.browserPages
       ? "kino.browser.capture and kino.browser.page only work in the app (a hidden WebView); here they answer browser_unavailable, so test on a device. Kino never solves captchas: a page that asks to confirm a human is there answers blocked"
@@ -626,7 +645,7 @@ export async function validate(dirArg, { run = null, args = [], config = {}, rep
   if ((m.capabilities || []).includes(contract.kinoIdentity.capability)) {
     // apiVersion 15: what the identity is and is not, so the author's server verifies the token and never trusts the id alone.
     const I = contract.kinoIdentity;
-    notes.push(`identity: kino.identity.telegram({ challenge? }) answers { id, token } (id: a pseudonym of the person for THIS plugin, the same on every install, never their Telegram id or username) and, with a challenge, deviceKey and signature (a per-plugin device key); only inside ${I.fromFunctions.join(", ")} the person started, ${I.perMinute} a minute. Your server must verify the token (it is signed by Kino's bot and names the Telegram account) and the signature; the person may refuse it or switch it off: keep a way in without it. The kit answers a fake account: KINO_IDENTITY_TG=<id or none>, KINO_IDENTITY_TOKEN=..., KINO_IDENTITY_REVOKED=1`);
+    notes.push(`identity: kino.identity.telegram({ challenge? }) answers { id, token } (id: a pseudonym of the person for THIS plugin, the same on every install, never their Telegram id or username) and, with a challenge, deviceKey and signature (a per-plugin device key); only inside ${I.fromFunctions.join(", ")} the person started, ${I.perMinute} a minute. token only when the plugin is signed with one of ${I.tokenAuthors.join(", ")} (any other author gets the id and the attestation, never the token). Your server must verify the token (it is signed by Kino's bot and names the Telegram account) and the signature; the person may refuse it or switch it off: keep a way in without it. The kit answers a fake account, with the token whatever the author (like a debug build of Kino): KINO_IDENTITY_TG=<id or none>, KINO_IDENTITY_TOKEN=..., KINO_IDENTITY_REVOKED=1`);
   }
   if (m.panel?.contributes && (m.panel.kinds ?? []).includes(contract.kinoLivePanel.kind)) {
     // Task 11: the tab also joins En vivo channels, after Kino's General tab, with the live context.
@@ -720,6 +739,11 @@ export async function validate(dirArg, { run = null, args = [], config = {}, rep
     const loaded = await loadPlugin(entry, pluginKino);
     if (!loaded.sandboxed) notes.push("running without the sandbox (KINO_SDK_NO_SANDBOX=1): the plugin can see Node's globals that Kino lacks");
     const plugin = loaded.plugin;
+    // The optional prepare (contract.prepare): where Kino never calls it is said loudly; where it does, what it means.
+    const preparing = typeof plugin[contract.prepare.export] === "function";
+    const prepareWarned = prepareWarnings(preparing, m);
+    warnings.push(...prepareWarned);
+    if (preparing && !prepareWarned.length) notes.push(prepareNote());
     // download/drm export nothing; channels exports liveCategories + liveChannels (guide optional).
     // Only the plugin's OWN manifest refuses the install (an enhancement's missing exports drop that block, as the app does: the
     // block's exports are checked below, against what the entry really exports).
@@ -790,6 +814,22 @@ export async function validate(dirArg, { run = null, args = [], config = {}, rep
           const host = (u) => { try { return new URL(u).hostname; } catch { return "?"; } };
           const line = (d, i) => `${i + 1}. ${d.type === "clearkey" ? `clearkey (${Object.keys(d.keys).length} key${Object.keys(d.keys).length === 1 ? "" : "s"}, no license server)` : `widevine (license: ${host(d.licenseUrl)})`}`;
           notes.push(`drm options, in the order a phone tries them: ${output.drmOptions.map(line).join("; ")}`);
+        }
+        // clockLive (apiVersion 27, live only): Kino synthesizes the HLS window itself from the descriptor. Catch the
+        // mistakes the app would reject (missing {seg}, {mc} with no mediaCode, an empty grid, no anchor) here, early.
+        if (run === "resolve" && output.clockLive && typeof output.clockLive === "object") {
+          const cl = output.clockLive;
+          if (typeof cl.template !== "string" || !cl.template.includes("{seg}")) {
+            problems.push('clockLive.template must be a string containing the "{seg}" token (the per-segment media clock)');
+          } else if (cl.template.includes("{mc}") && !cl.mediaCode) {
+            problems.push('clockLive.template uses "{mc}" but no mediaCode was given');
+          } else if (!Array.isArray(cl.grid) || cl.grid.length === 0) {
+            problems.push("clockLive.grid must be a non-empty array of per-segment durations in ms (e.g. [4004, 6006])");
+          } else if (!cl.anchor || typeof cl.anchor !== "object" || typeof cl.anchor.t !== "number" || typeof cl.anchor.s !== "number") {
+            problems.push("clockLive.anchor must be { t, s } pinning one real segment (t = epoch ms, s = its media-clock ms)");
+          } else {
+            notes.push(`clockLive: Kino synthesizes a live HLS window itself (grid ${cl.grid.join("/")} ms, rate ${cl.rate ?? 1000}); every viewer pulls the segments straight from the CDN`);
+          }
         }
         // A search hit is 18+ by its own marks and the plugin's categories (as in the app): unmarked ones get a warning.
         if (run === "liveSearch") {
